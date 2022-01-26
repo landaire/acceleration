@@ -296,8 +296,45 @@ fn xcontent_header_parser<'a>(
     let title_image = input_byte_ref(cursor, input, title_thumbnail_image_size);
     cursor.set_position(0x971a);
 
+    let mut installer_type = None;
+    let mut installer_meta = None;
     if ((header_size + 0xFFF) & 0xFFFFF000) - 0x971A > 0x15F4 {
-        todo!("the extra fields");
+        installer_type = Some(InstallerType::try_from(cursor.read_u32::<BigEndian>()?).expect("invalid InstallerType"));
+        installer_meta = match *installer_type.as_ref().unwrap() {
+            InstallerType::SystemUpdate | InstallerType::TitleUpdate => {
+                let installer_base_version = Version::from(cursor.read_u32::<BigEndian>()?);
+                let installer_version= Version::from(cursor.read_u32::<BigEndian>()?);
+                Some(InstallerMeta::FullInstaller(FullInstallerMeta {
+                    installer_base_version,
+                    installer_version,
+                }))
+            }
+            InstallerType::SystemUpdateProgressCache | InstallerType::TitleUpdateProgressCache | InstallerType::TitleContentProgressCache => {
+                let resume_state = OnlineContentResumeState::try_from(cursor.read_u32::<BigEndian>()?).expect("invalid resume state");
+                let current_file_index = cursor.read_u32::<BigEndian>()?;
+                let current_file_offset = cursor.read_u64::<BigEndian>()?;
+                let bytes_processed = cursor.read_u64::<BigEndian>()?;
+
+                let high_date_time = cursor.read_u32::<BigEndian>()?;
+                let low_date_time = cursor.read_u32::<BigEndian>()?;
+
+                // TODO: Fix
+                let last_modified = Utc::now();
+
+                Some(InstallerMeta::InstallerProgressCache(InstallerProgressCache {
+                    resume_state,
+                    current_file_index,
+                    current_file_offset,
+                    bytes_processed,
+                    last_modified,
+                    cab_resume_data: todo!("need to implement CAB resume data"),
+                }));
+            }
+            _ => {
+                // anything else is ok
+                None
+            }
+        }
     }
 
     let enabled = false;
@@ -337,9 +374,9 @@ fn xcontent_header_parser<'a>(
         thumbnail_image,
         title_thumbnail_image_size,
         title_image,
-        installer_type: None,
+        installer_type,
+        installer_meta,
         content_metadata,
-        installer_progress_cache: None,
     })
 }
 
@@ -387,8 +424,8 @@ pub struct XContentHeader<'a> {
     title_thumbnail_image_size: usize,
     title_image: &'a [u8],
     installer_type: Option<InstallerType>,
+    installer_meta: Option<InstallerMeta>,
     content_metadata: Option<ContentMetadata<'a>>,
-    installer_progress_cache: Option<InstallerProgressCache>,
 }
 
 #[derive(Debug)]
@@ -456,9 +493,18 @@ struct InstallerProgressCache {
     bytes_processed: u64,
     last_modified: DateTime<Utc>,
     cab_resume_data: [u8; 5584],
+}
 
+#[derive(Debug)]
+struct FullInstallerMeta {
     installer_base_version: Version,
     installer_version: Version,
+}
+
+#[derive(Debug)]
+enum InstallerMeta {
+    FullInstaller(FullInstallerMeta),
+    InstallerProgressCache(InstallerProgressCache),
 }
 
 #[derive(Debug)]
@@ -559,7 +605,8 @@ enum ContentType {
     XNA = 0xE0000,
 }
 
-#[derive(Debug)]
+#[derive(Debug, TryFromPrimitive)]
+#[repr(u32)]
 enum InstallerType {
     None = 0,
     SystemUpdate = 0x53555044,
@@ -577,7 +624,19 @@ struct Version {
     revision: u16,
 }
 
-#[derive(Debug)]
+impl From<u32> for Version {
+    fn from(input: u32) -> Self {
+        Version {
+            major: ((input & 0xF000_0000) >> 28) as u16,
+            minor: ((input & 0x0F00_0000) >> 24) as u16,
+            build: ((input & 0x00FF_FF00) >> 8) as u16,
+            revision: (input & 0xFF) as u16,
+        }
+    }
+}
+
+#[derive(Debug, TryFromPrimitive)]
+#[repr(u32)]
 enum OnlineContentResumeState {
     FileHeadersNotReady = 0x46494C48,
     NewFolder = 0x666F6C64,
