@@ -59,6 +59,8 @@ pub enum StfsError {
     InvalidHeader,
     #[error("I/O error")]
     IoError(#[from] std::io::Error),
+    #[error("Invalid package type")]
+    InvalidPackageType,
 }
 
 #[derive(Debug)]
@@ -102,8 +104,31 @@ pub struct StfsFolder {
 }
 
 #[derive(Debug)]
+enum StfsPackageSex {
+    Female,
+    Male,
+}
+
+impl<'a> TryFrom<&XContentHeader<'a>> for StfsPackageSex {
+    type Error = StfsError;
+
+    fn try_from(header: &XContentHeader) -> Result<Self, Self::Error> {
+        if let FileSystem::STFS(stfs) = &header.volume_descriptor {
+            if (!stfs.block_separation) & 1 == 0 {
+                Ok(StfsPackageSex::Female)
+            } else {
+                Ok(StfsPackageSex::Male)
+            }
+        } else {
+            Err(StfsError::InvalidPackageType)
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct StfsPackage<'a> {
     header: XContentHeader<'a>,
+    sex: StfsPackageSex,
     entries: Vec<StfsEntry>,
 }
 
@@ -113,8 +138,12 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
     fn try_from(input: &'a [u8]) -> Result<Self, Self::Error> {
         let mut cursor = Cursor::new(input);
         let xcontent_header = xcontent_header_parser(&mut cursor, input)?;
+        // TODO: Don't unwrap
+        let package_sex = StfsPackageSex::try_from(&xcontent_header).unwrap();
+
         Ok(StfsPackage {
             header: xcontent_header,
+            sex: package_sex,
             entries: Vec::new(),
         })
     }
