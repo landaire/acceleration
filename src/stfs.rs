@@ -38,7 +38,6 @@ fn read_utf16_cstr<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8]) -> String
 
     let end_of_str_position = end_of_str_position.expect("failed to find null terminator");
 
-
     cursor.set_position(
         (position + end_of_str_position + 2)
             .try_into()
@@ -255,12 +254,18 @@ fn xcontent_header_parser<'a>(
     let data_file_combined_size = cursor.read_u64::<BigEndian>()?;
 
     let content_metadata = match content_type {
-        ContentType::AvatarItem => Some(ContentMetadata::AvatarItem(
-            AvatarAssetInformation::parse(cursor, input)?,
-        )),
-        ContentType::Video => Some(ContentMetadata::Video(MediaInformation::parse(
-            cursor, input,
-        )?)),
+        ContentType::AvatarItem => {
+            cursor.set_position(0x3d9);
+            Some(ContentMetadata::AvatarItem(AvatarAssetInformation::parse(
+                cursor, input,
+            )?))
+        }
+        ContentType::Video => {
+            cursor.set_position(0x3d9);
+            Some(ContentMetadata::Video(MediaInformation::parse(
+                cursor, input,
+            )?))
+        }
         _ => None,
     };
 
@@ -274,7 +279,7 @@ fn xcontent_header_parser<'a>(
     let display_description = read_utf16_cstr(cursor, input);
 
     cursor.set_position(0x1611);
-    let publisher_name= read_utf16_cstr(cursor, input);
+    let publisher_name = read_utf16_cstr(cursor, input);
 
     cursor.set_position(0x1691);
     let title_name = read_utf16_cstr(cursor, input);
@@ -399,21 +404,20 @@ impl<'a> AvatarAssetInformation<'a> {
         cursor: &mut Cursor<&'a [u8]>,
         input: &'a [u8],
     ) -> Result<AvatarAssetInformation<'a>, StfsError> {
-        cursor.set_position(0x3d9);
-
         // This data is little endian for some reason
         let subcategory = AssetSubcategory::try_from(cursor.read_u32::<LittleEndian>()?)
             .expect("invalid avatar asset subcategory");
-            let colorizable = cursor.read_u32::<LittleEndian>()?;
-            let guid = input_byte_ref(cursor, input, 0x10);
-            let skeleton_version = SkeletonVersion::try_from(cursor.read_u8()?).expect("invalid skeleton version");
+        let colorizable = cursor.read_u32::<LittleEndian>()?;
+        let guid = input_byte_ref(cursor, input, 0x10);
+        let skeleton_version =
+            SkeletonVersion::try_from(cursor.read_u8()?).expect("invalid skeleton version");
 
-            Ok(AvatarAssetInformation {
-                subcategory,
-                colorizable,
-                guid,
-                skeleton_version,
-            })
+        Ok(AvatarAssetInformation {
+            subcategory,
+            colorizable,
+            guid,
+            skeleton_version,
+        })
     }
 }
 
@@ -426,9 +430,10 @@ struct MediaInformation<'a> {
 }
 
 impl<'a> MediaInformation<'a> {
-    fn parse(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8]) -> Result<MediaInformation<'a>, StfsError> {
-        cursor.set_position(0x3d9);
-
+    fn parse(
+        cursor: &mut Cursor<&'a [u8]>,
+        input: &'a [u8],
+    ) -> Result<MediaInformation<'a>, StfsError> {
         let series_id = input_byte_ref(cursor, input, 0x10);
         let season_id = input_byte_ref(cursor, input, 0x10);
         let season_number = cursor.read_u16::<BigEndian>()?;
