@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use num_enum::TryFromPrimitive;
 use std::io::{Cursor, Result as IOResult};
 use thiserror::Error;
+use serde::Serialize;
 
 fn input_byte_ref<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8], size: usize) -> &'a [u8] {
     let position: usize = cursor
@@ -63,7 +64,7 @@ pub enum StfsError {
     InvalidPackageType,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum PackageType {
     /// User container packages that are created by an Xbox 360 console and
     /// signed by the user's private key.
@@ -87,23 +88,23 @@ impl TryFrom<[u8; 4]> for PackageType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum StfsEntry {
     File(StfsFile),
     Folder(StfsFolder),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct StfsFile {
     name: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct StfsFolder {
     name: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum StfsPackageSex {
     Female,
     Male,
@@ -125,7 +126,7 @@ impl<'a> TryFrom<&XContentHeader<'a>> for StfsPackageSex {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct StfsPackage<'a> {
     header: XContentHeader<'a>,
     sex: StfsPackageSex,
@@ -409,7 +410,7 @@ fn xcontent_header_parser<'a>(
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct XContentHeader<'a> {
     package_type: PackageType,
     /// Only present in console-signed packages
@@ -453,11 +454,11 @@ pub struct XContentHeader<'a> {
     title_thumbnail_image_size: usize,
     title_image: &'a [u8],
     installer_type: Option<InstallerType>,
-    installer_meta: Option<InstallerMeta>,
+    installer_meta: Option<InstallerMeta<'a>>,
     content_metadata: Option<ContentMetadata<'a>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct AvatarAssetInformation<'a> {
     subcategory: AssetSubcategory,
     colorizable: u32,
@@ -487,7 +488,7 @@ impl<'a> AvatarAssetInformation<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct MediaInformation<'a> {
     series_id: &'a [u8],
     season_id: &'a [u8],
@@ -514,29 +515,29 @@ impl<'a> MediaInformation<'a> {
     }
 }
 
-#[derive(Debug)]
-struct InstallerProgressCache {
+#[derive(Debug, Serialize)]
+struct InstallerProgressCache<'a> {
     resume_state: OnlineContentResumeState,
     current_file_index: u32,
     current_file_offset: u64,
     bytes_processed: u64,
     last_modified: DateTime<Utc>,
-    cab_resume_data: [u8; 5584],
+    cab_resume_data: &'a [u8],
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct FullInstallerMeta {
     installer_base_version: Version,
     installer_version: Version,
 }
 
-#[derive(Debug)]
-enum InstallerMeta {
+#[derive(Debug, Serialize)]
+enum InstallerMeta<'a> {
     FullInstaller(FullInstallerMeta),
-    InstallerProgressCache(InstallerProgressCache),
+    InstallerProgressCache(InstallerProgressCache<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Certificate<'a> {
     pubkey_cert_size: u16,
     owner_console_id: [u8; 5],
@@ -550,7 +551,7 @@ struct Certificate<'a> {
     signature: &'a [u8],
 }
 
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u8)]
 enum ConsoleType {
     DevKit = 1,
@@ -558,13 +559,14 @@ enum ConsoleType {
 }
 
 bitflags! {
+    #[derive(Serialize)]
     struct ConsoleTypeFlags: u32 {
         const TESTKIT = 0x40000000;
         const RECOVERY_GENERATED = 0x80000000;
     }
 }
 
-#[derive(Debug, Clone, Copy, TryFromPrimitive)]
+#[derive(Debug, Serialize, Clone, Copy, TryFromPrimitive)]
 #[repr(u16)]
 enum LicenseType {
     Unused = 0x0000,
@@ -584,7 +586,7 @@ impl Default for LicenseType {
     }
 }
 
-#[derive(Default, Debug, Clone, Copy)]
+#[derive(Default, Debug, Serialize, Clone, Copy)]
 struct LicenseEntry {
     ty: LicenseType,
     data: u64,
@@ -592,13 +594,13 @@ struct LicenseEntry {
     flags: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum ContentMetadata<'a> {
     AvatarItem(AvatarAssetInformation<'a>),
     Video(MediaInformation<'a>),
 }
 
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
 enum ContentType {
     ArcadeGame = 0xD0000,
@@ -634,7 +636,7 @@ enum ContentType {
     XNA = 0xE0000,
 }
 
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
 enum InstallerType {
     None = 0,
@@ -645,7 +647,7 @@ enum InstallerType {
     TitleContentProgressCache = 0x50245443,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct Version {
     major: u16,
     minor: u16,
@@ -664,7 +666,7 @@ impl From<u32> for Version {
     }
 }
 
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
 enum OnlineContentResumeState {
     FileHeadersNotReady = 0x46494C48,
@@ -674,14 +676,14 @@ enum OnlineContentResumeState {
     NewFolderResumeAttemptUnknown = 0x666F6C3F,
     NewFolderResumeAttemptSpecific = 0x666F6C40,
 }
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum XContentFlags {
     MetadataIsPEC = 1,
     MetadataSkipRead = 2,
     MetadataDontFreeThumbnails = 4,
 }
 
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
 enum FileSystemType {
     STFS = 0,
@@ -689,13 +691,13 @@ enum FileSystemType {
     FATX,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum FileSystem<'a> {
     STFS(StfsVolumeDescriptor<'a>),
     SVOD(SvodVolumeDescriptor<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct StfsVolumeDescriptor<'a> {
     size: u8,
     reserved: u8,
@@ -726,7 +728,7 @@ impl<'a> StfsVolumeDescriptor<'a> {
     }
 }
 
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
 enum AssetSubcategory {
     CarryableCarryable = 0x44c,
@@ -817,7 +819,7 @@ enum AssetSubcategory {
     WristwearWatch = 0x321,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum BinaryAssetType {
     Component = 1,
     Texture = 2,
@@ -826,7 +828,7 @@ enum BinaryAssetType {
     ShapeOverridePost = 5,
 }
 
-#[derive(Debug, TryFromPrimitive)]
+#[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u8)]
 enum SkeletonVersion {
     Nxe = 1,
@@ -834,14 +836,14 @@ enum SkeletonVersion {
     NxeAndNatal,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 enum AssetGender {
     Male = 1,
     Female,
     Both,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct SvodVolumeDescriptor<'a> {
     size: u8,
     block_cache_element_count: u8,

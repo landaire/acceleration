@@ -1,6 +1,6 @@
 use std::{ffi::OsStr, fs::File, path::PathBuf};
 
-use acceleration::stfs::StfsPackage;
+use stfs::StfsPackage;
 use memmap::MmapOptions;
 use structopt::StructOpt;
 
