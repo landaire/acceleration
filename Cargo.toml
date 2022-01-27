@@ -11,7 +11,6 @@ path = "src/cli.rs"
 [dependencies]
 sha-1 = "0.10.0"
 rsa = "0.5.0"
-iced = { version = "0.3", features = ["image"] }
 memmap = "0.7"
 structopt = "0.3"
 anyhow = "1.0"
