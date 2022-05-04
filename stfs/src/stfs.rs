@@ -8,6 +8,8 @@ use std::io::{Cursor, Result as IOResult};
 use thiserror::Error;
 use serde::Serialize;
 
+const INVALID_STR: &'static str = "<INVALID>";
+
 fn input_byte_ref<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8], size: usize) -> &'a [u8] {
     let position: usize = cursor
         .position()
@@ -175,17 +177,15 @@ fn certificate_parser<'a>(
             .position(|b| *b == 0x0)
             .unwrap_or_else(|| owner_console_part_number.len())],
     )
-    .expect("console part number is invalid");
+    .unwrap_or(INVALID_STR);
 
     let owner_console_type = cursor.read_u32::<BigEndian>()?;
-    let console_type_flags = ConsoleTypeFlags::from_bits(owner_console_type & 0xFFFFFFFC)
-        .expect("console type flags are invalid");
-    let owner_console_type = ConsoleType::try_from((owner_console_type & 0x3) as u8)
-        .expect("owner console type is invalid");
+    let console_type_flags = ConsoleTypeFlags::from_bits(owner_console_type & 0xFFFFFFFC);
+    let owner_console_type = ConsoleType::try_from((owner_console_type & 0x3) as u8).ok();
 
     let date_generation = input_byte_ref(cursor, input, 0x8);
     let date_generation =
-        std::str::from_utf8(date_generation).expect("invalid date generation string");
+        std::str::from_utf8(date_generation).unwrap_or(INVALID_STR);
 
     let public_exponent = cursor.read_u32::<BigEndian>()?;
 
@@ -542,8 +542,8 @@ struct Certificate<'a> {
     pubkey_cert_size: u16,
     owner_console_id: [u8; 5],
     owner_console_part_number: &'a str,
-    owner_console_type: ConsoleType,
-    console_type_flags: ConsoleTypeFlags,
+    owner_console_type: Option<ConsoleType>,
+    console_type_flags: Option<ConsoleTypeFlags>,
     date_generation: &'a str,
     public_exponent: u32,
     public_modulus: &'a [u8],
