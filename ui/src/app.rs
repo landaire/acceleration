@@ -1,6 +1,7 @@
 use std::{fs::File, path::PathBuf};
 
-use egui::TextBuffer;
+use clipboard::{ClipboardContext, ClipboardProvider};
+use egui::{Label, Sense, TextBuffer};
 use egui_extras::RetainedImage;
 use log::{debug, info};
 use memmap::MmapOptions;
@@ -15,10 +16,6 @@ pub struct AccelerationApp {
     // Example stuff:
     label: String,
 
-    // this how you opt-out of serialization of a member
-    #[serde(skip)]
-    value: f32,
-
     active_stfs_file: Option<PathBuf>,
 
     #[serde(skip)]
@@ -29,6 +26,9 @@ pub struct AccelerationApp {
 
     #[serde(skip)]
     stfs_package_title_image: Option<RetainedImage>,
+
+    #[serde(skip)]
+    clipboard: ClipboardContext,
 }
 
 #[self_referencing]
@@ -45,11 +45,11 @@ impl<'package> Default for AccelerationApp {
         Self {
             // Example stuff:
             label: "Hello World!".to_owned(),
-            value: 2.7,
             active_stfs_file: None,
             stfs_package: None,
             stfs_package_display_image: None,
             stfs_package_title_image: None,
+            clipboard: ClipboardProvider::new().unwrap(),
         }
     }
 }
@@ -104,11 +104,11 @@ impl eframe::App for AccelerationApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let Self {
             label,
-            value,
             active_stfs_file,
             stfs_package,
             stfs_package_display_image,
             stfs_package_title_image,
+            clipboard,
         } = self;
 
         // Examples of how to create different panels and windows.
@@ -170,30 +170,59 @@ impl eframe::App for AccelerationApp {
                 if let Ok(parsed_package) = stfs_package_ref.borrow_parsed_stfs_package() {
                     ui.horizontal(|ui| {
                         ui.label("Name:");
-                        ui.label(parsed_package.header.display_name.as_str());
+                        if ui
+                            .add(
+                                Label::new(parsed_package.header.display_name.as_str())
+                                    .sense(Sense::click()),
+                            )
+                            .double_clicked()
+                        {
+                            let _ = clipboard
+                                .set_contents(parsed_package.header.display_name.to_owned());
+                        }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Description:");
-                        ui.label(parsed_package.header.display_description.as_str());
+                        if ui
+                            .add(
+                                Label::new(parsed_package.header.display_description.as_str())
+                                    .sense(Sense::click()),
+                            )
+                            .double_clicked()
+                        {
+                            let _ = clipboard
+                                .set_contents(parsed_package.header.display_description.to_owned());
+                        }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Title ID:");
-                        ui.label(format!("{:#X}", parsed_package.header.title_id));
+                        let label_str = format!("{:#X}", parsed_package.header.title_id);
+
+                        if ui
+                            .add(Label::new(&label_str).sense(Sense::click()))
+                            .double_clicked()
+                        {
+                            let _ = clipboard.set_contents(label_str);
+                        }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Profile ID:");
-                        ui.label(
-                            parsed_package
-                                .header
-                                .profile_id
-                                .iter()
-                                .fold(String::new(), |display_str, b| {
-                                    display_str + &format!("{:02x}", *b)
-                                }),
-                        );
+                        let profile_id = parsed_package
+                            .header
+                            .profile_id
+                            .iter()
+                            .fold(String::new(), |display_str, b| {
+                                display_str + &format!("{:02x}", *b)
+                            });
+                        if ui
+                            .add(Label::new(&profile_id).sense(Sense::click()))
+                            .double_clicked()
+                        {
+                            let _ = clipboard.set_contents(profile_id);
+                        }
                     });
 
                     ui.horizontal(|ui| {
@@ -205,12 +234,23 @@ impl eframe::App for AccelerationApp {
                             .fold(String::new(), |display_str, b| {
                                 display_str + &format!("{:02x}", *b)
                             });
-                        ui.label(console_id);
+                        if ui
+                            .add(Label::new(&console_id).sense(Sense::click()))
+                            .double_clicked()
+                        {
+                            let _ = clipboard.set_contents(console_id);
+                        }
                     });
 
                     ui.horizontal(|ui| {
                         ui.label("Content Type:");
-                        ui.label(format!("{:?}", parsed_package.header.content_type));
+                        let content_type = format!("{:?}", parsed_package.header.content_type);
+                        if ui
+                            .add(Label::new(&content_type).sense(Sense::click()))
+                            .double_clicked()
+                        {
+                            let _ = clipboard.set_contents(content_type);
+                        }
                     });
                 }
             }
