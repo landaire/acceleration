@@ -172,12 +172,47 @@ impl eframe::App for AccelerationApp {
                         ui.label("Name:");
                         ui.label(parsed_package.header.display_name.as_str());
                     });
-                }
-            }
 
-            ui.add(egui::Slider::new(value, 0.0..=10.0).text("value"));
-            if ui.button("Increment").clicked() {
-                *value += 1.0;
+                    ui.horizontal(|ui| {
+                        ui.label("Description:");
+                        ui.label(parsed_package.header.display_description.as_str());
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Title ID:");
+                        ui.label(format!("{:#X}", parsed_package.header.title_id));
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Profile ID:");
+                        ui.label(
+                            parsed_package
+                                .header
+                                .profile_id
+                                .iter()
+                                .fold(String::new(), |display_str, b| {
+                                    display_str + &format!("{:02x}", *b)
+                                }),
+                        );
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Console ID:");
+                        let console_id = parsed_package
+                            .header
+                            .console_id
+                            .iter()
+                            .fold(String::new(), |display_str, b| {
+                                display_str + &format!("{:02x}", *b)
+                            });
+                        ui.label(console_id);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label("Content Type:");
+                        ui.label(format!("{:?}", parsed_package.header.content_type));
+                    });
+                }
             }
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
