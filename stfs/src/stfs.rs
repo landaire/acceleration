@@ -4,9 +4,9 @@ use bitflags::bitflags;
 use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
 use num_enum::TryFromPrimitive;
+use serde::Serialize;
 use std::io::{Cursor, Result as IOResult};
 use thiserror::Error;
-use serde::Serialize;
 
 const INVALID_STR: &'static str = "<INVALID>";
 
@@ -107,7 +107,7 @@ pub struct StfsFolder {
 }
 
 #[derive(Debug, Serialize)]
-enum StfsPackageSex {
+pub enum StfsPackageSex {
     Female,
     Male,
 }
@@ -130,9 +130,9 @@ impl<'a> TryFrom<&XContentHeader<'a>> for StfsPackageSex {
 
 #[derive(Debug, Serialize)]
 pub struct StfsPackage<'a> {
-    header: XContentHeader<'a>,
-    sex: StfsPackageSex,
-    entries: Vec<StfsEntry>,
+    pub header: XContentHeader<'a>,
+    pub sex: StfsPackageSex,
+    pub entries: Vec<StfsEntry>,
 }
 
 impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
@@ -184,8 +184,7 @@ fn certificate_parser<'a>(
     let owner_console_type = ConsoleType::try_from((owner_console_type & 0x3) as u8).ok();
 
     let date_generation = input_byte_ref(cursor, input, 0x8);
-    let date_generation =
-        std::str::from_utf8(date_generation).unwrap_or(INVALID_STR);
+    let date_generation = std::str::from_utf8(date_generation).unwrap_or(INVALID_STR);
 
     let public_exponent = cursor.read_u32::<BigEndian>()?;
 
@@ -329,18 +328,25 @@ fn xcontent_header_parser<'a>(
     let mut installer_type = None;
     let mut installer_meta = None;
     if ((header_size + 0xFFF) & 0xFFFFF000) - 0x971A > 0x15F4 {
-        installer_type = Some(InstallerType::try_from(cursor.read_u32::<BigEndian>()?).expect("invalid InstallerType"));
+        installer_type = Some(
+            InstallerType::try_from(cursor.read_u32::<BigEndian>()?)
+                .expect("invalid InstallerType"),
+        );
         installer_meta = match *installer_type.as_ref().unwrap() {
             InstallerType::SystemUpdate | InstallerType::TitleUpdate => {
                 let installer_base_version = Version::from(cursor.read_u32::<BigEndian>()?);
-                let installer_version= Version::from(cursor.read_u32::<BigEndian>()?);
+                let installer_version = Version::from(cursor.read_u32::<BigEndian>()?);
                 Some(InstallerMeta::FullInstaller(FullInstallerMeta {
                     installer_base_version,
                     installer_version,
                 }))
             }
-            InstallerType::SystemUpdateProgressCache | InstallerType::TitleUpdateProgressCache | InstallerType::TitleContentProgressCache => {
-                let resume_state = OnlineContentResumeState::try_from(cursor.read_u32::<BigEndian>()?).expect("invalid resume state");
+            InstallerType::SystemUpdateProgressCache
+            | InstallerType::TitleUpdateProgressCache
+            | InstallerType::TitleContentProgressCache => {
+                let resume_state =
+                    OnlineContentResumeState::try_from(cursor.read_u32::<BigEndian>()?)
+                        .expect("invalid resume state");
                 let current_file_index = cursor.read_u32::<BigEndian>()?;
                 let current_file_offset = cursor.read_u64::<BigEndian>()?;
                 let bytes_processed = cursor.read_u64::<BigEndian>()?;
@@ -351,14 +357,16 @@ fn xcontent_header_parser<'a>(
                 // TODO: Fix
                 let last_modified = Utc::now();
 
-                Some(InstallerMeta::InstallerProgressCache(InstallerProgressCache {
-                    resume_state,
-                    current_file_index,
-                    current_file_offset,
-                    bytes_processed,
-                    last_modified,
-                    cab_resume_data: todo!("need to implement CAB resume data"),
-                }));
+                Some(InstallerMeta::InstallerProgressCache(
+                    InstallerProgressCache {
+                        resume_state,
+                        current_file_index,
+                        current_file_offset,
+                        bytes_processed,
+                        last_modified,
+                        cab_resume_data: todo!("need to implement CAB resume data"),
+                    },
+                ));
             }
             _ => {
                 // anything else is ok
@@ -412,54 +420,54 @@ fn xcontent_header_parser<'a>(
 
 #[derive(Debug, Serialize)]
 pub struct XContentHeader<'a> {
-    package_type: PackageType,
+    pub package_type: PackageType,
     /// Only present in console-signed packages
-    certificate: Option<Certificate<'a>>,
+    pub certificate: Option<Certificate<'a>>,
     /// Only present in strong-signed packages
-    package_signature: Option<&'a [u8]>,
+    pub package_signature: Option<&'a [u8]>,
 
-    license_data: [LicenseEntry; 0x10],
-    header_hash: &'a [u8],
-    header_size: u32,
-    content_type: ContentType,
-    metadata_version: u32,
-    content_size: u64,
-    media_id: u32,
-    version: u32,
-    base_version: u32,
-    title_id: u32,
-    platform: u8,
-    executable_type: u8,
-    disc_number: u8,
-    disc_in_set: u8,
-    savegame_id: u32,
-    console_id: [u8; 5],
-    profile_id: [u8; 8],
-    volume_descriptor: FileSystem<'a>,
-    filesystem_type: FileSystemType,
+    pub license_data: [LicenseEntry; 0x10],
+    pub header_hash: &'a [u8],
+    pub header_size: u32,
+    pub content_type: ContentType,
+    pub metadata_version: u32,
+    pub content_size: u64,
+    pub media_id: u32,
+    pub version: u32,
+    pub base_version: u32,
+    pub title_id: u32,
+    pub platform: u8,
+    pub executable_type: u8,
+    pub disc_number: u8,
+    pub disc_in_set: u8,
+    pub savegame_id: u32,
+    pub console_id: [u8; 5],
+    pub profile_id: [u8; 8],
+    pub volume_descriptor: FileSystem<'a>,
+    pub filesystem_type: FileSystemType,
     /// Only in PEC -- not sure what this represents. This always needs to be set to 1
-    enabled: bool,
+    pub enabled: bool,
 
     // Start metadata v1
-    data_file_count: u32,
-    data_file_combined_size: u64,
-    device_id: &'a [u8],
-    display_name: String,
-    display_description: String,
-    publisher_name: String,
-    title_name: String,
-    transfer_flags: u8,
-    thumbnail_image_size: usize,
-    thumbnail_image: &'a [u8],
-    title_thumbnail_image_size: usize,
-    title_image: &'a [u8],
-    installer_type: Option<InstallerType>,
-    installer_meta: Option<InstallerMeta<'a>>,
-    content_metadata: Option<ContentMetadata<'a>>,
+    pub data_file_count: u32,
+    pub data_file_combined_size: u64,
+    pub device_id: &'a [u8],
+    pub display_name: String,
+    pub display_description: String,
+    pub publisher_name: String,
+    pub title_name: String,
+    pub transfer_flags: u8,
+    pub thumbnail_image_size: usize,
+    pub thumbnail_image: &'a [u8],
+    pub title_thumbnail_image_size: usize,
+    pub title_image: &'a [u8],
+    pub installer_type: Option<InstallerType>,
+    pub installer_meta: Option<InstallerMeta<'a>>,
+    pub content_metadata: Option<ContentMetadata<'a>>,
 }
 
 #[derive(Debug, Serialize)]
-struct AvatarAssetInformation<'a> {
+pub struct AvatarAssetInformation<'a> {
     subcategory: AssetSubcategory,
     colorizable: u32,
     guid: &'a [u8],
@@ -489,7 +497,7 @@ impl<'a> AvatarAssetInformation<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct MediaInformation<'a> {
+pub struct MediaInformation<'a> {
     series_id: &'a [u8],
     season_id: &'a [u8],
     season_number: u16,
@@ -516,7 +524,7 @@ impl<'a> MediaInformation<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct InstallerProgressCache<'a> {
+pub struct InstallerProgressCache<'a> {
     resume_state: OnlineContentResumeState,
     current_file_index: u32,
     current_file_offset: u64,
@@ -526,19 +534,19 @@ struct InstallerProgressCache<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct FullInstallerMeta {
+pub struct FullInstallerMeta {
     installer_base_version: Version,
     installer_version: Version,
 }
 
 #[derive(Debug, Serialize)]
-enum InstallerMeta<'a> {
+pub enum InstallerMeta<'a> {
     FullInstaller(FullInstallerMeta),
     InstallerProgressCache(InstallerProgressCache<'a>),
 }
 
 #[derive(Debug, Serialize)]
-struct Certificate<'a> {
+pub struct Certificate<'a> {
     pubkey_cert_size: u16,
     owner_console_id: [u8; 5],
     owner_console_part_number: &'a str,
@@ -587,7 +595,7 @@ impl Default for LicenseType {
 }
 
 #[derive(Default, Debug, Serialize, Clone, Copy)]
-struct LicenseEntry {
+pub struct LicenseEntry {
     ty: LicenseType,
     data: u64,
     bits: u32,
@@ -595,14 +603,14 @@ struct LicenseEntry {
 }
 
 #[derive(Debug, Serialize)]
-enum ContentMetadata<'a> {
+pub enum ContentMetadata<'a> {
     AvatarItem(AvatarAssetInformation<'a>),
     Video(MediaInformation<'a>),
 }
 
 #[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
-enum ContentType {
+pub enum ContentType {
     ArcadeGame = 0xD0000,
     AvatarAssetPack = 0x8000,
     AvatarItem = 0x9000,
@@ -638,7 +646,7 @@ enum ContentType {
 
 #[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
-enum InstallerType {
+pub enum InstallerType {
     None = 0,
     SystemUpdate = 0x53555044,
     TitleUpdate = 0x54555044,
@@ -648,7 +656,7 @@ enum InstallerType {
 }
 
 #[derive(Debug, Serialize)]
-struct Version {
+pub struct Version {
     major: u16,
     minor: u16,
     build: u16,
@@ -677,7 +685,7 @@ enum OnlineContentResumeState {
     NewFolderResumeAttemptSpecific = 0x666F6C40,
 }
 #[derive(Debug, Serialize)]
-enum XContentFlags {
+pub enum XContentFlags {
     MetadataIsPEC = 1,
     MetadataSkipRead = 2,
     MetadataDontFreeThumbnails = 4,
@@ -685,20 +693,20 @@ enum XContentFlags {
 
 #[derive(Debug, Serialize, TryFromPrimitive)]
 #[repr(u32)]
-enum FileSystemType {
+pub enum FileSystemType {
     STFS = 0,
     SVOD,
     FATX,
 }
 
 #[derive(Debug, Serialize)]
-enum FileSystem<'a> {
+pub enum FileSystem<'a> {
     STFS(StfsVolumeDescriptor<'a>),
     SVOD(SvodVolumeDescriptor<'a>),
 }
 
 #[derive(Debug, Serialize)]
-struct StfsVolumeDescriptor<'a> {
+pub struct StfsVolumeDescriptor<'a> {
     size: u8,
     reserved: u8,
     block_separation: u8,
@@ -844,7 +852,7 @@ enum AssetGender {
 }
 
 #[derive(Debug, Serialize)]
-struct SvodVolumeDescriptor<'a> {
+pub struct SvodVolumeDescriptor<'a> {
     size: u8,
     block_cache_element_count: u8,
     worker_thread_processor: u8,
