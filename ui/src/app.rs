@@ -111,6 +111,10 @@ impl eframe::App for AccelerationApp {
             clipboard,
         } = self;
 
+        if let Some(file_path) = active_stfs_file.as_ref() {
+            frame.set_window_title(&format!("acceleration - {:?}", file_path));
+        }
+
         // Examples of how to create different panels and windows.
         // Pick whichever suits you.
         // Tip: a good default choice is to just keep the `CentralPanel`.
