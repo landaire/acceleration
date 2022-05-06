@@ -71,8 +71,6 @@ impl AccelerationApp {
 }
 
 fn open_stfs_package(stfs_package: &mut Option<StfsPackageReference>) -> Result<PathBuf, ()> {
-    info!("Showing dialog");
-
     if let Some(file) = FileDialog::new().pick_file() {
         if let Ok(file_data) = std::fs::read(&file) {
             let package_reference = StfsPackageReferenceBuilder {
@@ -128,14 +126,11 @@ impl eframe::App for AccelerationApp {
                         if let Ok(file_path) = open_stfs_package(stfs_package) {
                             *active_stfs_file = Some(file_path);
 
-                            info!("set the active STFS file");
-                            info!("{}", stfs_package.is_some());
                             if let Some(parsed_package) = stfs_package
                                 .as_ref()
                                 .map(|package| package.borrow_parsed_stfs_package().as_ref().ok())
                                 .flatten()
                             {
-                                info!("Parsing images");
                                 *stfs_package_display_image = RetainedImage::from_image_bytes(
                                     "display_image",
                                     parsed_package.header.thumbnail_image,
@@ -191,6 +186,7 @@ impl eframe::App for AccelerationApp {
                         if ui
                             .add(
                                 Label::new(parsed_package.header.display_description.as_str())
+                                    .wrap(true)
                                     .sense(Sense::click()),
                             )
                             .double_clicked()

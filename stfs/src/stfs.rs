@@ -92,23 +92,16 @@ impl TryFrom<[u8; 4]> for PackageType {
 
 #[derive(Debug, Serialize)]
 pub enum StfsEntry {
-    File(StfsFile),
-    Folder(StfsFolder),
+    File(StfsFileEntry),
+    Folder {
+        entry: StfsFileEntry,
+        files: Vec<StfsFileEntry>,
+    },
 }
 
-#[derive(Debug, Serialize)]
-pub struct StfsFile {
-    name: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct StfsFolder {
-    name: String,
-}
-
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Copy, Clone)]
 pub enum StfsPackageSex {
-    Female,
+    Female = 0,
     Male,
 }
 
@@ -127,11 +120,155 @@ impl<'a> TryFrom<&XContentHeader<'a>> for StfsPackageSex {
         }
     }
 }
+#[derive(Default, Debug, Serialize)]
+struct HashEntry {
+    block_hash: [u8; 0x14],
+    status: u8,
+    next_block: u32,
+}
+
+#[derive(Default, Debug, Serialize)]
+pub struct HashTableMeta {
+    pub block_step: [usize; 2],
+    pub tables_per_level: [usize; 3],
+    pub top_table: HashTable,
+    pub first_table_address: usize,
+}
+
+impl HashTableMeta {
+    pub fn parse(data: &[u8], sex: StfsPackageSex, header: &XContentHeader) -> Self {
+        let mut meta = HashTableMeta::default();
+
+        meta.block_step = match sex {
+            StfsPackageSex::Female => [0xAB, 0x718F],
+            StfsPackageSex::Male => [0xAC, 0x723A],
+        };
+
+        // Address of the first hash table in the package comes right after the header
+        meta.first_table_address = ((header.header_size as usize) + 0x0FFF) & 0xFFFF_F000;
+
+        let stfs_vol = header.volume_descriptor.stfs_ref();
+
+        let allocated_block_count = stfs_vol.allocated_block_count;
+        meta.tables_per_level[0] = ((allocated_block_count as usize) / 0xAA)
+            + if (allocated_block_count as usize) % 0xAA != 0 {
+                1
+            } else {
+                0
+            };
+
+        meta.tables_per_level[1] = (meta.tables_per_level[1] / 0xAA)
+            + if meta.tables_per_level[1] % 0xAA != 0 && allocated_block_count > 0xAA {
+                1
+            } else {
+                0
+            };
+
+        meta.tables_per_level[2] = (meta.tables_per_level[2] / 0xAA)
+            + if meta.tables_per_level[2] % 0xAA != 0 && allocated_block_count > 0x70E4 {
+                1
+            } else {
+                0
+            };
+
+        meta.top_table.level = header.calculate_top_level();
+        meta.top_table.true_block_number =
+            meta.compute_backing_hash_block_number_for_level(0, meta.top_table.level, sex);
+
+        let base_address = (meta.top_table.true_block_number << 0xC) + meta.first_table_address;
+        meta.top_table.address_in_file =
+            base_address + (((stfs_vol.block_separation as usize) & 2) << 0xB);
+
+        const DATA_BLOCKS_PER_HASH_TREE_LEVEL: [usize; 3] = [1, 0xAA, 0x70E4];
+
+        meta.top_table.entry_count = (allocated_block_count as usize)
+            / DATA_BLOCKS_PER_HASH_TREE_LEVEL[meta.top_table.level as usize];
+
+        if (allocated_block_count > 0x70E4 && allocated_block_count % 0x70E4 != 0)
+            || (allocated_block_count > 0xAA && allocated_block_count % 0xAA != 0)
+        {
+            meta.top_table.entry_count += 1;
+        }
+
+        meta.top_table.entries.reserve(meta.top_table.entry_count);
+
+        let mut reader = Cursor::new(data);
+        reader.set_position(meta.top_table.address_in_file as u64);
+        for _ in 0..meta.top_table.entry_count {
+            let mut entry = HashEntry::default();
+            reader
+                .read_exact(&mut entry.block_hash)
+                .expect("failed to read hash table entry hash");
+            entry.status = reader
+                .read_u8()
+                .expect("failed to read hash table entry status");
+            entry.next_block = reader
+                .read_u24::<BigEndian>()
+                .expect("failed to read hash table entry next_block")
+                as u32;
+
+            meta.top_table.entries.push(entry);
+        }
+
+        meta
+    }
+
+    pub fn compute_backing_hash_block_number_for_level(
+        &self,
+        block: usize,
+        level: HashTableLevel,
+        sex: StfsPackageSex,
+    ) -> usize {
+        match level {
+            HashTableLevel::First => self.compute_first_level_backing_hash_block_number(block, sex),
+            HashTableLevel::Second => {
+                self.compute_second_level_backing_hash_block_number(block, sex)
+            }
+            HashTableLevel::Third => self.compute_third_level_backing_hash_block_number(),
+        }
+    }
+
+    pub fn compute_first_level_backing_hash_block_number(
+        &self,
+        block: usize,
+        sex: StfsPackageSex,
+    ) -> usize {
+        if block < 0xAA {
+            return 0;
+        }
+
+        let mut block_number = (block / 0xAA) * self.block_step[0];
+        block_number += ((block / 0x70E4) + 1) << (sex as u8);
+
+        if block / 0x70E4 == 0 {
+            block_number
+        } else {
+            block_number + (1 << (sex as u8))
+        }
+    }
+
+    pub fn compute_second_level_backing_hash_block_number(
+        &self,
+        block: usize,
+        sex: StfsPackageSex,
+    ) -> usize {
+        if block < 0x70E4 {
+            self.block_step[0]
+        } else {
+            (1 << (sex as u8)) + (block / 0x70E4) * self.block_step[1]
+        }
+    }
+
+    pub fn compute_third_level_backing_hash_block_number(&self) -> usize {
+        self.block_step[1]
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct StfsPackage<'a> {
     pub header: XContentHeader<'a>,
     pub sex: StfsPackageSex,
+    pub hash_table_meta: HashTableMeta,
     pub entries: Vec<StfsEntry>,
 }
 
@@ -143,19 +280,61 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
         let xcontent_header = xcontent_header_parser(&mut cursor, input)?;
         // TODO: Don't unwrap
         let package_sex = StfsPackageSex::try_from(&xcontent_header).unwrap();
+        let hash_table_meta = HashTableMeta::parse(input, package_sex, &xcontent_header);
 
-        Ok(StfsPackage {
+        let package = StfsPackage {
             header: xcontent_header,
             sex: package_sex,
+            hash_table_meta,
             entries: Vec::new(),
-        })
+        };
+
+        package.read_files(input);
+
+        Ok(package)
     }
 }
 
-pub struct HashTable {
-    level: HashTableLevel,
+impl<'a> StfsPackage<'a> {
+    fn read_files(&self, input: &[u8]) {}
 }
 
+#[derive(Debug, Serialize)]
+pub struct StfsFileEntry {
+    index: usize,
+    name: String,
+    flags: u8,
+    blocks_for_file: usize,
+    starting_block_num: usize,
+    path_indicator: u16,
+    file_size: usize,
+    created_time_stamp: u32,
+    access_time_stamp: u32,
+    file_entry_address: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HashTable {
+    level: HashTableLevel,
+    true_block_number: usize,
+    entry_count: usize,
+    address_in_file: usize,
+    entries: Vec<HashEntry>,
+}
+
+impl Default for HashTable {
+    fn default() -> Self {
+        Self {
+            level: HashTableLevel::First,
+            true_block_number: Default::default(),
+            entry_count: Default::default(),
+            entries: Default::default(),
+            address_in_file: Default::default(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Copy, Clone)]
 pub enum HashTableLevel {
     First,
     Second,
@@ -175,7 +354,7 @@ fn certificate_parser<'a>(
         &owner_console_part_number[..owner_console_part_number
             .iter()
             .position(|b| *b == 0x0)
-            .unwrap_or_else(|| owner_console_part_number.len())],
+            .unwrap_or(owner_console_part_number.len())],
     )
     .unwrap_or(INVALID_STR);
 
@@ -304,7 +483,7 @@ fn xcontent_header_parser<'a>(
 
     let display_name = read_utf16_cstr(cursor, input);
 
-    cursor.set_position(0x311);
+    cursor.set_position(0xD11);
     let display_description = read_utf16_cstr(cursor, input);
 
     cursor.set_position(0x1611);
@@ -379,7 +558,7 @@ fn xcontent_header_parser<'a>(
     Ok(XContentHeader {
         package_type,
         certificate,
-        package_signature: package_signature,
+        package_signature,
         license_data,
         header_hash,
         header_size,
@@ -464,6 +643,24 @@ pub struct XContentHeader<'a> {
     pub installer_type: Option<InstallerType>,
     pub installer_meta: Option<InstallerMeta<'a>>,
     pub content_metadata: Option<ContentMetadata<'a>>,
+}
+
+impl<'a> XContentHeader<'a> {
+    pub fn calculate_top_level(&self) -> HashTableLevel {
+        let stfs_vol = self.volume_descriptor.stfs_ref();
+        if stfs_vol.allocated_block_count <= 0xAA {
+            HashTableLevel::First
+        } else if stfs_vol.allocated_block_count <= 0x70E4 {
+            HashTableLevel::Second
+        } else if stfs_vol.allocated_block_count <= 0x4AF768 {
+            HashTableLevel::Third
+        } else {
+            panic!(
+                "invalid number of allocated blocks: {:#x}",
+                stfs_vol.allocated_block_count
+            );
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -705,6 +902,24 @@ pub enum FileSystem<'a> {
     SVOD(SvodVolumeDescriptor<'a>),
 }
 
+impl<'a> FileSystem<'a> {
+    pub fn stfs_ref(&self) -> &StfsVolumeDescriptor<'a> {
+        if let Self::STFS(volume_descriptor) = self {
+            volume_descriptor
+        } else {
+            panic!("FileSystem is not an StfsVolumeDescriptor")
+        }
+    }
+
+    pub fn svod_ref(&self) -> &SvodVolumeDescriptor<'a> {
+        if let Self::SVOD(volume_descriptor) = self {
+            volume_descriptor
+        } else {
+            panic!("FileSystem is not an SvodVolumeDescriptor")
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct StfsVolumeDescriptor<'a> {
     size: u8,
@@ -727,8 +942,8 @@ impl<'a> StfsVolumeDescriptor<'a> {
             size: cursor.read_u8()?,
             reserved: cursor.read_u8()?,
             block_separation: cursor.read_u8()?,
-            file_table_block_count: cursor.read_u16::<BigEndian>()?,
-            file_table_block_num: cursor.read_u32::<BigEndian>()?,
+            file_table_block_count: cursor.read_u16::<LittleEndian>()?,
+            file_table_block_num: cursor.read_u24::<LittleEndian>()?,
             top_hash_table_hash: input_byte_ref(cursor, input, 0x14),
             allocated_block_count: cursor.read_u32::<BigEndian>()?,
             unallocated_block_count: cursor.read_u32::<BigEndian>()?,
