@@ -121,22 +121,22 @@ impl<'a> TryFrom<&XContentHeader<'a>> for StfsPackageSex {
     }
 }
 #[derive(Default, Debug, Serialize)]
-struct HashEntry {
-    block_hash: [u8; 0x14],
+struct HashEntry<'a> {
+    block_hash: &'a [u8],
     status: u8,
     next_block: u32,
 }
 
 #[derive(Default, Debug, Serialize)]
-pub struct HashTableMeta {
+pub struct HashTableMeta<'a> {
     pub block_step: [usize; 2],
     pub tables_per_level: [usize; 3],
-    pub top_table: HashTable,
+    pub top_table: HashTable<'a>,
     pub first_table_address: usize,
 }
 
-impl HashTableMeta {
-    pub fn parse(data: &[u8], sex: StfsPackageSex, header: &XContentHeader) -> Self {
+impl<'a> HashTableMeta<'a> {
+    pub fn parse(data: &'a [u8], sex: StfsPackageSex, header: &XContentHeader) -> Self {
         let mut meta = HashTableMeta::default();
 
         meta.block_step = match sex {
@@ -195,17 +195,16 @@ impl HashTableMeta {
         let mut reader = Cursor::new(data);
         reader.set_position(meta.top_table.address_in_file as u64);
         for _ in 0..meta.top_table.entry_count {
-            let mut entry = HashEntry::default();
-            reader
-                .read_exact(&mut entry.block_hash)
-                .expect("failed to read hash table entry hash");
-            entry.status = reader
-                .read_u8()
-                .expect("failed to read hash table entry status");
-            entry.next_block = reader
-                .read_u24::<BigEndian>()
-                .expect("failed to read hash table entry next_block")
-                as u32;
+            let mut entry = HashEntry {
+                block_hash: input_byte_ref(&mut reader, data, 0x14),
+                status: reader
+                    .read_u8()
+                    .expect("failed to read hash table entry status"),
+                next_block: reader
+                    .read_u24::<BigEndian>()
+                    .expect("failed to read hash table entry next_block")
+                    as u32,
+            };
 
             meta.top_table.entries.push(entry);
         }
@@ -268,7 +267,7 @@ impl HashTableMeta {
 pub struct StfsPackage<'a> {
     pub header: XContentHeader<'a>,
     pub sex: StfsPackageSex,
-    pub hash_table_meta: HashTableMeta,
+    pub hash_table_meta: HashTableMeta<'a>,
     pub entries: Vec<StfsEntry>,
 }
 
@@ -314,15 +313,15 @@ pub struct StfsFileEntry {
 }
 
 #[derive(Debug, Serialize)]
-pub struct HashTable {
+pub struct HashTable<'a> {
     level: HashTableLevel,
     true_block_number: usize,
     entry_count: usize,
     address_in_file: usize,
-    entries: Vec<HashEntry>,
+    entries: Vec<HashEntry<'a>>,
 }
 
-impl Default for HashTable {
+impl<'a> Default for HashTable<'a> {
     fn default() -> Self {
         Self {
             level: HashTableLevel::First,
