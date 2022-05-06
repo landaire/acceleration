@@ -105,6 +105,17 @@ pub enum StfsPackageSex {
     Male,
 }
 
+impl StfsPackageSex {
+    /// The "block step" depends on the package's "sex". This basically determines
+    /// which hash tables are used.
+    const fn block_step(&self) -> [usize; 2] {
+        match self {
+            StfsPackageSex::Female => [0xAB, 0x718F],
+            StfsPackageSex::Male => [0xAC, 0x723A],
+        }
+    }
+}
+
 impl<'a> TryFrom<&XContentHeader<'a>> for StfsPackageSex {
     type Error = StfsError;
 
@@ -136,42 +147,47 @@ pub struct HashTableMeta<'a> {
 }
 
 impl<'a> HashTableMeta<'a> {
-    pub fn parse(data: &'a [u8], sex: StfsPackageSex, header: &XContentHeader) -> Self {
+    pub fn parse(
+        data: &'a [u8],
+        sex: StfsPackageSex,
+        header: &XContentHeader,
+    ) -> Result<Self, StfsError> {
         let mut meta = HashTableMeta::default();
 
-        meta.block_step = match sex {
-            StfsPackageSex::Female => [0xAB, 0x718F],
-            StfsPackageSex::Male => [0xAC, 0x723A],
-        };
+        meta.block_step = sex.block_step();
 
         // Address of the first hash table in the package comes right after the header
         meta.first_table_address = ((header.header_size as usize) + 0x0FFF) & 0xFFFF_F000;
 
         let stfs_vol = header.volume_descriptor.stfs_ref();
 
-        let allocated_block_count = stfs_vol.allocated_block_count;
-        meta.tables_per_level[0] = ((allocated_block_count as usize) / 0xAA)
-            + if (allocated_block_count as usize) % 0xAA != 0 {
+        let allocated_block_count = stfs_vol.allocated_block_count as usize;
+        meta.tables_per_level[0] = ((allocated_block_count as usize) / HASHES_PER_HASH_TABLE)
+            + if (allocated_block_count as usize) % HASHES_PER_HASH_TABLE != 0 {
                 1
             } else {
                 0
             };
 
-        meta.tables_per_level[1] = (meta.tables_per_level[1] / 0xAA)
-            + if meta.tables_per_level[1] % 0xAA != 0 && allocated_block_count > 0xAA {
+        meta.tables_per_level[1] = (meta.tables_per_level[1] / HASHES_PER_HASH_TABLE)
+            + if meta.tables_per_level[1] % HASHES_PER_HASH_TABLE != 0
+                && allocated_block_count > HASHES_PER_HASH_TABLE
+            {
                 1
             } else {
                 0
             };
 
-        meta.tables_per_level[2] = (meta.tables_per_level[2] / 0xAA)
-            + if meta.tables_per_level[2] % 0xAA != 0 && allocated_block_count > 0x70E4 {
+        meta.tables_per_level[2] = (meta.tables_per_level[2] / HASHES_PER_HASH_TABLE)
+            + if meta.tables_per_level[2] % HASHES_PER_HASH_TABLE != 0
+                && allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]
+            {
                 1
             } else {
                 0
             };
 
-        meta.top_table.level = header.calculate_top_level();
+        meta.top_table.level = header.root_hash_table_level()?;
         meta.top_table.true_block_number =
             meta.compute_backing_hash_block_number_for_level(0, meta.top_table.level, sex);
 
@@ -179,13 +195,11 @@ impl<'a> HashTableMeta<'a> {
         meta.top_table.address_in_file =
             base_address + (((stfs_vol.block_separation as usize) & 2) << 0xB);
 
-        const DATA_BLOCKS_PER_HASH_TREE_LEVEL: [usize; 3] = [1, 0xAA, 0x70E4];
-
         meta.top_table.entry_count = (allocated_block_count as usize)
             / DATA_BLOCKS_PER_HASH_TREE_LEVEL[meta.top_table.level as usize];
 
-        if (allocated_block_count > 0x70E4 && allocated_block_count % 0x70E4 != 0)
-            || (allocated_block_count > 0xAA && allocated_block_count % 0xAA != 0)
+        if (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] && allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] != 0)
+            || (allocated_block_count > HASHES_PER_HASH_TABLE && allocated_block_count % HASHES_PER_HASH_TABLE != 0)
         {
             meta.top_table.entry_count += 1;
         }
@@ -209,7 +223,7 @@ impl<'a> HashTableMeta<'a> {
             meta.top_table.entries.push(entry);
         }
 
-        meta
+        Ok(meta)
     }
 
     pub fn compute_backing_hash_block_number_for_level(
@@ -232,14 +246,14 @@ impl<'a> HashTableMeta<'a> {
         block: usize,
         sex: StfsPackageSex,
     ) -> usize {
-        if block < 0xAA {
+        if block < HASHES_PER_HASH_TABLE {
             return 0;
         }
 
-        let mut block_number = (block / 0xAA) * self.block_step[0];
-        block_number += ((block / 0x70E4) + 1) << (sex as u8);
+        let mut block_number = (block / HASHES_PER_HASH_TABLE) * self.block_step[0];
+        block_number += ((block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) + 1) << (sex as u8);
 
-        if block / 0x70E4 == 0 {
+        if block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] == 0 {
             block_number
         } else {
             block_number + (1 << (sex as u8))
@@ -251,10 +265,10 @@ impl<'a> HashTableMeta<'a> {
         block: usize,
         sex: StfsPackageSex,
     ) -> usize {
-        if block < 0x70E4 {
+        if block < DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] {
             self.block_step[0]
         } else {
-            (1 << (sex as u8)) + (block / 0x70E4) * self.block_step[1]
+            (1 << (sex as u8)) + (block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) * self.block_step[1]
         }
     }
 
@@ -262,6 +276,18 @@ impl<'a> HashTableMeta<'a> {
         self.block_step[1]
     }
 }
+
+const HASHES_PER_HASH_TABLE: usize = 0xAA;
+const HASHES_PER_HASH_TABLE_LEVEL: [usize; 3] = [
+    HASHES_PER_HASH_TABLE,
+    HASHES_PER_HASH_TABLE * HASHES_PER_HASH_TABLE,
+    HASHES_PER_HASH_TABLE * HASHES_PER_HASH_TABLE * HASHES_PER_HASH_TABLE,
+];
+const DATA_BLOCKS_PER_HASH_TREE_LEVEL: [usize; 3] = [
+    1,
+    HASHES_PER_HASH_TABLE,
+    HASHES_PER_HASH_TABLE * HASHES_PER_HASH_TABLE,
+];
 
 #[derive(Debug, Serialize)]
 pub struct StfsPackage<'a> {
@@ -279,9 +305,9 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
         let xcontent_header = xcontent_header_parser(&mut cursor, input)?;
         // TODO: Don't unwrap
         let package_sex = StfsPackageSex::try_from(&xcontent_header).unwrap();
-        let hash_table_meta = HashTableMeta::parse(input, package_sex, &xcontent_header);
+        let hash_table_meta = HashTableMeta::parse(input, package_sex, &xcontent_header)?;
 
-        let package = StfsPackage {
+        let mut package = StfsPackage {
             header: xcontent_header,
             sex: package_sex,
             hash_table_meta,
@@ -645,19 +671,27 @@ pub struct XContentHeader<'a> {
 }
 
 impl<'a> XContentHeader<'a> {
-    pub fn calculate_top_level(&self) -> HashTableLevel {
-        let stfs_vol = self.volume_descriptor.stfs_ref();
-        if stfs_vol.allocated_block_count <= 0xAA {
-            HashTableLevel::First
-        } else if stfs_vol.allocated_block_count <= 0x70E4 {
-            HashTableLevel::Second
-        } else if stfs_vol.allocated_block_count <= 0x4AF768 {
-            HashTableLevel::Third
+    /// Returns which hash table level the root hash is in
+    fn root_hash_table_level(&self) -> Result<HashTableLevel, StfsError> {
+        if let FileSystem::STFS(volume_descriptor) = &self.volume_descriptor {
+            let level = if volume_descriptor.allocated_block_count as usize <= HASHES_PER_HASH_TABLE
+            {
+                HashTableLevel::First
+            } else if volume_descriptor.allocated_block_count as usize
+                <= HASHES_PER_HASH_TABLE_LEVEL[1]
+            {
+                HashTableLevel::Second
+            } else if volume_descriptor.allocated_block_count as usize
+                <= HASHES_PER_HASH_TABLE_LEVEL[2]
+            {
+                HashTableLevel::Third
+            } else {
+                return Err(StfsError::InvalidHeader);
+            };
+
+            Ok(level)
         } else {
-            panic!(
-                "invalid number of allocated blocks: {:#x}",
-                stfs_vol.allocated_block_count
-            );
+            Err(StfsError::InvalidPackageType)
         }
     }
 }
