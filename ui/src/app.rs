@@ -11,7 +11,7 @@ use egui_extras::RetainedImage;
 use log::{debug, info};
 use ouroboros::self_referencing;
 use rfd::AsyncFileDialog;
-use stfs::StfsPackage;
+use stfs::{StfsPackage, StfsEntry};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -288,15 +288,31 @@ impl eframe::App for AccelerationApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
+            use egui_extras::{Size, TableBuilder};
 
-            ui.heading("eframe template");
-            ui.hyperlink("https://github.com/emilk/eframe_template");
-            ui.add(egui::github_link_file!(
-                "https://github.com/emilk/eframe_template/blob/master/",
-                "Source code."
-            ));
-            egui::warn_if_debug_build(ui);
+            TableBuilder::new(ui)
+                .striped(true)
+                .cell_layout(egui::Layout::left_to_right().with_cross_align(egui::Align::Center))
+                .column(Size::initial(60.0).at_least(40.0))
+                .resizable(true)
+                .header(20.0, |mut header| {
+                    header.col(|ui| {
+                        ui.heading("Name");
+                    });
+                })
+                .body(|mut body| {
+                    if let Some(stfs_package) = self.stfs_package.as_ref().map(|package| package.borrow_parsed_stfs_package().as_ref().ok()).flatten() {
+                        for file in &stfs_package.entries {
+                            body.row(18.0, |mut row| {
+                                row.col(|ui| {
+                                    if let StfsEntry::File(f) = file {
+                                        ui.label(f.name.as_str());
+                                    }
+                                });
+                            });
+                        }
+                    }
+                });
         });
 
         if false {

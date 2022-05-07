@@ -56,6 +56,37 @@ fn read_utf16_cstr<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8]) -> String
     String::from_utf16(utf16_str.as_slice()).expect("failed to convert data to utf16")
 }
 
+fn read_utf8_with_max_len<'a>(
+    cursor: &mut Cursor<&'a [u8]>,
+    input: &'a [u8],
+    len: usize,
+) -> String {
+    let position: usize = cursor
+        .position()
+        .try_into()
+        .expect("failed to convert position to usize");
+
+    let mut end_of_str_position = None;
+
+    for i in (0..input.len()).take(len) {
+        if input[position + i] == 0 {
+            // We found the null terminator
+            end_of_str_position = Some(position + i);
+            break;
+        }
+    }
+
+    let end_of_str_position = end_of_str_position.unwrap_or(position + len);
+
+    cursor.set_position(
+        (position + len)
+            .try_into()
+            .expect("failed to convert pos into usize"),
+    );
+    let byte_range = &input[position..end_of_str_position];
+    String::from_utf8(byte_range.to_owned()).expect("failed to convert data to utf8")
+}
+
 #[derive(Error, Debug)]
 pub enum StfsError {
     #[error("Invalid STFS package header")]
@@ -198,8 +229,10 @@ impl<'a> HashTableMeta<'a> {
         meta.top_table.entry_count = (allocated_block_count as usize)
             / DATA_BLOCKS_PER_HASH_TREE_LEVEL[meta.top_table.level as usize];
 
-        if (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] && allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] != 0)
-            || (allocated_block_count > HASHES_PER_HASH_TABLE && allocated_block_count % HASHES_PER_HASH_TABLE != 0)
+        if (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]
+            && allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] != 0)
+            || (allocated_block_count > HASHES_PER_HASH_TABLE
+                && allocated_block_count % HASHES_PER_HASH_TABLE != 0)
         {
             meta.top_table.entry_count += 1;
         }
@@ -321,21 +354,80 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
 }
 
 impl<'a> StfsPackage<'a> {
-    fn read_files(&self, input: &[u8]) {}
+    fn read_files(&mut self, input: &'a [u8]) {
+        let stfs_vol = self.header.volume_descriptor.stfs_ref();
+        let mut reader = Cursor::new(input);
+        for block_idx in 0..(stfs_vol.file_table_block_count as usize) {
+            let current_addr = self.block_to_addr(block_idx);
+            reader.set_position(current_addr);
+
+            for file_entry_idx in 0..0x40 {
+                let mut entry = StfsFileEntry::default();
+                entry.file_entry_address = current_addr + (file_entry_idx as u64 * 0x40);
+                entry.index = (block_idx * 0x40) + file_entry_idx;
+
+                entry.name = read_utf8_with_max_len(&mut reader, input, 0x28);
+                let name_len = reader.read_u8().unwrap_or_else(|_| {
+                    panic!("failed to read name_len at {:#x}", entry.file_entry_address)
+                });
+                if name_len & 0x3F == 0 {
+                    // Continue to the next entry
+                    reader.set_position(entry.file_entry_address + 0x40);
+                    continue;
+                }
+
+                if name_len == 0 {
+                    break;
+                }
+
+                reader.set_position(entry.file_entry_address + 0x40);
+                println!("{:#X?}", entry);
+                self.entries.push(StfsEntry::File(entry));
+            }
+        }
+    }
+
+    fn block_to_addr(&self, block: usize) -> u64 {
+        if block > 2usize.pow(24) - 1 {
+            panic!("invalid block: {:#x}", block);
+        }
+
+        (self.compute_data_block_num(block) << 0xC)
+            + self.hash_table_meta.first_table_address as u64
+    }
+
+    fn compute_data_block_num(&self, block: usize) -> u64 {
+        let addr = ((((block + HASHES_PER_HASH_TABLE) / HASHES_PER_HASH_TABLE)
+            << (self.sex as usize))
+            + block) as u64;
+        if block < HASHES_PER_HASH_TABLE {
+            addr
+        } else if block < DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] {
+            addr + (((addr + DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] as u64)
+                / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] as u64)
+                << self.sex as usize)
+        } else {
+            ((1 << self.sex as usize)
+                + ((addr as usize
+                    + ((block + DATA_BLOCKS_PER_HASH_TREE_LEVEL[2])
+                        / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]))
+                    << self.sex as usize)) as u64
+        }
+    }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Default, Debug, Serialize)]
 pub struct StfsFileEntry {
-    index: usize,
-    name: String,
-    flags: u8,
-    blocks_for_file: usize,
-    starting_block_num: usize,
-    path_indicator: u16,
-    file_size: usize,
-    created_time_stamp: u32,
-    access_time_stamp: u32,
-    file_entry_address: usize,
+    pub index: usize,
+    pub name: String,
+    pub flags: u8,
+    pub blocks_for_file: usize,
+    pub starting_block_num: usize,
+    pub path_indicator: u16,
+    pub file_size: usize,
+    pub created_time_stamp: u32,
+    pub access_time_stamp: u32,
+    pub file_entry_address: u64,
 }
 
 #[derive(Debug, Serialize)]
