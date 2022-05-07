@@ -1,21 +1,22 @@
-use std::{fs::File, path::PathBuf};
+use std::{
+    fs::File,
+    path::PathBuf,
+    pin::Pin,
+    sync::mpsc::{channel, Receiver, Sender},
+};
 
 use clipboard::{ClipboardContext, ClipboardProvider};
 use egui::{Label, Sense, TextBuffer};
 use egui_extras::RetainedImage;
 use log::{debug, info};
-use memmap::MmapOptions;
 use ouroboros::self_referencing;
-use rfd::FileDialog;
+use rfd::AsyncFileDialog;
 use stfs::StfsPackage;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct AccelerationApp {
-    // Example stuff:
-    label: String,
-
     active_stfs_file: Option<PathBuf>,
 
     #[serde(skip)]
@@ -29,6 +30,12 @@ pub struct AccelerationApp {
 
     #[serde(skip)]
     clipboard: ClipboardContext,
+
+    #[serde(skip)]
+    send: Sender<(PathBuf, StfsPackageReference)>,
+
+    #[serde(skip)]
+    recv: Receiver<(PathBuf, StfsPackageReference)>,
 }
 
 #[self_referencing]
@@ -42,14 +49,15 @@ struct StfsPackageReference {
 
 impl<'package> Default for AccelerationApp {
     fn default() -> Self {
+        let (send, recv) = channel();
         Self {
-            // Example stuff:
-            label: "Hello World!".to_owned(),
             active_stfs_file: None,
             stfs_package: None,
             stfs_package_display_image: None,
             stfs_package_title_image: None,
             clipboard: ClipboardProvider::new().unwrap(),
+            send,
+            recv,
         }
     }
 }
@@ -70,25 +78,29 @@ impl AccelerationApp {
     }
 }
 
-fn open_stfs_package(stfs_package: &mut Option<StfsPackageReference>) -> Result<PathBuf, ()> {
-    if let Some(file) = FileDialog::new().pick_file() {
-        if let Ok(file_data) = std::fs::read(&file) {
-            let package_reference = StfsPackageReferenceBuilder {
-                stfs_package_data: file_data,
-                parsed_stfs_package_builder: |package_data| {
-                    StfsPackage::try_from(package_data.as_slice())
-                },
-            }
-            .build();
+async fn open_stfs_package(sender: Sender<(PathBuf, StfsPackageReference)>) {
+    let task = AsyncFileDialog::new().pick_file();
+    if let Some(file) = task.await {
+        #[cfg(not(target_arch = "wasm32"))]
+        let file_path = file.path().to_owned();
+        #[cfg(target_arch = "wasm32")]
+        let file_path = PathBuf::from(file.file_name());
 
-            if package_reference.borrow_parsed_stfs_package().is_ok() {
-                *stfs_package = Some(package_reference);
-                return Ok(file);
-            }
+        let file_data = file.read().await;
+        let package_reference = StfsPackageReferenceBuilder {
+            stfs_package_data: file_data,
+            parsed_stfs_package_builder: |package_data| {
+                StfsPackage::try_from(package_data.as_slice())
+            },
+        }
+        .build();
+
+        if package_reference.borrow_parsed_stfs_package().is_ok() {
+            sender
+                .send((file_path, package_reference))
+                .expect("failed to send parsed STFS package to main thread");
         }
     }
-
-    Err(())
 }
 
 impl eframe::App for AccelerationApp {
@@ -101,13 +113,37 @@ impl eframe::App for AccelerationApp {
     /// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let Self {
-            label,
             active_stfs_file,
             stfs_package,
             stfs_package_display_image,
             stfs_package_title_image,
             clipboard,
+            send,
+            recv,
         } = self;
+
+        if let Ok((file_path, received_stfs_package)) = recv.try_recv() {
+            *active_stfs_file = Some(file_path);
+            if let Some(parsed_package) = received_stfs_package
+                .borrow_parsed_stfs_package()
+                .as_ref()
+                .ok()
+            {
+                *stfs_package_display_image = RetainedImage::from_image_bytes(
+                    "display_image",
+                    parsed_package.header.thumbnail_image,
+                )
+                .ok();
+
+                *stfs_package_display_image = RetainedImage::from_image_bytes(
+                    "display_image",
+                    parsed_package.header.title_image,
+                )
+                .ok();
+            }
+
+            *stfs_package = Some(received_stfs_package);
+        }
 
         if let Some(file_path) = active_stfs_file.as_ref() {
             frame.set_window_title(&format!("acceleration - {:?}", file_path));
@@ -123,27 +159,12 @@ impl eframe::App for AccelerationApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open").clicked() {
-                        if let Ok(file_path) = open_stfs_package(stfs_package) {
-                            *active_stfs_file = Some(file_path);
+                        let task = open_stfs_package(send.clone());
 
-                            if let Some(parsed_package) = stfs_package
-                                .as_ref()
-                                .map(|package| package.borrow_parsed_stfs_package().as_ref().ok())
-                                .flatten()
-                            {
-                                *stfs_package_display_image = RetainedImage::from_image_bytes(
-                                    "display_image",
-                                    parsed_package.header.thumbnail_image,
-                                )
-                                .ok();
-
-                                *stfs_package_display_image = RetainedImage::from_image_bytes(
-                                    "display_image",
-                                    parsed_package.header.title_image,
-                                )
-                                .ok();
-                            }
-                        }
+                        #[cfg(target_arch = "wasm32")]
+                        wasm_bindgen_futures::spawn_local(task);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        std::thread::spawn(move || futures::executor::block_on(task));
 
                         ui.close_menu();
                     }

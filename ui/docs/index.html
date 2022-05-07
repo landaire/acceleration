@@ -128,7 +128,7 @@
         // Here we tell bindgen the path to the wasm file so it can start
         // initialization and return to us a promise when it's done.
         console.debug("loading wasm…");
-        wasm_bindgen("./acceleration_ui_template_bg.wasm")
+        wasm_bindgen("./acceleration_ui_bg.wasm")
             .then(on_wasm_loaded)
             .catch(on_wasm_error);
 
