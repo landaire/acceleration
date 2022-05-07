@@ -354,11 +354,91 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
 }
 
 impl<'a> StfsPackage<'a> {
+    fn block_hash_entry(&self, block: usize, input: &'a [u8]) -> HashEntry {
+        let stfs_vol = self.header.volume_descriptor.stfs_ref();
+        let mut reader = Cursor::new(input);
+        if block > stfs_vol.allocated_block_count as usize {
+            panic!(
+                "Reference to illegal block number: {:#x} ({:#x} allocated)",
+                block, stfs_vol.allocated_block_count
+            );
+        }
+
+        reader.set_position(self.block_hash_address(block, input));
+        HashEntry {
+            block_hash: input_byte_ref(&mut reader, input, 0x14),
+            status: reader
+                .read_u8()
+                .expect("failed to read hash table entry status"),
+            next_block: reader
+                .read_u24::<BigEndian>()
+                .expect("failed to read hash table entry next_block")
+                as u32,
+        }
+    }
+
+    fn block_hash_address(&self, block: usize, input: &'a [u8]) -> u64 {
+        let stfs_vol = self.header.volume_descriptor.stfs_ref();
+        if block > stfs_vol.allocated_block_count as usize {
+            panic!(
+                "Reference to illegal block number: {:#x} ({:#x} allocated)",
+                block, stfs_vol.allocated_block_count
+            );
+        }
+
+        let mut hash_addr = (self
+            .hash_table_meta
+            .compute_first_level_backing_hash_block_number(block, self.sex)
+            << 0xC)
+            + self.hash_table_meta.first_table_address;
+        // 0x18 here is the size of the HashEntry structure
+        hash_addr += (block % HASHES_PER_HASH_TABLE) * 0x18;
+        match self.hash_table_meta.top_table.level {
+            HashTableLevel::First => {
+                hash_addr as u64 + (((stfs_vol.block_separation as u64) & 2) << 0xB)
+            }
+            HashTableLevel::Second => {
+                hash_addr as u64
+                    + ((self.hash_table_meta.top_table.entries
+                        [block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]]
+                        .status as u64
+                        & 0x40)
+                        << 6)
+            }
+            HashTableLevel::Third => {
+                let mut reader = Cursor::new(input);
+                let first_level_offset = ((self.hash_table_meta.top_table.entries
+                    [block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]]
+                    .status as u64
+                    & 0x40)
+                    << 6);
+
+                let position = (self
+                    .hash_table_meta
+                    .compute_second_level_backing_hash_block_number(block, self.sex)
+                    << 0xC)
+                    + self.hash_table_meta.first_table_address
+                    + first_level_offset as usize
+                    + ((block % DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]) * 0x18);
+                reader.set_position(position as u64 + 0x14);
+
+                hash_addr as u64
+                    + ((reader
+                        .read_u8()
+                        .unwrap_or_else(|_| panic!("failed to read hash entry status byte at {:#x}", position)) as u64
+                        & 0x40)
+                        << 0x6)
+            }
+        }
+    }
+
     fn read_files(&mut self, input: &'a [u8]) {
         let stfs_vol = self.header.volume_descriptor.stfs_ref();
         let mut reader = Cursor::new(input);
+        let mut block = stfs_vol.file_table_block_num;
+
         for block_idx in 0..(stfs_vol.file_table_block_count as usize) {
-            let current_addr = self.block_to_addr(block_idx);
+            let current_addr = self.block_to_addr(block as usize);
             reader.set_position(current_addr);
 
             for file_entry_idx in 0..0x40 {
@@ -380,10 +460,35 @@ impl<'a> StfsPackage<'a> {
                     break;
                 }
 
-                reader.set_position(entry.file_entry_address + 0x40);
-                println!("{:#X?}", entry);
+                entry.blocks_for_file = reader
+                    .read_u24::<LittleEndian>()
+                    .expect("failed to read blocks_for_file")
+                    as usize;
+
+                reader.set_position(reader.position() + 3);
+
+                entry.starting_block_num = reader
+                    .read_u24::<LittleEndian>()
+                    .expect("failed to read blocks_for_file")
+                    as usize;
+                entry.path_indicator = reader
+                    .read_u16::<BigEndian>()
+                    .expect("failed to read blocks_for_file");
+                entry.file_size = reader
+                    .read_u32::<BigEndian>()
+                    .expect("failed to read file_size") as usize;
+                entry.created_time_stamp = reader
+                    .read_u32::<BigEndian>()
+                    .expect("failed to read created_time_stamp");
+                entry.access_time_stamp = reader
+                    .read_u32::<BigEndian>()
+                    .expect("failed to read access_time_stamp");
+                entry.flags = name_len >> 6;
+
                 self.entries.push(StfsEntry::File(entry));
             }
+
+            block = self.block_hash_entry(block as usize, input).next_block;
         }
     }
 

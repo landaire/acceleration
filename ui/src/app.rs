@@ -11,7 +11,7 @@ use egui_extras::RetainedImage;
 use log::{debug, info};
 use ouroboros::self_referencing;
 use rfd::AsyncFileDialog;
-use stfs::{StfsPackage, StfsEntry};
+use stfs::{StfsEntry, StfsPackage};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -301,7 +301,12 @@ impl eframe::App for AccelerationApp {
                     });
                 })
                 .body(|mut body| {
-                    if let Some(stfs_package) = self.stfs_package.as_ref().map(|package| package.borrow_parsed_stfs_package().as_ref().ok()).flatten() {
+                    if let Some(stfs_package) = self
+                        .stfs_package
+                        .as_ref()
+                        .map(|package| package.borrow_parsed_stfs_package().as_ref().ok())
+                        .flatten()
+                    {
                         for file in &stfs_package.entries {
                             body.row(18.0, |mut row| {
                                 row.col(|ui| {
