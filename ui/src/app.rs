@@ -10,8 +10,8 @@ use egui::{Label, Sense, TextBuffer};
 use egui_extras::RetainedImage;
 use log::{debug, info};
 use ouroboros::self_referencing;
-use rfd::AsyncFileDialog;
-use stfs::{StfsEntry, StfsPackage};
+use rfd::{AsyncFileDialog, FileDialog};
+use stfs::{StfsEntry, StfsFileEntry, StfsPackage};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -103,6 +103,17 @@ async fn open_stfs_package(sender: Sender<(PathBuf, StfsPackageReference)>) {
     }
 }
 
+fn save_file<'a>(file: StfsFileEntry, stfs_package: &StfsPackage<'a>) {
+    if let Some(path) = FileDialog::new()
+        .set_file_name(file.name.as_str())
+        .save_file()
+    {
+        stfs_package
+            .extract_file(path.as_ref(), file)
+            .expect("failed to save file");
+    }
+}
+
 impl eframe::App for AccelerationApp {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -122,7 +133,9 @@ impl eframe::App for AccelerationApp {
             recv,
         } = self;
 
+        // We open the file on another thread. Check if that thread has sent us any data yet.
         if let Ok((file_path, received_stfs_package)) = recv.try_recv() {
+            // We have a file!
             *active_stfs_file = Some(file_path);
             if let Some(parsed_package) = received_stfs_package
                 .borrow_parsed_stfs_package()
@@ -275,16 +288,6 @@ impl eframe::App for AccelerationApp {
                     });
                 }
             }
-
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.label("powered by ");
-                    ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-                    ui.label(" and ");
-                    ui.hyperlink_to("eframe", "https://github.com/emilk/egui/tree/master/eframe");
-                });
-            });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -294,10 +297,14 @@ impl eframe::App for AccelerationApp {
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right().with_cross_align(egui::Align::Center))
                 .column(Size::initial(60.0).at_least(40.0))
+                .column(Size::remainder().at_least(60.0))
                 .resizable(true)
                 .header(20.0, |mut header| {
                     header.col(|ui| {
                         ui.heading("Name");
+                    });
+                    header.col(|ui| {
+                        ui.heading("Path");
                     });
                 })
                 .body(|mut body| {
@@ -307,14 +314,44 @@ impl eframe::App for AccelerationApp {
                         .map(|package| package.borrow_parsed_stfs_package().as_ref().ok())
                         .flatten()
                     {
-                        for file in &stfs_package.entries {
-                            body.row(18.0, |mut row| {
-                                row.col(|ui| {
-                                    if let StfsEntry::File(f) = file {
-                                        ui.label(f.name.as_str());
-                                    }
-                                });
-                            });
+                        let mut path = PathBuf::new();
+                        let mut queue = Vec::with_capacity(256);
+                        if let StfsEntry::Folder { entry: _, files } = &*stfs_package.files.lock() {
+                            queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
+                        }
+
+                        let mut last_depth = 0;
+                        while let Some((depth, file)) = queue.pop() {
+                            if depth < last_depth {
+                                path.pop();
+                                last_depth -= 1;
+                            }
+
+                            let file = file.lock();
+                            if let StfsEntry::File(entry) = &*file {
+                                body.row(18.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label(entry.name.as_str());
+                                    })
+                                    .context_menu(|ui| {
+                                        if ui.button("Extract").clicked() {
+                                            save_file(entry.clone(), stfs_package);
+                                        }
+                                    });
+
+                                    row.col(|ui| {
+                                        ui.label(path.as_os_str().to_str().unwrap());
+                                    });
+                                })
+                            }
+
+                            if let StfsEntry::Folder { entry, files } = &*file {
+                                path.push(entry.name.as_str());
+                                queue.extend(
+                                    std::iter::repeat(depth + 1).zip(files.iter().cloned()),
+                                );
+                                last_depth += 1;
+                            }
                         }
                     }
                 });

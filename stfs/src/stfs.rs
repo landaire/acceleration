@@ -1,12 +1,20 @@
-use std::{ffi::CString, io::Read};
+use parking_lot::Mutex;
+use std::{
+    collections::HashMap,
+    io::{Read, Write},
+    path::Path,
+    sync::Arc,
+};
 
 use bitflags::bitflags;
-use byteorder::{BigEndian, ByteOrder, LittleEndian, ReadBytesExt};
+use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
 use num_enum::TryFromPrimitive;
 use serde::Serialize;
 use std::io::{Cursor, Result as IOResult};
 use thiserror::Error;
+
+use crate::sparse_reader::SparseReader;
 
 const INVALID_STR: &'static str = "<INVALID>";
 
@@ -126,8 +134,22 @@ pub enum StfsEntry {
     File(StfsFileEntry),
     Folder {
         entry: StfsFileEntry,
-        files: Vec<StfsFileEntry>,
+        files: Vec<Arc<Mutex<StfsEntry>>>,
     },
+}
+
+impl StfsEntry {
+    pub fn name(&self) -> &str {
+        match self {
+            StfsEntry::File(entry) | StfsEntry::Folder { entry, files: _ } => entry.name.as_str(),
+        }
+    }
+
+    pub fn entry(&self) -> &StfsFileEntry {
+        match self {
+            StfsEntry::File(entry) | StfsEntry::Folder { entry, files: _ } => entry,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Copy, Clone)]
@@ -324,10 +346,13 @@ const DATA_BLOCKS_PER_HASH_TREE_LEVEL: [usize; 3] = [
 
 #[derive(Debug, Serialize)]
 pub struct StfsPackage<'a> {
+    #[serde(skip)]
+    input: &'a [u8],
+
     pub header: XContentHeader<'a>,
     pub sex: StfsPackageSex,
     pub hash_table_meta: HashTableMeta<'a>,
-    pub entries: Vec<StfsEntry>,
+    pub files: Arc<Mutex<StfsEntry>>,
 }
 
 impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
@@ -341,10 +366,14 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
         let hash_table_meta = HashTableMeta::parse(input, package_sex, &xcontent_header)?;
 
         let mut package = StfsPackage {
+            input,
             header: xcontent_header,
             sex: package_sex,
             hash_table_meta,
-            entries: Vec::new(),
+            files: Arc::new(Mutex::new(StfsEntry::Folder {
+                entry: Default::default(),
+                files: Default::default(),
+            })),
         };
 
         package.read_files(input);
@@ -354,6 +383,105 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
 }
 
 impl<'a> StfsPackage<'a> {
+    pub fn extract_file(&self, path: &Path, entry: StfsFileEntry) -> std::io::Result<()> {
+        let mut output_file = std::fs::File::create(path)?;
+        if entry.file_size == 0 {
+            return Ok(());
+        }
+
+        let mut mappings = Vec::new();
+
+        let start_address = self.block_to_addr(entry.starting_block_num) as usize;
+
+        let mut next_address = start_address;
+        let mut data_remaining = entry.file_size;
+
+        // Check if we can read consecutive blocks
+        if entry.flags & 1 != 0 {
+            let blocks_until_hash_table = (self
+                .hash_table_meta
+                .compute_first_level_backing_hash_block_number(entry.starting_block_num, self.sex)
+                + self.hash_table_meta.block_step[0])
+                - ((start_address - self.hash_table_meta.first_table_address) >> 0xC);
+
+            if entry.block_count <= blocks_until_hash_table {
+                mappings.push(&self.input[start_address..entry.file_size]);
+            } else {
+                drop(start_address);
+
+                // The file is broken up by hash tables
+                while data_remaining > 0 {
+                    let read_len = std::cmp::min(HASHES_PER_HASH_TABLE * 0x1000, data_remaining);
+
+                    mappings.push(&self.input[next_address..(next_address + read_len)]);
+
+                    let data_read = mappings.last().unwrap().len();
+                    data_remaining -= data_read;
+                    next_address += data_read;
+                    next_address += self.hash_table_skip_for_address(next_address)
+                }
+            }
+        } else {
+            let mut data_remaining = entry.file_size;
+
+            // This file does not have all-consecutive blocks
+            let mut block_count = data_remaining / 0x1000;
+            if data_remaining % 0x1000 != 0 {
+                block_count += 1;
+            }
+
+            let mut block = entry.starting_block_num;
+            for _ in 0..block_count {
+                let read_len = std::cmp::min(0x1000, data_remaining);
+
+                let block_address = self.block_to_addr(block) as usize;
+                mappings.push(&self.input[block_address..(block_address + read_len)]);
+
+                let hash_entry = self.block_hash_entry(block, self.input);
+                block = hash_entry.next_block as usize;
+                data_remaining -= read_len;
+            }
+        }
+
+        let mut reader = SparseReader::new(mappings.as_ref());
+        let mut data = Vec::new();
+        reader
+            .read_to_end(&mut data)
+            .expect("failed to read STFS file");
+        output_file
+            .write(data.as_slice())
+            .expect("failed to write to file output");
+
+        Ok(())
+    }
+
+    fn hash_table_skip_for_address(&self, table_address: usize) -> usize {
+        // Convert the address to a true block number
+        let mut block_number = (table_address - self.hash_table_meta.first_table_address) >> 0xC;
+
+        // Check if it's the first hash table
+        if block_number == 0 {
+            return 0x1000 << self.sex as usize;
+        }
+
+        // Check if it's the level 3 or above table
+        if block_number == self.hash_table_meta.block_step[1] {
+            return 0x3000 << self.sex as usize;
+        } else if block_number > self.hash_table_meta.block_step[1] {
+            block_number -= self.hash_table_meta.block_step[1] + (1 << self.sex as usize);
+        }
+
+        // Check if it's at a level 2 table
+        if block_number == self.hash_table_meta.block_step[0]
+            || block_number % self.hash_table_meta.block_step[1] == 0
+        {
+            return 0x2000 << self.sex as usize;
+        }
+
+        // Assume it's the level 0 table
+        return 0x1000 << self.sex as usize;
+    }
+
     fn block_hash_entry(&self, block: usize, input: &'a [u8]) -> HashEntry {
         let stfs_vol = self.header.volume_descriptor.stfs_ref();
         let mut reader = Cursor::new(input);
@@ -423,9 +551,9 @@ impl<'a> StfsPackage<'a> {
                 reader.set_position(position as u64 + 0x14);
 
                 hash_addr as u64
-                    + ((reader
-                        .read_u8()
-                        .unwrap_or_else(|_| panic!("failed to read hash entry status byte at {:#x}", position)) as u64
+                    + ((reader.read_u8().unwrap_or_else(|_| {
+                        panic!("failed to read hash entry status byte at {:#x}", position)
+                    }) as u64
                         & 0x40)
                         << 0x6)
             }
@@ -436,6 +564,16 @@ impl<'a> StfsPackage<'a> {
         let stfs_vol = self.header.volume_descriptor.stfs_ref();
         let mut reader = Cursor::new(input);
         let mut block = stfs_vol.file_table_block_num;
+        let mut folders = HashMap::<u16, Arc<Mutex<StfsEntry>>>::new();
+        let mut files = Vec::new();
+        // Inject a fake root folder
+        folders.insert(
+            0xffff,
+            Arc::new(Mutex::new(StfsEntry::Folder {
+                entry: StfsFileEntry::default(),
+                files: Vec::new(),
+            })),
+        );
 
         for block_idx in 0..(stfs_vol.file_table_block_count as usize) {
             let current_addr = self.block_to_addr(block as usize);
@@ -460,7 +598,7 @@ impl<'a> StfsPackage<'a> {
                     break;
                 }
 
-                entry.blocks_for_file = reader
+                entry.block_count = reader
                     .read_u24::<LittleEndian>()
                     .expect("failed to read blocks_for_file")
                     as usize;
@@ -485,11 +623,40 @@ impl<'a> StfsPackage<'a> {
                     .expect("failed to read access_time_stamp");
                 entry.flags = name_len >> 6;
 
-                self.entries.push(StfsEntry::File(entry));
+                if entry.flags & 2 != 0 {
+                    let entry_idx = entry.index;
+                    let folder = Arc::new(Mutex::new(StfsEntry::Folder {
+                        entry,
+                        files: Vec::new(),
+                    }));
+                    folders.insert(entry_idx as u16, folder.clone());
+                    files.push(folder.clone());
+                } else {
+                    files.push(Arc::new(Mutex::new(StfsEntry::File(entry))));
+                }
             }
 
             block = self.block_hash_entry(block as usize, input).next_block;
         }
+
+        // Associate each file with the folder it needs to be in
+        for file in files.drain(..) {
+            if let StfsEntry::File(entry) | StfsEntry::Folder { entry, files: _ } = &*file.lock() {
+                let cached_entry = folders.get(&entry.path_indicator);
+                if let Some(entry) = cached_entry {
+                    if let StfsEntry::Folder { entry: _, files } = &mut *entry.lock() {
+                        files.push(file.clone());
+                    }
+                } else {
+                    panic!(
+                        "Corrupt STFS file: missing folder index {:#x}",
+                        entry.path_indicator
+                    );
+                }
+            }
+        }
+
+        self.files = folders.remove(&0xffff).expect("no root file entry");
     }
 
     fn block_to_addr(&self, block: usize) -> u64 {
@@ -521,12 +688,12 @@ impl<'a> StfsPackage<'a> {
     }
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Clone, Debug, Serialize)]
 pub struct StfsFileEntry {
     pub index: usize,
     pub name: String,
     pub flags: u8,
-    pub blocks_for_file: usize,
+    pub block_count: usize,
     pub starting_block_num: usize,
     pub path_indicator: u16,
     pub file_size: usize,
