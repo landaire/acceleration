@@ -405,7 +405,7 @@ impl<'a> StfsPackage<'a> {
                 - ((start_address - self.hash_table_meta.first_table_address) >> 0xC);
 
             if entry.block_count <= blocks_until_hash_table {
-                mappings.push(&self.input[start_address..entry.file_size]);
+                mappings.push(&self.input[start_address..(start_address+entry.file_size)]);
             } else {
                 drop(start_address);
 

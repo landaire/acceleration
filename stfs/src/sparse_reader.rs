@@ -37,8 +37,8 @@ impl<'a, 'b> Read for SparseReader<'a, 'b> {
             return Ok(0);
         }
 
-        for (idx, mapping) in self.mappings.iter().skip(self.mapping_index).enumerate() {
-            let (mapping_start, mapping_len) = if idx == 0 {
+        for (idx, mapping) in self.mappings.iter().enumerate().skip(self.mapping_index) {
+            let (mapping_start, mapping_len) = if idx == self.mapping_index {
                 (self.position, mapping.len() - self.position)
             } else {
                 (0, mapping.len())
@@ -51,8 +51,8 @@ impl<'a, 'b> Read for SparseReader<'a, 'b> {
             bytes_read += bytes_to_copy;
             bytes_remaining -= bytes_to_copy;
 
-            if bytes_remaining == 0 {
-                self.mapping_index = idx + self.mapping_index;
+            if bytes_remaining == 0 || (idx == self.mappings.len() - 1 && mapping_start + bytes_to_copy == mapping.len()) {
+                self.mapping_index = idx;
                 self.position = mapping_start + bytes_to_copy;
 
                 if self.position == self.mappings[self.mapping_index].len() {

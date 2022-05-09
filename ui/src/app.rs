@@ -336,6 +336,8 @@ impl eframe::App for AccelerationApp {
                                     .context_menu(|ui| {
                                         if ui.button("Extract").clicked() {
                                             save_file(entry.clone(), stfs_package);
+
+                                            ui.close_menu();
                                         }
                                     });
 
