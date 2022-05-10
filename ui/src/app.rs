@@ -198,7 +198,7 @@ fn create_zip<'a>(
     let writer = Cursor::new(&mut zip_contents);
     let mut zip = zip::ZipWriter::new(writer);
     let options = FileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflate)
+        .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o755);
 
     let mut path = PathBuf::new();
