@@ -1,8 +1,7 @@
-pub mod stfs;
 mod sparse_reader;
+pub mod stfs;
 
 pub use crate::stfs::*;
-
 
 #[cfg(test)]
 mod tests {

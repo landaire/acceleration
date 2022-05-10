@@ -1,10 +1,7 @@
 use std::{
     cell::RefCell,
-    fs::File,
     io::{Cursor, Write},
-    ops::Deref,
     path::PathBuf,
-    pin::Pin,
     sync::{
         mpsc::{channel, Receiver, Sender},
         Arc,
@@ -14,9 +11,9 @@ use std::{
 use clipboard::{ClipboardContext, ClipboardProvider};
 use egui::{Label, Sense, Spinner, TextBuffer};
 use egui_extras::RetainedImage;
-use log::{debug, info};
+use log::info;
 use ouroboros::self_referencing;
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 use rfd::{AsyncFileDialog, FileDialog};
 use stfs::{StfsEntry, StfsFileEntry, StfsPackage};
 use zip::write::FileOptions;

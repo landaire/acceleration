@@ -2,7 +2,6 @@ use parking_lot::Mutex;
 use std::{
     collections::HashMap,
     io::{Read, Write},
-    path::Path,
     sync::Arc,
 };
 
@@ -11,7 +10,7 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
 use num_enum::TryFromPrimitive;
 use serde::Serialize;
-use std::io::{Cursor, Result as IOResult};
+use std::io::Cursor;
 use thiserror::Error;
 
 use crate::sparse_reader::SparseReader;
@@ -266,7 +265,7 @@ impl<'a> HashTableMeta<'a> {
         let mut reader = Cursor::new(data);
         reader.set_position(meta.top_table.address_in_file as u64);
         for _ in 0..meta.top_table.entry_count {
-            let mut entry = HashEntry {
+            let entry = HashEntry {
                 block_hash: input_byte_ref(&mut reader, data, 0x14),
                 status: reader
                     .read_u8()
@@ -538,11 +537,11 @@ impl<'a> StfsPackage<'a> {
             }
             HashTableLevel::Third => {
                 let mut reader = Cursor::new(input);
-                let first_level_offset = ((self.hash_table_meta.top_table.entries
+                let first_level_offset = (self.hash_table_meta.top_table.entries
                     [block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]]
                     .status as u64
                     & 0x40)
-                    << 6);
+                    << 6;
 
                 let position = (self
                     .hash_table_meta
@@ -785,7 +784,7 @@ fn xcontent_header_parser<'a>(
     cursor.read_exact(&mut package_type)?;
     let package_type = PackageType::try_from(package_type)?;
 
-    let certificate = if let package_type = PackageType::Con {
+    let certificate = if let _package_type = PackageType::Con {
         Some(certificate_parser(cursor, input)?)
     } else {
         None
@@ -922,8 +921,8 @@ fn xcontent_header_parser<'a>(
                 let current_file_offset = cursor.read_u64::<BigEndian>()?;
                 let bytes_processed = cursor.read_u64::<BigEndian>()?;
 
-                let high_date_time = cursor.read_u32::<BigEndian>()?;
-                let low_date_time = cursor.read_u32::<BigEndian>()?;
+                let _high_date_time = cursor.read_u32::<BigEndian>()?;
+                let _low_date_time = cursor.read_u32::<BigEndian>()?;
 
                 // TODO: Fix
                 let last_modified = Utc::now();

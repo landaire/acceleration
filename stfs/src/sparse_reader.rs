@@ -24,7 +24,11 @@ pub struct SparseReader<'a, 'b> {
 
 impl<'a, 'b> SparseReader<'a, 'b> {
     pub fn new(mappings: &'b [&'a [u8]]) -> SparseReader<'a, 'b> {
-        SparseReader { mapping_index: 0, position: 0, mappings }
+        SparseReader {
+            mapping_index: 0,
+            position: 0,
+            mappings,
+        }
     }
 }
 
@@ -46,12 +50,16 @@ impl<'a, 'b> Read for SparseReader<'a, 'b> {
 
             let bytes_to_copy = std::cmp::min(bytes_remaining, mapping_len);
 
-            buf[..bytes_to_copy].copy_from_slice(&mapping[mapping_start..(mapping_start+bytes_to_copy)]);
+            buf[..bytes_to_copy]
+                .copy_from_slice(&mapping[mapping_start..(mapping_start + bytes_to_copy)]);
             buf = &mut buf[bytes_to_copy..];
             bytes_read += bytes_to_copy;
             bytes_remaining -= bytes_to_copy;
 
-            if bytes_remaining == 0 || (idx == self.mappings.len() - 1 && mapping_start + bytes_to_copy == mapping.len()) {
+            if bytes_remaining == 0
+                || (idx == self.mappings.len() - 1
+                    && mapping_start + bytes_to_copy == mapping.len())
+            {
                 self.mapping_index = idx;
                 self.position = mapping_start + bytes_to_copy;
 
