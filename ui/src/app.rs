@@ -12,13 +12,20 @@ use std::{
 };
 
 use clipboard::{ClipboardContext, ClipboardProvider};
-use egui::{Label, Sense, TextBuffer};
+use egui::{Label, Sense, Spinner, TextBuffer};
 use egui_extras::RetainedImage;
 use log::{debug, info};
 use ouroboros::self_referencing;
+use parking_lot::{Mutex, RwLock};
 use rfd::{AsyncFileDialog, FileDialog};
 use stfs::{StfsEntry, StfsFileEntry, StfsPackage};
 use zip::write::FileOptions;
+
+enum BackgroundTaskMessage {
+    StfsPackageRead(PathBuf, Arc<RwLock<StfsPackageReference>>),
+    ZipFileUpdate(PathBuf),
+    ZipDone,
+}
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -27,7 +34,7 @@ pub struct AccelerationApp {
     active_stfs_file: Option<PathBuf>,
 
     #[serde(skip)]
-    stfs_package: Option<StfsPackageReference>,
+    stfs_package: Option<Arc<RwLock<StfsPackageReference>>>,
 
     #[serde(skip)]
     stfs_package_display_image: Option<RetainedImage>,
@@ -39,10 +46,16 @@ pub struct AccelerationApp {
     clipboard: ClipboardContext,
 
     #[serde(skip)]
-    send: Sender<(PathBuf, StfsPackageReference)>,
+    send: Sender<BackgroundTaskMessage>,
 
     #[serde(skip)]
-    recv: Receiver<(PathBuf, StfsPackageReference)>,
+    recv: Receiver<BackgroundTaskMessage>,
+
+    #[serde(skip)]
+    status_message: Option<String>,
+
+    #[serde(skip)]
+    package_files: RefCell<Vec<StfsFileModel>>,
 }
 
 #[derive(Debug)]
@@ -60,8 +73,6 @@ struct StfsPackageReference {
     #[borrows(stfs_package_data)]
     #[covariant]
     parsed_stfs_package: Result<StfsPackage<'this>, stfs::StfsError>,
-
-    package_files: RefCell<Vec<StfsFileModel>>,
 }
 
 impl<'package> Default for AccelerationApp {
@@ -75,6 +86,8 @@ impl<'package> Default for AccelerationApp {
             clipboard: ClipboardProvider::new().unwrap(),
             send,
             recv,
+            status_message: None,
+            package_files: RefCell::new(Vec::new()),
         }
     }
 }
@@ -95,7 +108,7 @@ impl AccelerationApp {
     }
 }
 
-async fn open_stfs_package(sender: Sender<(PathBuf, StfsPackageReference)>) {
+async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) {
     let task = AsyncFileDialog::new().pick_file();
     if let Some(file) = task.await {
         #[cfg(not(target_arch = "wasm32"))]
@@ -109,13 +122,15 @@ async fn open_stfs_package(sender: Sender<(PathBuf, StfsPackageReference)>) {
             parsed_stfs_package_builder: |package_data| {
                 StfsPackage::try_from(package_data.as_slice())
             },
-            package_files: RefCell::new(Default::default()),
         }
         .build();
 
         if package_reference.borrow_parsed_stfs_package().is_ok() {
             sender
-                .send((file_path, package_reference))
+                .send(BackgroundTaskMessage::StfsPackageRead(
+                    file_path,
+                    Arc::new(RwLock::new(package_reference)),
+                ))
                 .expect("failed to send parsed STFS package to main thread");
         }
     }
@@ -175,7 +190,10 @@ fn extract_all<'a>(stfs_package: &'a StfsPackage<'a>) {
     }
 }
 
-fn create_zip<'a>(stfs_package: &'a StfsPackage<'a>) -> Vec<u8> {
+fn create_zip<'a>(
+    stfs_package: &'a StfsPackage<'a>,
+    sender: Sender<BackgroundTaskMessage>,
+) -> Vec<u8> {
     let mut zip_contents = Vec::new();
     let writer = Cursor::new(&mut zip_contents);
     let mut zip = zip::ZipWriter::new(writer);
@@ -200,18 +218,20 @@ fn create_zip<'a>(stfs_package: &'a StfsPackage<'a>) -> Vec<u8> {
         let file = file.lock();
         if let StfsEntry::File(entry) = &*file {
             let file_path = path.join(entry.name.as_str());
+            sender
+                .send(BackgroundTaskMessage::ZipFileUpdate(file_path.clone()))
+                .expect("failed to send file update");
             info!("Adding file {:?} to zip", file_path);
 
             zip.start_file(file_path.as_os_str().to_str().unwrap(), options)
                 .expect("failed to add file to zip");
 
-            info!("Reading file...");
             stfs_package
                 .extract_file(&mut buffer, entry)
                 .expect("failed to extract file");
-            info!("Writing file to zip...");
             zip.write_all(buffer.as_slice())
                 .expect("failed to write file to zip");
+
             buffer.clear();
         }
 
@@ -228,15 +248,17 @@ fn create_zip<'a>(stfs_package: &'a StfsPackage<'a>) -> Vec<u8> {
     zip.finish().expect("failed to finish zip");
     drop(zip);
 
+    sender.send(BackgroundTaskMessage::ZipDone);
+
     zip_contents
 }
 
-fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>) {
+fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundTaskMessage>) {
     if let Some(zip_path) = FileDialog::new()
         .set_file_name(format!("{}.zip", stfs_package.header.display_name).as_str())
         .save_file()
     {
-        std::fs::write(zip_path, create_zip(stfs_package).as_slice())
+        std::fs::write(zip_path, create_zip(stfs_package, sender).as_slice())
             .expect("failed to write out zip file");
     }
 }
@@ -283,76 +305,88 @@ impl eframe::App for AccelerationApp {
             clipboard,
             send,
             recv,
+            status_message,
+            package_files,
         } = self;
 
         // We open the file on another thread. Check if that thread has sent us any data yet.
-        if let Ok((file_path, received_stfs_package)) = recv.try_recv() {
-            // We have a file!
-            *active_stfs_file = Some(file_path);
-            if let Some(parsed_package) = received_stfs_package
-                .borrow_parsed_stfs_package()
-                .as_ref()
-                .ok()
-            {
-                *stfs_package_display_image = RetainedImage::from_image_bytes(
-                    "display_image",
-                    parsed_package.header.thumbnail_image,
-                )
-                .ok();
+        match recv.try_recv() {
+            Ok(BackgroundTaskMessage::StfsPackageRead(file_path, received_stfs_package)) => {
+                // We have a file!
+                *active_stfs_file = Some(file_path);
+                if let Ok(parsed_package) = received_stfs_package
+                    .read()
+                    .borrow_parsed_stfs_package()
+                    .as_ref()
+                {
+                    *stfs_package_display_image = RetainedImage::from_image_bytes(
+                        "display_image",
+                        parsed_package.header.thumbnail_image,
+                    )
+                    .ok();
 
-                *stfs_package_display_image = RetainedImage::from_image_bytes(
-                    "display_image",
-                    parsed_package.header.title_image,
-                )
-                .ok();
+                    *stfs_package_display_image = RetainedImage::from_image_bytes(
+                        "display_image",
+                        parsed_package.header.title_image,
+                    )
+                    .ok();
 
-                // Populate the files
-                let mut path = PathBuf::new();
-                let mut queue = Vec::with_capacity(256);
-                if let StfsEntry::Folder { entry: _, files } = &*parsed_package.files.lock() {
-                    queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
+                    // Populate the files
+                    let mut path = PathBuf::new();
+                    let mut queue = Vec::with_capacity(256);
+                    if let StfsEntry::Folder { entry: _, files } = &*parsed_package.files.lock() {
+                        queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
+                    }
+
+                    let mut last_depth = 0;
+                    while let Some((depth, file)) = queue.pop() {
+                        if depth < last_depth {
+                            path.pop();
+                            last_depth -= 1;
+                        }
+
+                        let arc_file = file.clone();
+                        let file = file.lock();
+                        if let StfsEntry::File(entry) = &*file {
+                            let mut package_files = package_files.borrow_mut();
+                            package_files.push(StfsFileModel {
+                                name: entry.name.clone(),
+                                path: path.join(entry.name.as_str()),
+                                size: human_readable_size(entry.file_size),
+                                file_ref: arc_file,
+                            });
+                        }
+
+                        if let StfsEntry::Folder { entry, files } = &*file {
+                            path.push(entry.name.as_str());
+                            queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
+                            last_depth += 1;
+                        }
+                    }
+
+                    // Sort the package files by their entry ID
+                    let mut package_files = package_files.borrow_mut();
+                    package_files.sort_by(|a, b| {
+                        a.file_ref
+                            .lock()
+                            .entry()
+                            .index
+                            .cmp(&b.file_ref.lock().entry().index)
+                    });
                 }
 
-                let mut last_depth = 0;
-                while let Some((depth, file)) = queue.pop() {
-                    if depth < last_depth {
-                        path.pop();
-                        last_depth -= 1;
-                    }
-
-                    let arc_file = file.clone();
-                    let file = file.lock();
-                    if let StfsEntry::File(entry) = &*file {
-                        let package_files = received_stfs_package.borrow_package_files();
-                        let mut package_files = package_files.borrow_mut();
-                        package_files.push(StfsFileModel {
-                            name: entry.name.clone(),
-                            path: path.join(entry.name.as_str()),
-                            size: human_readable_size(entry.file_size),
-                            file_ref: arc_file,
-                        });
-                    }
-
-                    if let StfsEntry::Folder { entry, files } = &*file {
-                        path.push(entry.name.as_str());
-                        queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
-                        last_depth += 1;
-                    }
-                }
-
-                // Sort the package files by their entry ID
-                let package_files = received_stfs_package.borrow_package_files();
-                let mut package_files = package_files.borrow_mut();
-                package_files.sort_by(|a, b| {
-                    a.file_ref
-                        .lock()
-                        .entry()
-                        .index
-                        .cmp(&b.file_ref.lock().entry().index)
-                });
+                *stfs_package = Some(received_stfs_package);
             }
-
-            *stfs_package = Some(received_stfs_package);
+            Ok(BackgroundTaskMessage::ZipFileUpdate(path)) => {
+                *status_message =
+                    Some(format!("Extracting {}", path.as_os_str().to_str().unwrap()));
+            }
+            Ok(BackgroundTaskMessage::ZipDone) => {
+                *status_message = None;
+            }
+            Err(_) => {
+                // Do nothing
+            }
         }
 
         if let Some(file_path) = active_stfs_file.as_ref() {
@@ -381,15 +415,29 @@ impl eframe::App for AccelerationApp {
                     if let Some(stfs_package) = stfs_package.as_ref() {
                         if ui.button("Extract All").clicked() {
                             extract_all(
-                                stfs_package.borrow_parsed_stfs_package().as_ref().unwrap(),
+                                stfs_package
+                                    .read()
+                                    .borrow_parsed_stfs_package()
+                                    .as_ref()
+                                    .unwrap(),
                             );
 
                             ui.close_menu();
                         }
                         if ui.button("Save As Zip").clicked() {
-                            save_as_zip(
-                                stfs_package.borrow_parsed_stfs_package().as_ref().unwrap(),
-                            );
+                            let stfs_package = stfs_package.clone();
+                            let sender = send.clone();
+                            info!("Spawning thread...");
+                            std::thread::spawn(move || {
+                                save_as_zip(
+                                    stfs_package
+                                        .read()
+                                        .borrow_parsed_stfs_package()
+                                        .as_ref()
+                                        .unwrap(),
+                                    sender,
+                                )
+                            });
 
                             ui.close_menu();
                         }
@@ -413,7 +461,7 @@ impl eframe::App for AccelerationApp {
             }
 
             if let Some(stfs_package_ref) = stfs_package.as_ref() {
-                if let Ok(parsed_package) = stfs_package_ref.borrow_parsed_stfs_package() {
+                if let Ok(parsed_package) = stfs_package_ref.read().borrow_parsed_stfs_package() {
                     ui.horizontal(|ui| {
                         ui.label("Name:");
                         if ui
@@ -506,58 +554,72 @@ impl eframe::App for AccelerationApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             use egui_extras::{Size, TableBuilder};
 
-            TableBuilder::new(ui)
-                .striped(true)
-                .cell_layout(egui::Layout::left_to_right().with_cross_align(egui::Align::Center))
-                .column(Size::initial(60.0).at_least(40.0))
-                .column(Size::initial(60.0).at_least(40.0))
-                .column(Size::remainder().at_least(60.0))
-                .resizable(true)
-                .header(20.0, |mut header| {
-                    header.col(|ui| {
-                        ui.heading("Name");
+            ui.vertical(|ui| {
+                if let Some(status_message) = status_message.as_ref() {
+                    ui.horizontal(|ui| {
+                        // ui.spacing_mut().item_spacing.x = 0.0;
+                        ui.add(Spinner::new());
+
+                        ui.label(status_message);
                     });
-                    header.col(|ui| {
-                        ui.heading("Size");
-                    });
-                    header.col(|ui| {
-                        ui.heading("Path");
-                    });
-                })
-                .body(|mut body| {
-                    if let Some(stfs_package) = stfs_package {
-                        let package_files = stfs_package.borrow_package_files();
-                        let package_files = package_files.borrow();
-                        for file in &*package_files {
-                            body.row(18.0, |mut row| {
-                                row.col(|ui| {
-                                    ui.label(file.name.as_str());
+                }
+                TableBuilder::new(ui)
+                    .striped(true)
+                    .cell_layout(
+                        egui::Layout::left_to_right().with_cross_align(egui::Align::Center),
+                    )
+                    .column(Size::initial(60.0).at_least(40.0))
+                    .column(Size::initial(60.0).at_least(40.0))
+                    .column(Size::remainder().at_least(60.0))
+                    .resizable(true)
+                    .header(20.0, |mut header| {
+                        header.col(|ui| {
+                            ui.heading("Name");
+                        });
+                        header.col(|ui| {
+                            ui.heading("Size");
+                        });
+                        header.col(|ui| {
+                            ui.heading("Path");
+                        });
+                    })
+                    .body(|mut body| {
+                        if let Some(stfs_package) = stfs_package {
+                            let package_files = package_files.borrow();
+                            for file in &*package_files {
+                                body.row(18.0, |mut row| {
+                                    row.col(|ui| {
+                                        ui.label(file.name.as_str());
+                                    })
+                                    .context_menu(|ui| {
+                                        if ui.button("Extract").clicked() {
+                                            let stfs_package = stfs_package.read();
+                                            save_file(
+                                                file.file_ref.lock().entry().clone(),
+                                                stfs_package
+                                                    .borrow_parsed_stfs_package()
+                                                    .as_ref()
+                                                    .unwrap(),
+                                            );
+
+                                            ui.close_menu();
+                                        }
+                                    });
+
+                                    row.col(|ui| {
+                                        ui.label(file.size.as_str());
+                                    });
+
+                                    row.col(|ui| {
+                                        ui.label(file.path.as_os_str().to_str().unwrap());
+                                    });
                                 })
-                                .context_menu(|ui| {
-                                    if ui.button("Extract").clicked() {
-                                        save_file(
-                                            file.file_ref.lock().entry().clone(),
-                                            stfs_package
-                                                .borrow_parsed_stfs_package()
-                                                .as_ref()
-                                                .unwrap(),
-                                        );
-
-                                        ui.close_menu();
-                                    }
-                                });
-
-                                row.col(|ui| {
-                                    ui.label(file.size.as_str());
-                                });
-
-                                row.col(|ui| {
-                                    ui.label(file.path.as_os_str().to_str().unwrap());
-                                });
-                            })
+                            }
                         }
-                    }
-                });
+                    });
+
+                // ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            });
         });
 
         if false {
