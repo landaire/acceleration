@@ -114,6 +114,31 @@ fn save_file<'a>(file: StfsFileEntry, stfs_package: &StfsPackage<'a>) {
     }
 }
 
+fn human_readable_size(size: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = KB * KB;
+    const GB: usize = KB * KB * KB;
+
+    const BYTES_END: usize = KB - 1;
+    const KB_END: usize = MB - 1;
+    const MB_END: usize = GB - 1;
+
+    match size {
+        0..=BYTES_END => {
+            format!("{} Bytes", size)
+        }
+        KB..=KB_END => {
+            format!("{} KB", size / KB)
+        }
+        MB..=MB_END => {
+            format!("{} MB", size / MB)
+        }
+        _default => {
+            format!("{} GB", size / GB)
+        }
+    }
+}
+
 impl eframe::App for AccelerationApp {
     /// Called by the frame work to save state before shutdown.
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -297,11 +322,15 @@ impl eframe::App for AccelerationApp {
                 .striped(true)
                 .cell_layout(egui::Layout::left_to_right().with_cross_align(egui::Align::Center))
                 .column(Size::initial(60.0).at_least(40.0))
+                .column(Size::initial(60.0).at_least(40.0))
                 .column(Size::remainder().at_least(60.0))
                 .resizable(true)
                 .header(20.0, |mut header| {
                     header.col(|ui| {
                         ui.heading("Name");
+                    });
+                    header.col(|ui| {
+                        ui.heading("Size");
                     });
                     header.col(|ui| {
                         ui.heading("Path");
@@ -342,6 +371,10 @@ impl eframe::App for AccelerationApp {
                                     });
 
                                     row.col(|ui| {
+                                        ui.label(human_readable_size(entry.file_size));
+                                    });
+
+                                    row.col(|ui| {
                                         ui.label(path.as_os_str().to_str().unwrap());
                                     });
                                 })
@@ -369,3 +402,5 @@ impl eframe::App for AccelerationApp {
         }
     }
 }
+
+
