@@ -16,6 +16,8 @@ use thiserror::Error;
 
 use crate::sparse_reader::SparseReader;
 
+pub type StfsEntryRef = Arc<Mutex<StfsEntry>>;
+
 const INVALID_STR: &'static str = "<INVALID>";
 
 fn input_byte_ref<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8], size: usize) -> &'a [u8] {
@@ -134,7 +136,7 @@ pub enum StfsEntry {
     File(StfsFileEntry),
     Folder {
         entry: StfsFileEntry,
-        files: Vec<Arc<Mutex<StfsEntry>>>,
+        files: Vec<StfsEntryRef>,
     },
 }
 
@@ -352,7 +354,7 @@ pub struct StfsPackage<'a> {
     pub header: XContentHeader<'a>,
     pub sex: StfsPackageSex,
     pub hash_table_meta: HashTableMeta<'a>,
-    pub files: Arc<Mutex<StfsEntry>>,
+    pub files: StfsEntryRef,
 }
 
 impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
@@ -405,7 +407,7 @@ impl<'a> StfsPackage<'a> {
                 - ((start_address - self.hash_table_meta.first_table_address) >> 0xC);
 
             if entry.block_count <= blocks_until_hash_table {
-                mappings.push(&self.input[start_address..(start_address+entry.file_size)]);
+                mappings.push(&self.input[start_address..(start_address + entry.file_size)]);
             } else {
                 drop(start_address);
 
@@ -564,7 +566,7 @@ impl<'a> StfsPackage<'a> {
         let stfs_vol = self.header.volume_descriptor.stfs_ref();
         let mut reader = Cursor::new(input);
         let mut block = stfs_vol.file_table_block_num;
-        let mut folders = HashMap::<u16, Arc<Mutex<StfsEntry>>>::new();
+        let mut folders = HashMap::<u16, StfsEntryRef>::new();
         let mut files = Vec::new();
         // Inject a fake root folder
         folders.insert(

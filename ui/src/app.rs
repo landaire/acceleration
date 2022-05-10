@@ -1,8 +1,13 @@
 use std::{
+    cell::RefCell,
     fs::File,
+    ops::Deref,
     path::PathBuf,
     pin::Pin,
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::{
+        mpsc::{channel, Receiver, Sender},
+        Arc,
+    },
 };
 
 use clipboard::{ClipboardContext, ClipboardProvider};
@@ -38,6 +43,14 @@ pub struct AccelerationApp {
     recv: Receiver<(PathBuf, StfsPackageReference)>,
 }
 
+#[derive(Debug)]
+struct StfsFileModel {
+    name: String,
+    path: PathBuf,
+    size: String,
+    file_ref: stfs::StfsEntryRef,
+}
+
 #[self_referencing]
 struct StfsPackageReference {
     stfs_package_data: Vec<u8>,
@@ -45,6 +58,8 @@ struct StfsPackageReference {
     #[borrows(stfs_package_data)]
     #[covariant]
     parsed_stfs_package: Result<StfsPackage<'this>, stfs::StfsError>,
+
+    package_files: RefCell<Vec<StfsFileModel>>,
 }
 
 impl<'package> Default for AccelerationApp {
@@ -92,6 +107,7 @@ async fn open_stfs_package(sender: Sender<(PathBuf, StfsPackageReference)>) {
             parsed_stfs_package_builder: |package_data| {
                 StfsPackage::try_from(package_data.as_slice())
             },
+            package_files: RefCell::new(Default::default()),
         }
         .build();
 
@@ -178,6 +194,51 @@ impl eframe::App for AccelerationApp {
                     parsed_package.header.title_image,
                 )
                 .ok();
+
+                // Populate the files
+                let mut path = PathBuf::new();
+                let mut queue = Vec::with_capacity(256);
+                if let StfsEntry::Folder { entry: _, files } = &*parsed_package.files.lock() {
+                    queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
+                }
+
+                let mut last_depth = 0;
+                while let Some((depth, file)) = queue.pop() {
+                    if depth < last_depth {
+                        path.pop();
+                        last_depth -= 1;
+                    }
+
+                    let arc_file = file.clone();
+                    let file = file.lock();
+                    if let StfsEntry::File(entry) = &*file {
+                        let package_files = received_stfs_package.borrow_package_files();
+                        let mut package_files = package_files.borrow_mut();
+                        package_files.push(StfsFileModel {
+                            name: entry.name.clone(),
+                            path: path.join(entry.name.as_str()),
+                            size: human_readable_size(entry.file_size),
+                            file_ref: arc_file,
+                        });
+                    }
+
+                    if let StfsEntry::Folder { entry, files } = &*file {
+                        path.push(entry.name.as_str());
+                        queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
+                        last_depth += 1;
+                    }
+                }
+
+                // Sort the package files by their entry ID
+                let package_files = received_stfs_package.borrow_package_files();
+                let mut package_files = package_files.borrow_mut();
+                package_files.sort_by(|a, b| {
+                    a.file_ref
+                        .lock()
+                        .entry()
+                        .index
+                        .cmp(&b.file_ref.lock().entry().index)
+                });
             }
 
             *stfs_package = Some(received_stfs_package);
@@ -337,56 +398,36 @@ impl eframe::App for AccelerationApp {
                     });
                 })
                 .body(|mut body| {
-                    if let Some(stfs_package) = self
-                        .stfs_package
-                        .as_ref()
-                        .map(|package| package.borrow_parsed_stfs_package().as_ref().ok())
-                        .flatten()
-                    {
-                        let mut path = PathBuf::new();
-                        let mut queue = Vec::with_capacity(256);
-                        if let StfsEntry::Folder { entry: _, files } = &*stfs_package.files.lock() {
-                            queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
-                        }
-
-                        let mut last_depth = 0;
-                        while let Some((depth, file)) = queue.pop() {
-                            if depth < last_depth {
-                                path.pop();
-                                last_depth -= 1;
-                            }
-
-                            let file = file.lock();
-                            if let StfsEntry::File(entry) = &*file {
-                                body.row(18.0, |mut row| {
-                                    row.col(|ui| {
-                                        ui.label(entry.name.as_str());
-                                    })
-                                    .context_menu(|ui| {
-                                        if ui.button("Extract").clicked() {
-                                            save_file(entry.clone(), stfs_package);
-
-                                            ui.close_menu();
-                                        }
-                                    });
-
-                                    row.col(|ui| {
-                                        ui.label(human_readable_size(entry.file_size));
-                                    });
-
-                                    row.col(|ui| {
-                                        ui.label(path.as_os_str().to_str().unwrap());
-                                    });
+                    if let Some(stfs_package) = stfs_package {
+                        let package_files = stfs_package.borrow_package_files();
+                        let package_files = package_files.borrow();
+                        for file in &*package_files {
+                            body.row(18.0, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(file.name.as_str());
                                 })
-                            }
+                                .context_menu(|ui| {
+                                    if ui.button("Extract").clicked() {
+                                        save_file(
+                                            file.file_ref.lock().entry().clone(),
+                                            stfs_package
+                                                .borrow_parsed_stfs_package()
+                                                .as_ref()
+                                                .unwrap(),
+                                        );
 
-                            if let StfsEntry::Folder { entry, files } = &*file {
-                                path.push(entry.name.as_str());
-                                queue.extend(
-                                    std::iter::repeat(depth + 1).zip(files.iter().cloned()),
-                                );
-                                last_depth += 1;
-                            }
+                                        ui.close_menu();
+                                    }
+                                });
+
+                                row.col(|ui| {
+                                    ui.label(file.size.as_str());
+                                });
+
+                                row.col(|ui| {
+                                    ui.label(file.path.as_os_str().to_str().unwrap());
+                                });
+                            })
                         }
                     }
                 });
@@ -402,5 +443,3 @@ impl eframe::App for AccelerationApp {
         }
     }
 }
-
-
