@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     fs::File,
+    io::{Cursor, Write},
     ops::Deref,
     path::PathBuf,
     pin::Pin,
@@ -17,6 +18,7 @@ use log::{debug, info};
 use ouroboros::self_referencing;
 use rfd::{AsyncFileDialog, FileDialog};
 use stfs::{StfsEntry, StfsFileEntry, StfsPackage};
+use zip::write::FileOptions;
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -119,18 +121,19 @@ async fn open_stfs_package(sender: Sender<(PathBuf, StfsPackageReference)>) {
     }
 }
 
-fn save_file<'a>(file: StfsFileEntry, stfs_package: &StfsPackage<'a>) {
+fn save_file<'a>(file: StfsFileEntry, stfs_package: &'a StfsPackage<'a>) {
     if let Some(path) = FileDialog::new()
         .set_file_name(file.name.as_str())
         .save_file()
     {
+        let mut out_file = std::fs::File::create(path).expect("failed to create output file");
         stfs_package
-            .extract_file(path.as_ref(), file)
+            .extract_file(&mut out_file, &file)
             .expect("failed to save file");
     }
 }
 
-fn extract_all<'a>(stfs_package: &StfsPackage<'a>) {
+fn extract_all<'a>(stfs_package: &'a StfsPackage<'a>) {
     if let Some(folder_root) = FileDialog::new()
         .set_file_name(stfs_package.header.display_name.as_str())
         .pick_folder()
@@ -148,16 +151,18 @@ fn extract_all<'a>(stfs_package: &StfsPackage<'a>) {
                 last_depth -= 1;
             }
 
-            let arc_file = file.clone();
             let file = file.lock();
             if let StfsEntry::File(entry) = &*file {
                 let file_path = path.join(entry.name.as_str());
-                let mut target_path = folder_root.join(&path);
-                std::fs::create_dir_all(&target_path).expect("failed to create path!");
-                target_path.push(entry.name.as_str());
+                let mut directory_path = folder_root.join(&path);
+                std::fs::create_dir_all(&directory_path).expect("failed to create path!");
+                directory_path.push(entry.name.as_str());
+
+                let mut file =
+                    std::fs::File::create(file_path).expect("failed to create output file");
 
                 stfs_package
-                    .extract_file(target_path.as_ref(), entry.clone())
+                    .extract_file(&mut file, entry)
                     .expect("failed to save file");
             }
 
@@ -167,6 +172,72 @@ fn extract_all<'a>(stfs_package: &StfsPackage<'a>) {
                 last_depth += 1;
             }
         }
+    }
+}
+
+fn create_zip<'a>(stfs_package: &'a StfsPackage<'a>) -> Vec<u8> {
+    let mut zip_contents = Vec::new();
+    let writer = Cursor::new(&mut zip_contents);
+    let mut zip = zip::ZipWriter::new(writer);
+    let options = FileOptions::default()
+        .compression_method(zip::CompressionMethod::Bzip2)
+        .unix_permissions(0o755);
+
+    let mut path = PathBuf::new();
+    let mut queue = Vec::with_capacity(256);
+    if let StfsEntry::Folder { entry: _, files } = &*stfs_package.files.lock() {
+        queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
+    }
+
+    let mut last_depth = 0;
+    let mut buffer = Vec::new();
+    while let Some((depth, file)) = queue.pop() {
+        if depth < last_depth {
+            path.pop();
+            last_depth -= 1;
+        }
+
+        let file = file.lock();
+        if let StfsEntry::File(entry) = &*file {
+            let file_path = path.join(entry.name.as_str());
+            info!("Adding file {:?} to zip", file_path);
+
+            zip.start_file(file_path.as_os_str().to_str().unwrap(), options)
+                .expect("failed to add file to zip");
+
+            info!("Reading file...");
+            stfs_package
+                .extract_file(&mut buffer, entry)
+                .expect("failed to extract file");
+            info!("Writing file to zip...");
+            zip.write_all(buffer.as_slice())
+                .expect("failed to write file to zip");
+            buffer.clear();
+        }
+
+        if let StfsEntry::Folder { entry, files } = &*file {
+            path.push(entry.name.as_str());
+            info!("Adding folder {:?} to zip", path);
+            zip.add_directory(path.as_os_str().to_str().unwrap(), options)
+                .expect("failed to create directory");
+            queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
+            last_depth += 1;
+        }
+    }
+
+    zip.finish().expect("failed to finish zip");
+    drop(zip);
+
+    zip_contents
+}
+
+fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>) {
+    if let Some(zip_path) = FileDialog::new()
+        .set_file_name(format!("{}.zip", stfs_package.header.display_name).as_str())
+        .save_file()
+    {
+        std::fs::write(zip_path, create_zip(stfs_package).as_slice())
+            .expect("failed to write out zip file");
     }
 }
 
@@ -306,6 +377,22 @@ impl eframe::App for AccelerationApp {
                         std::thread::spawn(move || futures::executor::block_on(task));
 
                         ui.close_menu();
+                    }
+                    if let Some(stfs_package) = stfs_package.as_ref() {
+                        if ui.button("Extract All").clicked() {
+                            extract_all(
+                                stfs_package.borrow_parsed_stfs_package().as_ref().unwrap(),
+                            );
+
+                            ui.close_menu();
+                        }
+                        if ui.button("Save As Zip").clicked() {
+                            save_as_zip(
+                                stfs_package.borrow_parsed_stfs_package().as_ref().unwrap(),
+                            );
+
+                            ui.close_menu();
+                        }
                     }
                     if ui.button("Quit").clicked() {
                         frame.quit();
@@ -450,16 +537,6 @@ impl eframe::App for AccelerationApp {
                                     if ui.button("Extract").clicked() {
                                         save_file(
                                             file.file_ref.lock().entry().clone(),
-                                            stfs_package
-                                                .borrow_parsed_stfs_package()
-                                                .as_ref()
-                                                .unwrap(),
-                                        );
-
-                                        ui.close_menu();
-                                    }
-                                    if ui.button("Extract All").clicked() {
-                                        extract_all(
                                             stfs_package
                                                 .borrow_parsed_stfs_package()
                                                 .as_ref()

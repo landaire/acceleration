@@ -23,6 +23,7 @@ log = "0.4"
 clipboard = "0.5"
 wasm-bindgen-futures = "0.4"
 futures = "0.3"
+zip = "0.6"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

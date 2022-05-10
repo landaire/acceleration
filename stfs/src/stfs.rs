@@ -385,8 +385,11 @@ impl<'a> TryFrom<&'a [u8]> for StfsPackage<'a> {
 }
 
 impl<'a> StfsPackage<'a> {
-    pub fn extract_file(&self, path: &Path, entry: StfsFileEntry) -> std::io::Result<()> {
-        let mut output_file = std::fs::File::create(path)?;
+    pub fn extract_file<W: Write>(
+        &self,
+        writer: &mut W,
+        entry: &StfsFileEntry,
+    ) -> std::io::Result<()> {
         if entry.file_size == 0 {
             return Ok(());
         }
@@ -409,8 +412,6 @@ impl<'a> StfsPackage<'a> {
             if entry.block_count <= blocks_until_hash_table {
                 mappings.push(&self.input[start_address..(start_address + entry.file_size)]);
             } else {
-                drop(start_address);
-
                 // The file is broken up by hash tables
                 while data_remaining > 0 {
                     let read_len = std::cmp::min(HASHES_PER_HASH_TABLE * 0x1000, data_remaining);
@@ -450,8 +451,8 @@ impl<'a> StfsPackage<'a> {
         reader
             .read_to_end(&mut data)
             .expect("failed to read STFS file");
-        output_file
-            .write(data.as_slice())
+        writer
+            .write_all(data.as_slice())
             .expect("failed to write to file output");
 
         Ok(())
