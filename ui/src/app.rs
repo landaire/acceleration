@@ -130,6 +130,46 @@ fn save_file<'a>(file: StfsFileEntry, stfs_package: &StfsPackage<'a>) {
     }
 }
 
+fn extract_all<'a>(stfs_package: &StfsPackage<'a>) {
+    if let Some(folder_root) = FileDialog::new()
+        .set_file_name(stfs_package.header.display_name.as_str())
+        .pick_folder()
+    {
+        let mut path = PathBuf::new();
+        let mut queue = Vec::with_capacity(256);
+        if let StfsEntry::Folder { entry: _, files } = &*stfs_package.files.lock() {
+            queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
+        }
+
+        let mut last_depth = 0;
+        while let Some((depth, file)) = queue.pop() {
+            if depth < last_depth {
+                path.pop();
+                last_depth -= 1;
+            }
+
+            let arc_file = file.clone();
+            let file = file.lock();
+            if let StfsEntry::File(entry) = &*file {
+                let file_path = path.join(entry.name.as_str());
+                let mut target_path = folder_root.join(&path);
+                std::fs::create_dir_all(&target_path).expect("failed to create path!");
+                target_path.push(entry.name.as_str());
+
+                stfs_package
+                    .extract_file(target_path.as_ref(), entry.clone())
+                    .expect("failed to save file");
+            }
+
+            if let StfsEntry::Folder { entry, files } = &*file {
+                path.push(entry.name.as_str());
+                queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
+                last_depth += 1;
+            }
+        }
+    }
+}
+
 fn human_readable_size(size: usize) -> String {
     const KB: usize = 1024;
     const MB: usize = KB * KB;
@@ -410,6 +450,16 @@ impl eframe::App for AccelerationApp {
                                     if ui.button("Extract").clicked() {
                                         save_file(
                                             file.file_ref.lock().entry().clone(),
+                                            stfs_package
+                                                .borrow_parsed_stfs_package()
+                                                .as_ref()
+                                                .unwrap(),
+                                        );
+
+                                        ui.close_menu();
+                                    }
+                                    if ui.button("Extract All").clicked() {
+                                        extract_all(
                                             stfs_package
                                                 .borrow_parsed_stfs_package()
                                                 .as_ref()
