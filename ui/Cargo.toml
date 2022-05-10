@@ -23,7 +23,7 @@ log = "0.4"
 clipboard = "0.5"
 wasm-bindgen-futures = "0.4"
 futures = "0.3"
-zip = "0.6"
+zip = { version = "0.6", default-features = false, features = ["bzip2"] }
 parking_lot = "0.12"
 
 # native:
