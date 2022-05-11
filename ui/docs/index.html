@@ -124,9 +124,30 @@
     <script src="acceleration_ui.js"></script>
 
     <script>
+        function download(file) {
+            if (window.navigator.msSaveOrOpenBlob) // IE10+
+                window.navigator.msSaveOrOpenBlob(file, filename);
+            else { // Others
+                var a = document.createElement("a"),
+                        url = URL.createObjectURL(file);
+                a.href = url;
+                a.download = file.name;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(function() {
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);  
+                }, 0); 
+            }
+        }
+
         // We'll defer our execution until the wasm is ready to go.
         // Here we tell bindgen the path to the wasm file so it can start
         // initialization and return to us a promise when it's done.
+        function download_file(file) {
+            download(file)
+        }
+
         console.debug("loading wasm…");
         wasm_bindgen("./acceleration_ui_bg.wasm")
             .then(on_wasm_loaded)

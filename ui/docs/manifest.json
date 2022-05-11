@@ -1,6 +1,6 @@
 {
-    "name": "Egui Template PWA",
-    "short_name": "egui-template-pwa",
+    "name": "Acceleraetion PWA",
+    "short_name": "acceleration-ui-pwa",
     "icons": [{
       "src": "./icon-256.png",
         "sizes": "256x256",

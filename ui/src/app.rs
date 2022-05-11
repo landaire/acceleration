@@ -11,12 +11,23 @@ use std::{
 use clipboard::{ClipboardContext, ClipboardProvider};
 use egui::{Label, Sense, Spinner, TextBuffer};
 use egui_extras::RetainedImage;
-use log::info;
+use log::{debug, info};
 use ouroboros::self_referencing;
-use parking_lot::RwLock;
-use rfd::{AsyncFileDialog, FileDialog};
+use parking_lot::{Mutex, RwLock};
+use rfd::AsyncFileDialog;
+#[cfg(not(target_arch = "wasm32"))]
+use rfd::FileDialog;
 use stfs::{StfsEntry, StfsFileEntry, StfsPackage};
 use zip::write::FileOptions;
+
+#[cfg(target_arch = "wasm32")]
+use eframe::wasm_bindgen::{self, prelude::*};
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    fn download_file(file: &web_sys::File);
+}
 
 enum BackgroundTaskMessage {
     StfsPackageRead(PathBuf, Arc<RwLock<StfsPackageReference>>),
@@ -133,6 +144,7 @@ async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn save_file<'a>(file: StfsFileEntry, stfs_package: &'a StfsPackage<'a>) {
     if let Some(path) = FileDialog::new()
         .set_file_name(file.name.as_str())
@@ -145,6 +157,19 @@ fn save_file<'a>(file: StfsFileEntry, stfs_package: &'a StfsPackage<'a>) {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn save_file<'a>(file: StfsFileEntry, stfs_package: &'a StfsPackage<'a>) {
+    let mut out = Vec::with_capacity(file.file_size);
+    stfs_package
+        .extract_file(&mut out, &file)
+        .expect("failed to save file");
+
+    unsafe {
+        download_file(gloo_file::File::new(file.name.as_str(), out.as_slice()).as_ref());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn extract_all<'a>(stfs_package: &'a StfsPackage<'a>) {
     if let Some(folder_root) = FileDialog::new()
         .set_file_name(stfs_package.header.display_name.as_str())
@@ -218,7 +243,7 @@ fn create_zip<'a>(
             sender
                 .send(BackgroundTaskMessage::ZipFileUpdate(file_path.clone()))
                 .expect("failed to send file update");
-            info!("Adding file {:?} to zip", file_path);
+            debug!("Adding file {:?} to zip", file_path);
 
             zip.start_file(file_path.as_os_str().to_str().unwrap(), options)
                 .expect("failed to add file to zip");
@@ -250,6 +275,7 @@ fn create_zip<'a>(
     zip_contents
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundTaskMessage>) {
     if let Some(zip_path) = FileDialog::new()
         .set_file_name(format!("{}.zip", stfs_package.header.display_name).as_str())
@@ -257,6 +283,20 @@ fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundT
     {
         std::fs::write(zip_path, create_zip(stfs_package, sender).as_slice())
             .expect("failed to write out zip file");
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundTaskMessage>) {
+    let contents = create_zip(stfs_package, sender);
+    unsafe {
+        download_file(
+            gloo_file::File::new(
+                format!("{}.zip", stfs_package.header.display_name.as_str()).as_str(),
+                contents.as_slice(),
+            )
+            .as_ref(),
+        );
     }
 }
 
@@ -410,6 +450,7 @@ impl eframe::App for AccelerationApp {
                         ui.close_menu();
                     }
                     if let Some(stfs_package) = stfs_package.as_ref() {
+                        #[cfg(not(target_arch = "wasm32"))]
                         if ui.button("Extract All").clicked() {
                             extract_all(
                                 stfs_package
@@ -425,6 +466,20 @@ impl eframe::App for AccelerationApp {
                             let stfs_package = stfs_package.clone();
                             let sender = send.clone();
                             info!("Spawning thread...");
+
+                            #[cfg(target_arch = "wasm32")]
+                            // wasm_bindgen_futures::spawn_local(async move {
+                            save_as_zip(
+                                stfs_package
+                                    .read()
+                                    .borrow_parsed_stfs_package()
+                                    .as_ref()
+                                    .unwrap(),
+                                sender,
+                            );
+                            // });
+
+                            #[cfg(not(target_arch = "wasm32"))]
                             std::thread::spawn(move || {
                                 save_as_zip(
                                     stfs_package
