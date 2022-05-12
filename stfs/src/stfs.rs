@@ -246,7 +246,8 @@ impl<'a> HashTableMeta<'a> {
         meta.top_table.true_block_number =
             meta.compute_backing_hash_block_number_for_level(0, meta.top_table.level, sex);
 
-        let base_address = (meta.top_table.true_block_number * BLOCK_SIZE) + meta.first_table_address;
+        let base_address =
+            (meta.top_table.true_block_number * BLOCK_SIZE) + meta.first_table_address;
         meta.top_table.address_in_file =
             base_address + (((stfs_vol.block_separation as usize) & 2) << 0xB);
 
@@ -414,7 +415,8 @@ impl<'a> StfsPackage<'a> {
             } else {
                 // The file is broken up by hash tables
                 while data_remaining > 0 {
-                    let read_len = std::cmp::min(HASHES_PER_HASH_TABLE * BLOCK_SIZE, data_remaining);
+                    let read_len =
+                        std::cmp::min(HASHES_PER_HASH_TABLE * BLOCK_SIZE, data_remaining);
 
                     mappings.push(&self.input[next_address..(next_address + read_len)]);
 
@@ -460,7 +462,8 @@ impl<'a> StfsPackage<'a> {
 
     fn hash_table_skip_for_address(&self, table_address: usize) -> usize {
         // Convert the address to a true block number
-        let mut block_number = (table_address - self.hash_table_meta.first_table_address) / BLOCK_SIZE;
+        let mut block_number =
+            (table_address - self.hash_table_meta.first_table_address) / BLOCK_SIZE;
 
         // Check if it's the first hash table
         if block_number == 0 {
