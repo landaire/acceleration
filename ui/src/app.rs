@@ -615,6 +615,7 @@ impl eframe::App for AccelerationApp {
                         ui.label(status_message);
                     });
                 }
+                
                 TableBuilder::new(ui)
                     .striped(true)
                     .cell_layout(

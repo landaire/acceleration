@@ -18,6 +18,7 @@ use crate::sparse_reader::SparseReader;
 pub type StfsEntryRef = Arc<Mutex<StfsEntry>>;
 
 const INVALID_STR: &'static str = "<INVALID>";
+const BLOCK_SIZE: usize = 0x1000;
 
 fn input_byte_ref<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8], size: usize) -> &'a [u8] {
     let position: usize = cursor
@@ -245,7 +246,7 @@ impl<'a> HashTableMeta<'a> {
         meta.top_table.true_block_number =
             meta.compute_backing_hash_block_number_for_level(0, meta.top_table.level, sex);
 
-        let base_address = (meta.top_table.true_block_number << 0xC) + meta.first_table_address;
+        let base_address = (meta.top_table.true_block_number * BLOCK_SIZE) + meta.first_table_address;
         meta.top_table.address_in_file =
             base_address + (((stfs_vol.block_separation as usize) & 2) << 0xB);
 
@@ -406,14 +407,14 @@ impl<'a> StfsPackage<'a> {
                 .hash_table_meta
                 .compute_first_level_backing_hash_block_number(entry.starting_block_num, self.sex)
                 + self.hash_table_meta.block_step[0])
-                - ((start_address - self.hash_table_meta.first_table_address) >> 0xC);
+                - ((start_address - self.hash_table_meta.first_table_address) / BLOCK_SIZE);
 
             if entry.block_count <= blocks_until_hash_table {
                 mappings.push(&self.input[start_address..(start_address + entry.file_size)]);
             } else {
                 // The file is broken up by hash tables
                 while data_remaining > 0 {
-                    let read_len = std::cmp::min(HASHES_PER_HASH_TABLE * 0x1000, data_remaining);
+                    let read_len = std::cmp::min(HASHES_PER_HASH_TABLE * BLOCK_SIZE, data_remaining);
 
                     mappings.push(&self.input[next_address..(next_address + read_len)]);
 
@@ -427,14 +428,14 @@ impl<'a> StfsPackage<'a> {
             let mut data_remaining = entry.file_size;
 
             // This file does not have all-consecutive blocks
-            let mut block_count = data_remaining / 0x1000;
-            if data_remaining % 0x1000 != 0 {
+            let mut block_count = data_remaining / BLOCK_SIZE;
+            if data_remaining % BLOCK_SIZE != 0 {
                 block_count += 1;
             }
 
             let mut block = entry.starting_block_num;
             for _ in 0..block_count {
-                let read_len = std::cmp::min(0x1000, data_remaining);
+                let read_len = std::cmp::min(BLOCK_SIZE, data_remaining);
 
                 let block_address = self.block_to_addr(block) as usize;
                 mappings.push(&self.input[block_address..(block_address + read_len)]);
@@ -459,11 +460,11 @@ impl<'a> StfsPackage<'a> {
 
     fn hash_table_skip_for_address(&self, table_address: usize) -> usize {
         // Convert the address to a true block number
-        let mut block_number = (table_address - self.hash_table_meta.first_table_address) >> 0xC;
+        let mut block_number = (table_address - self.hash_table_meta.first_table_address) / BLOCK_SIZE;
 
         // Check if it's the first hash table
         if block_number == 0 {
-            return 0x1000 << self.sex as usize;
+            return BLOCK_SIZE << self.sex as usize;
         }
 
         // Check if it's the level 3 or above table
@@ -481,7 +482,7 @@ impl<'a> StfsPackage<'a> {
         }
 
         // Assume it's the level 0 table
-        return 0x1000 << self.sex as usize;
+        return BLOCK_SIZE << self.sex as usize;
     }
 
     fn block_hash_entry(&self, block: usize, input: &'a [u8]) -> HashEntry {
@@ -519,7 +520,7 @@ impl<'a> StfsPackage<'a> {
         let mut hash_addr = (self
             .hash_table_meta
             .compute_first_level_backing_hash_block_number(block, self.sex)
-            << 0xC)
+            * BLOCK_SIZE)
             + self.hash_table_meta.first_table_address;
         // 0x18 here is the size of the HashEntry structure
         hash_addr += (block % HASHES_PER_HASH_TABLE) * 0x18;
@@ -546,7 +547,7 @@ impl<'a> StfsPackage<'a> {
                 let position = (self
                     .hash_table_meta
                     .compute_second_level_backing_hash_block_number(block, self.sex)
-                    << 0xC)
+                    * BLOCK_SIZE)
                     + self.hash_table_meta.first_table_address
                     + first_level_offset as usize
                     + ((block % DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]) * 0x18);
@@ -666,7 +667,7 @@ impl<'a> StfsPackage<'a> {
             panic!("invalid block: {:#x}", block);
         }
 
-        (self.compute_data_block_num(block) << 0xC)
+        (self.compute_data_block_num(block) * BLOCK_SIZE)
             + self.hash_table_meta.first_table_address as u64
     }
 
