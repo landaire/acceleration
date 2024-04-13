@@ -13,8 +13,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 egui = "0.18"
 eframe = { version = "0.18", features = ["persistence"] }
-serde = { version = "1", features = ["derive"] } # You only need this if you want app persistence
-stfs = { version = "0.1", path = "../stfs" }
+serde = { version = "1", features = [
+    "derive",
+] } # You only need this if you want app persistence
+stfs_old = { version = "0.1", path = "../stfs_old" }
 rfd = "0.8"
 ouroboros = "0.15"
 image = { version = "0.24", features = ["jpeg", "png"] }

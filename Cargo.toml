@@ -1,6 +1,2 @@
 [workspace]
-members = [
-    'cli',
-    'stfs',
-    'ui',
-]
+members = ['cli', 'stfs', 'stfs_old', 'ui']

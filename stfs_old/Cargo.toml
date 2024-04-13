@@ -1,7 +1,10 @@
 [package]
-name = "stfs"
+name = "stfs_old"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 sha-1 = "0.10.0"
@@ -9,11 +12,7 @@ sha-1 = "0.10.0"
 thiserror = "1.0"
 bitflags = "1.3"
 chrono = { version = "0.4", features = ["serde", "wasmbind"] }
+byteorder = "1.4"
+num_enum = { version = "0.5" }
 serde = { version = "1.0", features = ["derive", "rc"] }
-binrw = "0.13"
-variantly = "0.4"
 parking_lot = { version = "0.12", features = ["serde"] }
-modular-bitfield = "0.11"
-vfs = { version = "0.12", path = "/Users/lander/src/rust-vfs" }
-
-[patch.crates-io]
