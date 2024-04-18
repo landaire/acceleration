@@ -14,3 +14,4 @@ structopt = "0.3"
 anyhow = "1.0"
 serde = { version = "1.0" }
 stfs = { version = "0.1", path = "../stfs" }
+bytes = "1.6"

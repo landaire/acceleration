@@ -49,7 +49,7 @@ pub enum PackageType {
 
 #[derive(Debug, Serialize, Variantly)]
 pub enum StfsEntry {
-	File(StfsFileEntry),
+	File(StfsFileEntry, Vec<Range<u64>>),
 	Folder { entry: StfsFileEntry, files: Vec<StfsEntryRef> },
 }
 
@@ -60,7 +60,15 @@ impl StfsEntry {
 
 	pub fn entry(&self) -> &StfsFileEntry {
 		match self {
-			StfsEntry::File(entry) | StfsEntry::Folder { entry, files: _ } => entry,
+			StfsEntry::File(entry, _) | StfsEntry::Folder { entry, files: _ } => entry,
+		}
+	}
+
+	pub fn file_ranges(&self) -> Option<&[Range<u64>]> {
+		if let StfsEntry::File(_, ranges) = self {
+			Some(ranges.as_slice())
+		} else {
+			None
 		}
 	}
 }
@@ -266,7 +274,7 @@ impl ops::Mul<usize> for Block {
 }
 
 impl StfsPackage {
-	pub fn file_ranges(&self, entry: &StfsFileEntry, input: &[u8]) -> Result<Vec<Range<u64>>, StfsError> {
+	fn file_ranges(&self, entry: &StfsFileEntry, input: &[u8]) -> Result<Vec<Range<u64>>, StfsError> {
 		let mut mappings = Vec::new();
 		if entry.file_attributes.is_none() {
 			return Ok(Vec::new());
@@ -455,6 +463,8 @@ impl StfsPackage {
 					break;
 				}
 
+				let file_ranges = self.file_ranges(&entry, input)?;
+
 				let file_table_index = addressing_info.file_table_index;
 				entry.addressing_info = addressing_info;
 				if entry.flags.is_folder() {
@@ -463,7 +473,7 @@ impl StfsPackage {
 					folders.insert(entry_idx as u16, folder.clone());
 					files.push(folder.clone());
 				} else {
-					files.push(Arc::new(Mutex::new(StfsEntry::File(entry))));
+					files.push(Arc::new(Mutex::new(StfsEntry::File(entry, file_ranges))));
 				}
 			}
 
@@ -472,16 +482,17 @@ impl StfsPackage {
 
 		// Associate each file with the folder it needs to be in
 		for file in files.drain(..) {
-			if let StfsEntry::File(entry) | StfsEntry::Folder { entry, files: _ } = &*file.lock() {
-				if let Some(attributes) = entry.file_attributes.as_ref() {
-					let cached_entry = folders.get(&attributes.dirent);
-					if let Some(entry) = cached_entry {
-						if let StfsEntry::Folder { entry: _, files } = &mut *entry.lock() {
-							files.push(file.clone());
-						}
-					} else {
-						panic!("Corrupt STFS file: missing folder dirent {:#x}", attributes.dirent);
+			let file_lock = file.lock();
+			let entry = file_lock.entry();
+
+			if let Some(attributes) = entry.file_attributes.as_ref() {
+				let cached_entry = folders.get(&attributes.dirent);
+				if let Some(entry) = cached_entry {
+					if let StfsEntry::Folder { entry: _, files } = &mut *entry.lock() {
+						files.push(Arc::clone(&file));
 					}
+				} else {
+					panic!("Corrupt STFS file: missing folder dirent {:#x}", attributes.dirent);
 				}
 			}
 		}

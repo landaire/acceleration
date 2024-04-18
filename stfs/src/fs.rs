@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -7,25 +8,30 @@ use vfs::error::VfsErrorKind;
 use vfs::FileSystem;
 use vfs::VfsError;
 
+use bytes::Bytes;
+
 use crate::StfsEntry;
 use crate::StfsEntryRef;
 use crate::StfsFileEntry;
 use crate::StfsPackage;
 
-#[derive(Debug)]
-pub struct StFS<'stfs, 'data> {
-	pub package: &'stfs StfsPackage,
-	pub data: &'data [u8],
+pub struct StFS<T> {
+	pub package: StfsPackage,
+	pub data: Arc<T>,
 }
 
-impl<'stfs, 'data> StFS<'_, '_> {
+impl<T> std::fmt::Debug for StFS<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("StFS").field("package", &self.package).field("data", &"...").finish()
+	}
+}
+
+impl<T> StFS<T> {
 	fn find_file(&self, path: &str) -> vfs::VfsResult<StfsEntryRef> {
-		// println!("path: {}", path);
 		let path = PathBuf::from(path);
 		let mut current = Arc::clone(&self.package.files);
 
 		for part in path.iter() {
-			// println!("part={:#?}", part);
 			if part == "/" {
 				continue;
 			}
@@ -33,7 +39,7 @@ impl<'stfs, 'data> StFS<'_, '_> {
 			let current_copy = Arc::clone(&current);
 			let node = current_copy.lock();
 			match &*node {
-				crate::StfsEntry::File(_) => return Err(VfsErrorKind::FileNotFound.into()),
+				crate::StfsEntry::File(_, _) => return Err(VfsErrorKind::FileNotFound.into()),
 				crate::StfsEntry::Folder { entry, files } => {
 					if let Some(node) = files.iter().find(|file| file.lock().name() == part.to_string_lossy()) {
 						current = Arc::clone(node)
@@ -48,7 +54,7 @@ impl<'stfs, 'data> StFS<'_, '_> {
 	}
 }
 
-impl<'stfs, 'data> FileSystem for StFS<'stfs, 'data> {
+impl<T: AsRef<[u8]> + Send + Sync + 'static> FileSystem for StFS<T> {
 	fn read_dir(&self, path: &str) -> vfs::VfsResult<Box<dyn Iterator<Item = String> + Send>> {
 		let dir = self.find_file(path)?;
 
@@ -82,7 +88,7 @@ impl<'stfs, 'data> FileSystem for StFS<'stfs, 'data> {
 		let file = &*file.lock();
 
 		let metadata = match file {
-			StfsEntry::File(entry) => {
+			StfsEntry::File(entry, _) => {
 				let attr = entry.file_attributes.as_ref().unwrap();
 				vfs::VfsMetadata {
 					file_type: vfs::VfsFileType::File,
