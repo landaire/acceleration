@@ -1,4 +1,8 @@
 use std::fmt::Debug;
+use std::io::Read;
+use std::io::Seek;
+use std::ops::Deref;
+use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,12 +12,105 @@ use vfs::error::VfsErrorKind;
 use vfs::FileSystem;
 use vfs::VfsError;
 
-use bytes::Bytes;
-
+use crate::consts::BLOCK_SIZE;
 use crate::StfsEntry;
 use crate::StfsEntryRef;
 use crate::StfsFileEntry;
 use crate::StfsPackage;
+
+pub struct StfsFileReader<T> {
+	pub block_ranges: Vec<Range<u64>>,
+	pub block_position: u64,
+	pub block_idx: usize,
+	pub position: u64,
+	pub data: Arc<T>,
+	pub len: u64,
+}
+
+impl<T> StfsFileReader<T> {
+	fn recalculate_block(&mut self) {
+		if self.position >= self.len {
+			// do nothing, reads will return EOF
+			return;
+		}
+
+		self.block_idx = usize::try_from(self.position).unwrap() / BLOCK_SIZE;
+		self.block_position = self.position % u64::try_from(BLOCK_SIZE).unwrap();
+	}
+}
+
+impl<T> Seek for StfsFileReader<T>
+where
+	T: AsRef<[u8]>,
+{
+	fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+		let (base, delta) = match pos {
+			std::io::SeekFrom::Start(pos) => {
+				self.position = pos;
+				self.recalculate_block();
+				return Ok(self.position);
+			}
+			std::io::SeekFrom::End(pos) => (self.data.deref().as_ref().len() as u64, pos),
+			std::io::SeekFrom::Current(delta) => (self.position, delta),
+		};
+
+		match base.checked_add_signed(delta) {
+			Some(n) => {
+				self.position = n;
+				self.recalculate_block();
+				Ok(self.position)
+			}
+			None => Err(std::io::Error::new(
+				std::io::ErrorKind::InvalidInput,
+				"invalid seek to a negative or overflowing position",
+			)),
+		}
+	}
+}
+
+impl<T> Read for StfsFileReader<T>
+where
+	T: AsRef<[u8]>,
+{
+	fn read(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
+		let mut bytes_remaining = buf.len();
+		let mut bytes_read = 0;
+
+		if self.block_idx >= self.block_ranges.len() || self.position >= self.len {
+			return Ok(0);
+		}
+
+		for (idx, mapping) in self.block_ranges.iter().enumerate().skip(self.block_idx) {
+			let block_len = mapping.end - mapping.start;
+			let (mapping_start, block_remaining_len) = if idx == self.block_idx {
+				(usize::try_from(mapping.start + self.block_position).unwrap(), block_len - self.block_position)
+			} else {
+				(0, block_len)
+			};
+
+			let bytes_to_copy = std::cmp::min(bytes_remaining, usize::try_from(block_remaining_len).unwrap());
+
+			buf[..bytes_to_copy]
+				.copy_from_slice(&self.data.deref().as_ref()[mapping_start..(mapping_start + bytes_to_copy)]);
+			buf = &mut buf[bytes_to_copy..];
+			bytes_read += bytes_to_copy;
+			bytes_remaining -= bytes_to_copy;
+
+			// Quit reading if we've read all data requested or have reached EOF
+			if bytes_remaining == 0
+				|| (idx == self.block_ranges.len() - 1
+					&& mapping_start + bytes_to_copy == usize::try_from(block_len).unwrap())
+			{
+				self.position = u64::try_from(mapping_start + bytes_to_copy).unwrap();
+				self.recalculate_block();
+
+				break;
+			}
+		}
+
+		Ok(bytes_read)
+	}
+}
 
 pub struct StFS<T> {
 	pub package: StfsPackage,
@@ -72,7 +169,17 @@ impl<T: AsRef<[u8]> + Send + Sync + 'static> FileSystem for StFS<T> {
 	}
 
 	fn open_file(&self, path: &str) -> vfs::VfsResult<Box<dyn vfs::SeekAndRead + Send>> {
-		todo!()
+		let file = self.find_file(path)?;
+		let file = file.lock();
+		let file_info = file.file_ref().unwrap();
+		Ok(Box::new(StfsFileReader {
+			block_ranges: file_info.1.clone(),
+			block_position: 0,
+			block_idx: 0,
+			position: 0,
+			data: Arc::clone(&self.data),
+			len: u64::from(file_info.0.file_attributes.as_ref().unwrap().file_size),
+		}))
 	}
 
 	fn create_file(&self, path: &str) -> vfs::VfsResult<Box<dyn vfs::SeekAndWrite + Send>> {
