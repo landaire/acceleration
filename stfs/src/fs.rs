@@ -56,7 +56,7 @@ where
 
 		match base.checked_add_signed(delta) {
 			Some(n) => {
-				self.position = n;
+				self.position = std::cmp::min(self.len, n);
 				self.recalculate_block();
 				Ok(self.position)
 			}
@@ -73,7 +73,7 @@ where
 	T: AsRef<[u8]>,
 {
 	fn read(&mut self, mut buf: &mut [u8]) -> std::io::Result<usize> {
-		let mut bytes_remaining = buf.len();
+		let mut output_bytes_remaining = buf.len();
 		let mut bytes_read = 0;
 
 		if self.block_idx >= self.block_ranges.len() || self.position >= self.len {
@@ -88,18 +88,20 @@ where
 				(0, block_len)
 			};
 
-			let bytes_to_copy = std::cmp::min(bytes_remaining, usize::try_from(block_remaining_len).unwrap());
+			let bytes_to_copy = std::cmp::min(self.len - self.position, block_remaining_len);
+			let bytes_to_copy = std::cmp::min(output_bytes_remaining, usize::try_from(bytes_to_copy).unwrap());
 
 			buf[..bytes_to_copy]
 				.copy_from_slice(&self.data.deref().as_ref()[mapping_start..(mapping_start + bytes_to_copy)]);
 			buf = &mut buf[bytes_to_copy..];
 			bytes_read += bytes_to_copy;
-			bytes_remaining -= bytes_to_copy;
+			println!("{} {}", bytes_to_copy, output_bytes_remaining);
+			output_bytes_remaining -= bytes_to_copy;
 
 			// Quit reading if we've read all data requested or have reached EOF
-			if bytes_remaining == 0
+			if output_bytes_remaining == 0
 				|| (idx == self.block_ranges.len() - 1
-					&& mapping_start + bytes_to_copy == usize::try_from(block_len).unwrap())
+					&& mapping_start + bytes_to_copy == mapping_start + usize::try_from(block_len).unwrap())
 			{
 				self.position = u64::try_from(mapping_start + bytes_to_copy).unwrap();
 				self.recalculate_block();
@@ -221,7 +223,7 @@ impl<T: AsRef<[u8]> + Send + Sync + 'static> FileSystem for StFS<T> {
 	}
 
 	fn exists(&self, path: &str) -> vfs::VfsResult<bool> {
-		todo!()
+		Ok(self.find_file(path).is_ok())
 	}
 
 	fn remove_file(&self, path: &str) -> vfs::VfsResult<()> {
