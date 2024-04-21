@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use bytes::Buf;
 use bytes::Bytes;
+use chrono::DateTime;
+use chrono::Utc;
 use clap::Parser;
 use clap::Subcommand;
 use memmap::MmapOptions;
@@ -24,6 +26,11 @@ enum Commands {
 		/// Show extra information about the files
 		#[arg(short, long)]
 		long: bool,
+		/// Recurse into child directories
+		#[arg(short, long)]
+		recursive: bool,
+		/// Path to print information about
+		path: Option<String>,
 	},
 	Extract {
 		/// File path to extract from the STFS package
@@ -52,12 +59,20 @@ fn main() -> anyhow::Result<()> {
 
 	let package = StfsPackage::try_from(&mmap[..])?;
 	let xcontent_package = StFS { package, data: Arc::new(mmap) };
-	let path: VfsPath = VfsPath::new(xcontent_package);
+	let mut path: VfsPath = VfsPath::new(xcontent_package);
 
 	match args.command {
-		Commands::List { tree: true, long: _ } => {
+		Commands::List { tree: true, long: _, recursive: _, path: start_path } => {
 			let mut tree = HashMap::new();
-			tree.insert("".to_string(), vec![]);
+			if start_path.is_none() {
+				// need to ensure root directory is represented
+				tree.insert("".to_string(), vec![]);
+			}
+
+			if let Some(start_path) = &start_path {
+				path = path.join(start_path)?;
+			}
+
 			for path in path.walk_dir()? {
 				let path = path?;
 				let children = tree.entry(path.parent().as_str().to_string()).or_default();
@@ -65,7 +80,14 @@ fn main() -> anyhow::Result<()> {
 			}
 
 			let mut queue = VecDeque::new();
-			queue.push_back((0, "", ".".to_string(), tree.remove("")));
+			if start_path.is_none() {
+				queue.push_back((0, "", ".".to_string(), tree.remove("")));
+			} else {
+				let path_as_str = path.as_str().to_owned();
+				let children = tree.remove(&path_as_str);
+
+				queue.push_back((0, "", path_as_str, children));
+			}
 			while let Some((depth, tree_char, name, children)) = queue.pop_front() {
 				let file_name = name.split('/').last().unwrap_or(name.as_ref());
 				println!(
@@ -82,8 +104,6 @@ fn main() -> anyhow::Result<()> {
 						} else if first {
 							first = false;
 							"├──"
-						} else if depth == 0 {
-							""
 						} else {
 							"├──"
 						};
@@ -94,8 +114,24 @@ fn main() -> anyhow::Result<()> {
 				}
 			}
 		}
-		Commands::List { tree: false, long } => {
-			todo!();
+		Commands::List { tree: false, long, recursive, path: start_path } => {
+			for file in path.walk_dir()? {
+				let file = file?;
+				let meta = file.metadata()?;
+				if file.as_str().chars().filter(|c| *c == '/').count() == 1 {
+					let created: DateTime<Utc> = meta.created.unwrap().into();
+					let accessed: DateTime<Utc> = meta.accessed.unwrap().into();
+
+					println!(
+						"{} {}b {} {} {}",
+						if file.is_file()? { "f" } else { "d" },
+						meta.len,
+						created.format("%Y/%m/%d"),
+						accessed.format("%Y/%m/%d"),
+						file.filename()
+					);
+				}
+			}
 		}
 		Commands::Extract { file_name, output_path } => {
 			let path = path.join(&file_name)?;
