@@ -34,17 +34,29 @@ const BLOCK_SIZE: usize = 0x1000;
 
 #[derive(Debug, Serialize, PartialEq, Eq, Copy, Clone)]
 #[binrw]
-pub enum PackageType {
+pub enum SignatureType {
 	/// User container packages that are created by an Xbox 360 console and
 	/// signed by the user's private key.
 	#[brw(magic = b"CON ")]
-	Con,
+	Console,
 	/// Xbox LIVE-distributed package that is signed by Microsoft's private key.
 	#[brw(magic = b"LIVE")]
 	Live,
 	/// Offline-distributed package that is signed by Microsoft's private key.
 	#[brw(magic = b"PIRS")]
 	Pirs,
+}
+
+impl std::fmt::Display for SignatureType {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		let description = match self {
+			SignatureType::Console => "Console (CON)",
+			SignatureType::Live => "Xbox LIVE Strong Signature (LIVE)",
+			SignatureType::Pirs => "Offline Strong Signature (PIRS)",
+		};
+
+		f.write_str(description)
+	}
 }
 
 #[derive(Debug, Serialize, Variantly)]
@@ -74,18 +86,18 @@ impl StfsEntry {
 }
 
 #[derive(Debug, Serialize, Copy, Clone)]
-pub enum StfsPackageSex {
-	Female = 0,
-	Male,
+pub enum StfsPackageReadFlag {
+	ReadWrite = 0,
+	ReadOnly,
 }
 
-impl StfsPackageSex {
+impl StfsPackageReadFlag {
 	/// The "block step" depends on the package's "sex". This basically determines
 	/// which hash tables are used.
 	const fn block_step(&self) -> [usize; 2] {
 		match self {
-			StfsPackageSex::Female => [0xAB, 0x718F],
-			StfsPackageSex::Male => [0xAC, 0x723A],
+			StfsPackageReadFlag::ReadWrite => [0xAB, 0x718F],
+			StfsPackageReadFlag::ReadOnly => [0xAC, 0x723A],
 		}
 	}
 }
@@ -107,7 +119,7 @@ pub struct HashTableMeta {
 }
 
 impl HashTableMeta {
-	pub fn new(sex: StfsPackageSex, header: &XContentHeader) -> Result<Self, StfsError> {
+	pub fn new(sex: StfsPackageReadFlag, header: &XContentHeader) -> Result<Self, StfsError> {
 		let mut meta = HashTableMeta::default();
 
 		meta.block_step = sex.block_step();
@@ -115,24 +127,26 @@ impl HashTableMeta {
 		// Address of the first hash table in the package comes right after the header
 		meta.first_table_address = ((header.header_size as usize) + 0x0FFF) & 0xFFFF_F000;
 
-		let stfs_vol =
-			header.volume_descriptor.stfs_ref().expect("volume descriptor does not represent an STFS filesystem");
+		let stfs_vol = header
+			.metadata
+			.volume_descriptor
+			.stfs_ref()
+			.expect("volume descriptor does not represent an STFS filesystem");
 
 		let allocated_block_count = stfs_vol.allocated_block_count as usize;
-		meta.tables_per_level[0] = ((allocated_block_count as usize) / HASHES_PER_HASH_TABLE)
-			+ if (allocated_block_count as usize) % HASHES_PER_HASH_TABLE != 0 { 1 } else { 0 };
+		meta.tables_per_level[0] = ((allocated_block_count as usize) / HASHES_PER_BLOCK)
+			+ if (allocated_block_count as usize) % HASHES_PER_BLOCK != 0 { 1 } else { 0 };
 
-		meta.tables_per_level[1] = (meta.tables_per_level[1] / HASHES_PER_HASH_TABLE)
-			+ if meta.tables_per_level[1] % HASHES_PER_HASH_TABLE != 0 && allocated_block_count > HASHES_PER_HASH_TABLE
-			{
+		meta.tables_per_level[1] = (meta.tables_per_level[1] / HASHES_PER_BLOCK)
+			+ if meta.tables_per_level[1] % HASHES_PER_BLOCK != 0 && allocated_block_count > HASHES_PER_BLOCK {
 				1
 			} else {
 				0
 			};
 
-		meta.tables_per_level[2] = (meta.tables_per_level[2] / HASHES_PER_HASH_TABLE)
-			+ if meta.tables_per_level[2] % HASHES_PER_HASH_TABLE != 0
-				&& allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]
+		meta.tables_per_level[2] = (meta.tables_per_level[2] / HASHES_PER_BLOCK)
+			+ if meta.tables_per_level[2] % HASHES_PER_BLOCK != 0
+				&& allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]
 			{
 				1
 			} else {
@@ -147,11 +161,11 @@ impl HashTableMeta {
 		meta.top_table.address_in_file = base_address + ((stfs_vol.flags.root_active_index() as usize) << 0xC);
 
 		meta.top_table.entry_count =
-			(allocated_block_count as usize) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[meta.top_table.level as usize];
+			(allocated_block_count as usize) / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[meta.top_table.level as usize];
 
-		if (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]
-			&& allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] != 0)
-			|| (allocated_block_count > HASHES_PER_HASH_TABLE && allocated_block_count % HASHES_PER_HASH_TABLE != 0)
+		if (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]
+			&& allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2] != 0)
+			|| (allocated_block_count > HASHES_PER_BLOCK && allocated_block_count % HASHES_PER_BLOCK != 0)
 		{
 			meta.top_table.entry_count += 1;
 		}
@@ -165,7 +179,7 @@ impl HashTableMeta {
 		&self,
 		block: Block,
 		level: HashTableLevel,
-		sex: StfsPackageSex,
+		sex: StfsPackageReadFlag,
 	) -> Block {
 		match level {
 			HashTableLevel::First => self.compute_first_level_backing_hash_block_number(block, sex),
@@ -174,15 +188,15 @@ impl HashTableMeta {
 		}
 	}
 
-	pub fn compute_first_level_backing_hash_block_number(&self, block: Block, sex: StfsPackageSex) -> Block {
-		if block.0 < HASHES_PER_HASH_TABLE {
+	pub fn compute_first_level_backing_hash_block_number(&self, block: Block, sex: StfsPackageReadFlag) -> Block {
+		if block.0 < HASHES_PER_BLOCK {
 			return Block(0);
 		}
 
-		let mut block_number = (block.0 / HASHES_PER_HASH_TABLE) * self.block_step[0];
-		block_number += ((block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) + 1) << (sex as u8);
+		let mut block_number = (block.0 / HASHES_PER_BLOCK) * self.block_step[0];
+		block_number += ((block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]) + 1) << (sex as u8);
 
-		let block = if block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] == 0 {
+		let block = if block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2] == 0 {
 			block_number
 		} else {
 			block_number + (1 << (sex as u8))
@@ -191,11 +205,11 @@ impl HashTableMeta {
 		block.into()
 	}
 
-	pub fn compute_second_level_backing_hash_block_number(&self, block: Block, sex: StfsPackageSex) -> Block {
-		let block = if block.0 < DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] {
+	pub fn compute_second_level_backing_hash_block_number(&self, block: Block, sex: StfsPackageReadFlag) -> Block {
+		let block = if block.0 < DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2] {
 			self.block_step[0]
 		} else {
-			(1 << (sex as u8)) + (block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) * self.block_step[1]
+			(1 << (sex as u8)) + (block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]) * self.block_step[1]
 		};
 
 		block.into()
@@ -303,7 +317,7 @@ impl StfsPackage {
 			} else {
 				// The file is broken up by hash tables
 				while data_remaining > 0 {
-					let read_len = std::cmp::min(HASHES_PER_HASH_TABLE * BLOCK_SIZE, data_remaining as usize) as u64;
+					let read_len = std::cmp::min(HASHES_PER_BLOCK * BLOCK_SIZE, data_remaining as usize) as u64;
 
 					let range = next_address..(next_address + read_len);
 					mappings.push(range.clone());
@@ -368,7 +382,7 @@ impl StfsPackage {
 	}
 
 	fn block_hash_entry(&self, block: Block, input: &[u8]) -> Result<HashEntry, StfsError> {
-		if let Some(stfs_vol) = self.header.volume_descriptor.stfs_ref() {
+		if let Some(stfs_vol) = self.header.metadata.volume_descriptor.stfs_ref() {
 			if block.0 > stfs_vol.allocated_block_count as usize {
 				panic!(
 					"Reference to illegal block number: {:#x} ({:#x} allocated)",
@@ -385,7 +399,7 @@ impl StfsPackage {
 	}
 
 	fn block_hash_address(&self, block: Block, input: &[u8]) -> Result<u64, StfsError> {
-		if let Some(stfs_vol) = self.header.volume_descriptor.stfs_ref() {
+		if let Some(stfs_vol) = self.header.metadata.volume_descriptor.stfs_ref() {
 			if block.0 > stfs_vol.allocated_block_count as usize {
 				panic!(
 					"Reference to illegal block number: {:#x} ({:#x} allocated)",
@@ -397,18 +411,18 @@ impl StfsPackage {
 				(self.hash_table_meta.compute_first_level_backing_hash_block_number(block, self.header.sex()).0
 					* BLOCK_SIZE) + self.hash_table_meta.first_table_address;
 			// 0x18 here is the size of the HashEntry structure
-			hash_addr += (block.0 % HASHES_PER_HASH_TABLE) * 0x18;
+			hash_addr += (block.0 % HASHES_PER_BLOCK) * 0x18;
 			let address = match self.hash_table_meta.top_table.level {
 				// TODO: might have broken things with the flags here
 				HashTableLevel::First => hash_addr as u64 + ((stfs_vol.flags.root_active_index() as u64) << 0xC),
 				HashTableLevel::Second => {
 					hash_addr as u64
-						+ ((self.hash_table_meta.top_table.entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]].status
-							as u64 & 0x40) << 6)
+						+ ((self.hash_table_meta.top_table.entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]]
+							.status as u64 & 0x40) << 6)
 				}
 				HashTableLevel::Third => {
 					let first_level_offset = (self.hash_table_meta.top_table.entries
-						[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]]
+						[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]]
 						.status as u64 & 0x40) << 6;
 
 					let position = (self
@@ -416,7 +430,7 @@ impl StfsPackage {
 						.compute_second_level_backing_hash_block_number(block, self.header.sex())
 						.0 * BLOCK_SIZE) + self.hash_table_meta.first_table_address
 						+ first_level_offset as usize
-						+ ((block.0 % DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]) * 0x18);
+						+ ((block.0 % DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]) * 0x18);
 
 					let status_byte = input[position + 0x14];
 					hash_addr as u64 + ((status_byte as u64 & 0x40) << 0x6)
@@ -430,7 +444,8 @@ impl StfsPackage {
 	}
 
 	fn read_files(&mut self, input: &[u8]) -> Result<(), StfsError> {
-		let stfs_vol = self.header.volume_descriptor.stfs_ref().expect("volume descriptor is not an STFS file");
+		let stfs_vol =
+			self.header.metadata.volume_descriptor.stfs_ref().expect("volume descriptor is not an STFS file");
 
 		let mut reader = Cursor::new(input);
 		let mut block = stfs_vol.file_table_block_num;
@@ -510,26 +525,29 @@ impl StfsPackage {
 		(self.compute_data_block_num(block) * BLOCK_SIZE as u64) + self.hash_table_meta.first_table_address as u64
 	}
 
+	/// Translates a data block to an absolute block, adjusting the block number to skip over any potential hash blocks.
 	fn compute_data_block_num(&self, block: Block) -> u64 {
-		let sex = self.header.sex() as usize;
-		println!("sex: {}", sex);
+		// Read-only filesystems have different properties
+		let blocks_per_hash_block = if self.header.is_read_only() { 1 } else { 2 };
 
-		let base_addr = ((((block.0 + HASHES_PER_HASH_TABLE) / HASHES_PER_HASH_TABLE) << sex) + block.0) as u64;
-		if block.0 < HASHES_PER_HASH_TABLE {
-			// this block fits in the first-layer hash table, so just return this address
-			base_addr
-		} else if block.0 < DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] {
-			// Account for the second-layer hash table
-			base_addr
-				+ (((base_addr + DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] as u64)
-					/ DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] as u64)
-					<< sex)
-		} else {
-			((1 << sex as usize)
-				+ ((base_addr as usize
-					+ ((block.0 + DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]))
-					<< sex as usize)) as u64
+		let mut block_num = block.0;
+		let mut num_hash_and_data_blocks =
+			(block_num + DATA_BLOCKS_PER_HASH_TREE_LEVEL[0]) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[0];
+		block_num += num_hash_and_data_blocks * blocks_per_hash_block;
+
+		if block_num >= DATA_BLOCKS_PER_HASH_TREE_LEVEL[0] {
+			// Skip past the level 0 hash table
+			num_hash_and_data_blocks =
+				(block_num + DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[1];
+			block_num += num_hash_and_data_blocks * blocks_per_hash_block;
+
+			// Skip past the level 1 hash table
+			if block_num >= DATA_BLOCKS_PER_HASH_TREE_LEVEL[1] {
+				block_num += blocks_per_hash_block;
+			}
 		}
+
+		u64::try_from(block_num).expect("failed to convert usize to u64")
 	}
 }
 
@@ -656,14 +674,14 @@ pub enum HashTableLevel {
 #[derive(Debug, Serialize)]
 #[binrw]
 #[brw(big)]
-#[br(import(package_type: PackageType))]
-enum KeyMaterial {
+#[br(import(signature_type: SignatureType))]
+pub enum KeyMaterial {
 	/// Only present in console-signed packages
-	#[br(pre_assert(package_type == PackageType::Con))]
+	#[br(pre_assert(signature_type == SignatureType::Console))]
 	Certificate(Certificate),
 
 	/// Only present in strong-signed packages
-	#[br(pre_assert(package_type != PackageType::Con))]
+	#[br(pre_assert(signature_type != SignatureType::Console))]
 	Signature(#[br(count = 64)] Vec<u8>),
 }
 
@@ -677,16 +695,42 @@ pub enum XContentHeaderMetadata {
 
 #[derive(Debug, Serialize)]
 #[binrw]
+pub struct FixedLengthNullWideString(
+	#[brw(pad_size_to = 128)]
+	#[serde(serialize_with = "serialize_null_wide_string")]
+	NullWideString,
+);
+
+impl std::ops::Deref for FixedLengthNullWideString {
+	type Target = NullWideString;
+
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+#[derive(Debug, Serialize)]
+#[binrw]
 #[brw(big)]
 pub struct XContentHeader {
-	pub package_type: PackageType,
-	#[br(args(package_type), dbg, pad_size_to = 0x228)]
+	pub signature_type: SignatureType,
+
+	#[br(args(signature_type), dbg, pad_size_to = 0x228)]
 	pub key_material: KeyMaterial,
 
 	pub license_data: [LicenseEntry; 0x10],
-	pub header_hash: [u8; 0x14],
+	/// Content ID is the hash of the metadata and all headers below it.
+	pub content_id: [u8; 0x14],
 	pub header_size: u32,
 
+	#[br(args(header_size))]
+	pub metadata: XContentMetadata,
+}
+
+#[derive(Debug, Serialize)]
+#[binrw]
+#[br(import(header_size: u32))]
+pub struct XContentMetadata {
 	pub content_type: ContentType,
 	pub metadata_version: u32,
 	pub content_size: u64,
@@ -700,7 +744,7 @@ pub struct XContentHeader {
 	pub disc_in_set: u8,
 	pub savegame_id: u32,
 	pub console_id: [u8; 5],
-	pub profile_id: u64,
+	pub creator_xuid: u64,
 
 	#[brw(seek_before = std::io::SeekFrom::Start(0x3a9))]
 	pub volume_kind: FileSystemKind,
@@ -718,14 +762,10 @@ pub struct XContentHeader {
 	pub device_id: [u8; 0x14],
 
 	// TODO: support localized names
-	#[serde(serialize_with = "serialize_null_wide_string")]
-	#[br(dbg)]
-	pub display_name: NullWideString,
+	pub display_name: [FixedLengthNullWideString; 12],
 
-	#[serde(serialize_with = "serialize_null_wide_string")]
 	#[brw(seek_before = std::io::SeekFrom::Start(0xd11))]
-	#[br(dbg)]
-	pub display_description: NullWideString,
+	pub display_description: [FixedLengthNullWideString; 12],
 
 	#[serde(serialize_with = "serialize_null_wide_string")]
 	#[brw(seek_before = std::io::SeekFrom::Start(0x1611))]
@@ -764,12 +804,12 @@ pub struct XContentHeader {
 impl XContentHeader {
 	/// Returns which hash table level the root hash is in
 	fn root_hash_table_level(&self) -> Result<HashTableLevel, StfsError> {
-		if let FileSystem::Stfs(volume_descriptor) = &self.volume_descriptor {
-			let level = if volume_descriptor.allocated_block_count as usize <= HASHES_PER_HASH_TABLE {
+		if let FileSystem::Stfs(volume_descriptor) = &self.metadata.volume_descriptor {
+			let level = if volume_descriptor.allocated_block_count as usize <= HASHES_PER_BLOCK {
 				HashTableLevel::First
-			} else if volume_descriptor.allocated_block_count as usize <= HASHES_PER_HASH_TABLE_LEVEL[1] {
+			} else if volume_descriptor.allocated_block_count as usize <= DATA_BLOCKS_PER_HASH_TREE_LEVEL[1] {
 				HashTableLevel::Second
-			} else if volume_descriptor.allocated_block_count as usize <= HASHES_PER_HASH_TABLE_LEVEL[2] {
+			} else if volume_descriptor.allocated_block_count as usize <= DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] {
 				HashTableLevel::Third
 			} else {
 				return Err(StfsError::InvalidHeader);
@@ -782,18 +822,18 @@ impl XContentHeader {
 	}
 
 	pub fn is_read_only(&self) -> bool {
-		if let FileSystem::Stfs(stfs) = &self.volume_descriptor {
+		if let FileSystem::Stfs(stfs) = &self.metadata.volume_descriptor {
 			stfs.flags.read_only()
 		} else {
 			false
 		}
 	}
 
-	pub fn sex(&self) -> StfsPackageSex {
+	pub fn sex(&self) -> StfsPackageReadFlag {
 		if self.is_read_only() {
-			StfsPackageSex::Male
+			StfsPackageReadFlag::ReadOnly
 		} else {
-			StfsPackageSex::Female
+			StfsPackageReadFlag::ReadWrite
 		}
 	}
 }
@@ -939,7 +979,7 @@ pub enum ContentType {
 	Installer = 0xB0000,
 	IPTVPauseBuffer = 0x2000,
 	LicenseStore = 0xF0000,
-	MarketPlaceContent = 2,
+	MarketplaceContent = 2,
 	Movie = 0x100000,
 	MusicVideo = 0x300000,
 	PodcastVideo = 0x500000,
