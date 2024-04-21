@@ -60,15 +60,10 @@ fn main() -> anyhow::Result<()> {
 			tree.insert("".to_string(), vec![]);
 			for path in path.walk_dir()? {
 				let path = path?;
-				let mut children = tree.entry(path.parent().as_str().to_string()).or_default();
+				let children = tree.entry(path.parent().as_str().to_string()).or_default();
 				children.push(path);
-
-				// let slash_count = path.as_str().chars().filter(|c| c == '/').count();
-				// println!("├──")
-				// println!("name={:?}, meta={:#?}", path.as_str(), path.metadata());
 			}
 
-			let mut depth = 0;
 			let mut queue = VecDeque::new();
 			queue.push_back((0, "", ".".to_string(), tree.remove("")));
 			while let Some((depth, tree_char, name, children)) = queue.pop_front() {
@@ -79,7 +74,7 @@ fn main() -> anyhow::Result<()> {
 					width = depth * 3
 				);
 				if let Some(mut children) = children {
-					children.sort_by_key(|child| !child.is_file().unwrap());
+					children.sort_by_key(|child| child.is_file().unwrap());
 					let mut first = true;
 					while let Some(child) = children.pop() {
 						let tree_char = if children.is_empty() {
@@ -99,7 +94,9 @@ fn main() -> anyhow::Result<()> {
 				}
 			}
 		}
-		Commands::List { tree: false, long } => {}
+		Commands::List { tree: false, long } => {
+			todo!();
+		}
 		Commands::Extract { file_name, output_path } => {
 			let path = path.join(&file_name)?;
 			println!("{:?}", path.as_str());
