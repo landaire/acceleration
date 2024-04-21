@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,6 +11,7 @@ use chrono::DateTime;
 use chrono::Utc;
 use clap::Parser;
 use clap::Subcommand;
+use humansize::DECIMAL;
 use memmap::MmapOptions;
 use stfs::fs::StFS;
 use stfs::vfs::FileSystem;
@@ -18,6 +20,11 @@ use stfs::StfsPackage;
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+	Info {
+		/// Show additional header information
+		#[arg(short, long)]
+		long: bool,
+	},
 	/// Lists files
 	List {
 		/// Present an ASCII tree view of the files
@@ -49,7 +56,7 @@ struct Args {
 	file_name: PathBuf,
 
 	#[command(subcommand)]
-	command: Commands,
+	command: Option<Commands>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -58,10 +65,137 @@ fn main() -> anyhow::Result<()> {
 	let mmap = unsafe { MmapOptions::new().map(&file)? };
 
 	let package = StfsPackage::try_from(&mmap[..])?;
+
+	if let Commands::Info { long } = args.command.as_ref().unwrap_or(&Commands::Info { long: false }) {
+		let header = &package.header;
+		println!("=== XContentHeader ==");
+		println!("Signature Type: {}", header.signature_type);
+		println!(
+			"Signature: {}",
+			match &header.key_material {
+				stfs::KeyMaterial::Certificate(cert) => todo!("certificate"),
+				stfs::KeyMaterial::Signature(sig) => {
+					hex::encode(sig)
+				}
+			}
+		);
+		println!("Metadata Hash: {}", hex::encode(header.content_id));
+
+		println!();
+		println!("=== XContentMetadata ==");
+		let metadata = &header.metadata;
+		println!("Content Type: {:?} (0x{:08X})", metadata.content_type, metadata.content_type as u32);
+		println!(
+			"Content Size: {} ({:X} bytes)",
+			humansize::format_size(metadata.content_size, DECIMAL),
+			metadata.content_size
+		);
+		println!("Media ID: 0x{:08X}", metadata.media_id);
+		println!("Metadata Version: {}", metadata.metadata_version);
+		println!("Version: {}", metadata.version);
+		println!("Base Version: {}", metadata.base_version);
+		println!("Title ID: 0x{:08X}", metadata.title_id);
+		println!("Platform: {}", metadata.platform);
+		println!("Executable Type: {}", metadata.executable_type);
+		println!("Disc Number: {}", metadata.disc_number);
+		println!("Disc in Set: {}", metadata.disc_in_set);
+		println!("Savegame ID: 0x{:08X}", metadata.savegame_id);
+		println!("Console ID: {}", hex::encode(metadata.console_id));
+		println!("Creator XUID: {:016X}", metadata.creator_xuid);
+
+		println!();
+		for (lang_id, display_name) in metadata.display_name.iter().enumerate() {
+			if display_name.is_empty() {
+				continue;
+			}
+			println!("Display Name ({}): {}", lang_id, display_name.deref())
+		}
+
+		println!();
+		for (lang_id, description) in metadata.display_description.iter().enumerate() {
+			if description.is_empty() {
+				continue;
+			}
+			println!("Description ({}): {}", lang_id, description.deref())
+		}
+
+		println!("Publisher Name: {}", metadata.publisher_name);
+		println!("Title Name: {}", metadata.title_name);
+
+		// pub content_type: ContentType,
+		// pub metadata_version: u32,
+		// pub content_size: u64,
+		// pub media_id: u32,
+		// pub version: u32,
+		// pub base_version: u32,
+		// pub title_id: u32,
+		// pub platform: u8,
+		// pub executable_type: u8,
+		// pub disc_number: u8,
+		// pub disc_in_set: u8,
+		// pub savegame_id: u32,
+		// pub console_id: [u8; 5],
+		// pub profile_id: u64,
+
+		// #[brw(seek_before = std::io::SeekFrom::Start(0x3a9))]
+		// pub volume_kind: FileSystemKind,
+
+		// #[brw(seek_before = std::io::SeekFrom::Start(0x379))]
+		// #[br(args(volume_kind))]
+		// pub volume_descriptor: FileSystem,
+
+		// // Start metadata v1
+		// pub data_file_count: u32,
+		// pub data_file_combined_size: u64,
+
+		// // TODO: parse the inbetween data
+		// #[brw(seek_before = std::io::SeekFrom::Start(0x3fd))]
+		// pub device_id: [u8; 0x14],
+
+		// // TODO: support localized names
+		// pub display_name: [FixedLengthNullWideString; 12],
+
+		// #[brw(seek_before = std::io::SeekFrom::Start(0xd11))]
+		// pub display_description: [FixedLengthNullWideString; 12],
+
+		// #[serde(serialize_with = "serialize_null_wide_string")]
+		// #[brw(seek_before = std::io::SeekFrom::Start(0x1611))]
+		// #[br(dbg)]
+		// pub publisher_name: NullWideString,
+
+		// #[serde(serialize_with = "serialize_null_wide_string")]
+		// #[brw(seek_before = std::io::SeekFrom::Start(0x1691))]
+		// #[br(dbg)]
+		// pub title_name: NullWideString,
+
+		// #[brw(seek_before = std::io::SeekFrom::Start(0x1711))]
+		// pub transfer_flags: u8,
+		// #[br(dbg)]
+		// pub thumbnail_image_size: u32,
+		// #[br(dbg)]
+		// pub title_thumbnail_image_size: u32,
+
+		// #[br(count = thumbnail_image_size)]
+		// #[brw(pad_size_to(MAX_IMAGE_SIZE))]
+		// pub thumbnail_image: Vec<u8>,
+
+		// #[br(count = title_thumbnail_image_size)]
+		// #[brw(pad_size_to(MAX_IMAGE_SIZE))]
+		// pub title_image: Vec<u8>,
+
+		// #[br(if(((header_size + 0xFFF) & 0xFFFFF000) - 0x971A > 0x15F4))]
+		// #[br(dbg)]
+		// pub installer_type: Option<InstallerType>,
+		return Ok(());
+	}
+
 	let xcontent_package = StFS { package, data: Arc::new(mmap) };
 	let mut path: VfsPath = VfsPath::new(xcontent_package);
 
-	match args.command {
+	match args.command.expect("default command should have been handled") {
+		Commands::Info { long } => {
+			unreachable!("Handled above")
+		}
 		Commands::List { tree: true, long: _, recursive: _, path: start_path } => {
 			let mut tree = HashMap::new();
 			if start_path.is_none() {

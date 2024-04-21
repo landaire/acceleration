@@ -17,3 +17,5 @@ serde = { version = "1.0" }
 stfs = { version = "0.1", path = "../stfs" }
 bytes = "1.6"
 chrono = "0.4.38"
+hex = "0.4.3"
+humansize = "2.1.3"
