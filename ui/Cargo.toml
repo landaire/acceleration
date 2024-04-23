@@ -11,16 +11,16 @@ crate-type = ["cdylib", "rlib"]
 
 
 [dependencies]
-egui = "0.18"
-eframe = { version = "0.18", features = ["persistence"] }
+egui = "0.27"
+eframe = { version = "0.27", features = ["persistence"] }
 serde = { version = "1", features = [
     "derive",
 ] } # You only need this if you want app persistence
 stfs_old = { version = "0.1", path = "../stfs_old" }
-rfd = "0.8"
+rfd = "0.14"
 ouroboros = "0.15"
-image = { version = "0.24", features = ["jpeg", "png"] }
-egui_extras = { version = "0.18", features = ["image"] }
+image = { version = "0.25", features = ["jpeg", "png"] }
+egui_extras = { version = "0.27", features = ["image"] }
 log = "0.4"
 clipboard = "0.5"
 wasm-bindgen-futures = "0.4"

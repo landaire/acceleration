@@ -7,6 +7,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use egui_extras::Column;
 use stfs_old as stfs;
 
 use clipboard::ClipboardContext;
@@ -392,7 +393,8 @@ impl eframe::App for AccelerationApp {
 		}
 
 		if let Some(file_path) = active_stfs_file.as_ref() {
-			frame.set_window_title(&format!("acceleration - {:?}", file_path));
+
+			// frame.set_window_title(&format!("acceleration - {:?}", file_path));
 		}
 
 		// Examples of how to create different panels and windows.
@@ -440,7 +442,7 @@ impl eframe::App for AccelerationApp {
 						}
 					}
 					if ui.button("Quit").clicked() {
-						frame.quit();
+						ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 					}
 				});
 			});
@@ -543,10 +545,10 @@ impl eframe::App for AccelerationApp {
 
 				TableBuilder::new(ui)
 					.striped(true)
-					.cell_layout(egui::Layout::left_to_right().with_cross_align(egui::Align::Center))
-					.column(Size::initial(60.0).at_least(40.0))
-					.column(Size::initial(60.0).at_least(40.0))
-					.column(Size::remainder().at_least(60.0))
+					.cell_layout(egui::Layout::left_to_right(egui::Align::Center).with_cross_align(egui::Align::Center))
+					.column(Column::initial(60.0).at_least(40.0))
+					.column(Column::initial(60.0).at_least(40.0))
+					.column(Column::remainder().at_least(60.0))
 					.resizable(true)
 					.header(20.0, |mut header| {
 						header.col(|ui| {
@@ -564,10 +566,10 @@ impl eframe::App for AccelerationApp {
 							let package_files = package_files.borrow();
 							for file in &*package_files {
 								body.row(18.0, |mut row| {
-									row.col(|ui| {
+									let (_, resp) = row.col(|ui| {
 										ui.label(file.name.as_str());
-									})
-									.context_menu(|ui| {
+									});
+									resp.context_menu(|ui| {
 										if ui.button("Extract").clicked() {
 											let stfs_package = stfs_package.read();
 											save_file(

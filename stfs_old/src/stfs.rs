@@ -14,7 +14,6 @@ use num_enum::TryFromPrimitive;
 use serde::Serialize;
 use std::io::Cursor;
 use thiserror::Error;
-use winnow::PResult;
 
 use crate::sparse_reader::SparseReader;
 
