@@ -296,10 +296,45 @@ impl ops::Mul<usize> for Block {
 	}
 }
 
+#[derive(Copy, Clone, Debug)]
+enum HashBlockTable {
+	Level0,
+	Level1,
+	Level2,
+}
+
 impl StfsPackage {
+	fn compute_hash_block_number(&self, block: Block, table_level: HashBlockTable) -> usize {
+		const BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY: usize = HASHES_PER_BLOCK + 1;
+		const BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_ONLY: usize =
+			(BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY * BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY) + 1;
+		const BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_ONLY: usize =
+			(BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_ONLY * BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_ONLY) + 1;
+
+		const BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_WRITE: usize = HASHES_PER_BLOCK + 2;
+		const BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_WRITE: usize =
+			(BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_WRITE * BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_WRITE) + 2;
+		const BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_WRITE: usize =
+			(BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_WRITE * BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_WRITE) + 2;
+
+		if self.header.is_read_only() {
+			match table_level {
+				HashBlockTable::Level0 => BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY,
+				HashBlockTable::Level1 => BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_ONLY,
+				HashBlockTable::Level2 => BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_ONLY,
+			}
+		} else {
+			match table_level {
+				HashBlockTable::Level0 => BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_WRITE,
+				HashBlockTable::Level1 => BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_WRITE,
+				HashBlockTable::Level2 => BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_WRITE,
+			}
+		}
+	}
 	fn hash_table_meta(&self) -> &HashTableMeta {
 		self.hash_table_meta.as_ref().unwrap()
 	}
+
 	fn file_ranges(&self, entry: &StfsFileEntry, input: &[u8]) -> Result<Vec<Range<u64>>, StfsError> {
 		let mut mappings = Vec::new();
 		if entry.file_attributes.is_none() {
