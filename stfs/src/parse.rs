@@ -223,7 +223,7 @@ impl HashTableMeta {
 #[derive(Debug, Serialize)]
 pub struct StfsPackage {
 	pub header: XContentHeader,
-	pub hash_table_meta: HashTableMeta,
+	pub hash_table_meta: Option<HashTableMeta>,
 	pub files: StfsEntryRef,
 }
 
@@ -233,8 +233,15 @@ impl TryFrom<&[u8]> for StfsPackage {
 	fn try_from(input: &[u8]) -> Result<Self, Self::Error> {
 		let mut cursor = Cursor::new(input);
 		let xcontent_header = cursor.read_be::<XContentHeader>()?;
-		let mut hash_table_meta = HashTableMeta::new(xcontent_header.sex(), &xcontent_header)?;
-		hash_table_meta.top_table.parse_hash_entries(&input[hash_table_meta.top_table.data_range()])?;
+
+		let is_stfs = xcontent_header.metadata.volume_descriptor.is_stfs();
+		let hash_table_meta = if is_stfs {
+			let mut hash_table_meta = HashTableMeta::new(xcontent_header.sex(), &xcontent_header)?;
+			hash_table_meta.top_table.parse_hash_entries(&input[hash_table_meta.top_table.data_range()])?;
+			Some(hash_table_meta)
+		} else {
+			None
+		};
 
 		let mut package = StfsPackage {
 			header: xcontent_header,
@@ -242,7 +249,9 @@ impl TryFrom<&[u8]> for StfsPackage {
 			files: Arc::new(Mutex::new(StfsEntry::Folder { entry: Default::default(), files: Default::default() })),
 		};
 
-		package.read_files(input)?;
+		if is_stfs {
+			// package.read_files(input)?;
+		}
 
 		Ok(package)
 	}
@@ -288,6 +297,9 @@ impl ops::Mul<usize> for Block {
 }
 
 impl StfsPackage {
+	fn hash_table_meta(&self) -> &HashTableMeta {
+		self.hash_table_meta.as_ref().unwrap()
+	}
 	fn file_ranges(&self, entry: &StfsFileEntry, input: &[u8]) -> Result<Vec<Range<u64>>, StfsError> {
 		let mut mappings = Vec::new();
 		if entry.file_attributes.is_none() {
@@ -307,10 +319,10 @@ impl StfsPackage {
 		// Check if we can read consecutive blocks
 		if entry.flags.has_consecutive_blocks() {
 			let blocks_until_hash_table = (self
-				.hash_table_meta
+				.hash_table_meta()
 				.compute_first_level_backing_hash_block_number(attributes.starting_block, self.header.sex())
-				.0 + self.hash_table_meta.block_step[0])
-				- (((start_address as usize) - self.hash_table_meta.first_table_address) / BLOCK_SIZE);
+				.0 + self.hash_table_meta().block_step[0])
+				- (((start_address as usize) - self.hash_table_meta().first_table_address) / BLOCK_SIZE);
 
 			if attributes.block_count as usize <= blocks_until_hash_table {
 				mappings.push(start_address..(start_address + attributes.file_size as u64));
@@ -355,9 +367,10 @@ impl StfsPackage {
 
 	fn hash_table_skip_for_address(&self, table_address: usize) -> Result<usize, StfsError> {
 		let sex = self.header.sex() as usize;
+		let hash_table_meta = self.hash_table_meta();
 
 		// Convert the address to a true block number
-		let mut block_number = (table_address - self.hash_table_meta.first_table_address) / BLOCK_SIZE;
+		let mut block_number = (table_address - hash_table_meta.first_table_address) / BLOCK_SIZE;
 
 		// Check if it's the first hash table
 		if block_number == 0 {
@@ -365,15 +378,14 @@ impl StfsPackage {
 		}
 
 		// Check if it's the level 3 or above table
-		if block_number == self.hash_table_meta.block_step[1] {
+		if block_number == hash_table_meta.block_step[1] {
 			return Ok((BLOCK_SIZE * 3) << sex);
-		} else if block_number > self.hash_table_meta.block_step[1] {
-			block_number -= self.hash_table_meta.block_step[1] + (1 << sex);
+		} else if block_number > hash_table_meta.block_step[1] {
+			block_number -= hash_table_meta.block_step[1] + (1 << sex);
 		}
 
 		// Check if it's at a level 2 table
-		if block_number == self.hash_table_meta.block_step[0] || block_number % self.hash_table_meta.block_step[1] == 0
-		{
+		if block_number == hash_table_meta.block_step[0] || block_number % hash_table_meta.block_step[1] == 0 {
 			Ok((BLOCK_SIZE * 2) << sex)
 		} else {
 			// Assume it's the level 0 table
@@ -407,28 +419,29 @@ impl StfsPackage {
 				);
 			}
 
-			let mut hash_addr =
-				(self.hash_table_meta.compute_first_level_backing_hash_block_number(block, self.header.sex()).0
-					* BLOCK_SIZE) + self.hash_table_meta.first_table_address;
+			let hash_table_meta = self.hash_table_meta();
+
+			let mut hash_addr = (hash_table_meta
+				.compute_first_level_backing_hash_block_number(block, self.header.sex())
+				.0 * BLOCK_SIZE) + hash_table_meta.first_table_address;
 			// 0x18 here is the size of the HashEntry structure
 			hash_addr += (block.0 % HASHES_PER_BLOCK) * 0x18;
-			let address = match self.hash_table_meta.top_table.level {
+			let address = match hash_table_meta.top_table.level {
 				// TODO: might have broken things with the flags here
 				HashTableLevel::First => hash_addr as u64 + ((stfs_vol.flags.root_active_index() as u64) << 0xC),
 				HashTableLevel::Second => {
 					hash_addr as u64
-						+ ((self.hash_table_meta.top_table.entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]]
-							.status as u64 & 0x40) << 6)
+						+ ((hash_table_meta.top_table.entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]].status
+							as u64 & 0x40) << 6)
 				}
 				HashTableLevel::Third => {
-					let first_level_offset = (self.hash_table_meta.top_table.entries
+					let first_level_offset = (hash_table_meta.top_table.entries
 						[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]]
 						.status as u64 & 0x40) << 6;
 
-					let position = (self
-						.hash_table_meta
+					let position = (hash_table_meta
 						.compute_second_level_backing_hash_block_number(block, self.header.sex())
-						.0 * BLOCK_SIZE) + self.hash_table_meta.first_table_address
+						.0 * BLOCK_SIZE) + hash_table_meta.first_table_address
 						+ first_level_offset as usize
 						+ ((block.0 % DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]) * 0x18);
 
@@ -458,9 +471,7 @@ impl StfsPackage {
 		);
 
 		for block_idx in 0..(stfs_vol.file_table_block_count as usize) {
-			println!("block: {:#X?}", block);
 			let current_addr = self.block_to_addr(block);
-			println!("addr: {:#X?}", current_addr);
 			reader.set_position(current_addr);
 
 			for file_entry_idx in 0..0x40 {
@@ -469,7 +480,6 @@ impl StfsPackage {
 					file_table_index: (block_idx * 0x40) + file_entry_idx,
 				};
 
-				println!("reading file entry");
 				let mut entry = reader.read_be::<StfsFileEntry>()?;
 
 				// If we encounter a NULL name, that signifies that we've reached the end of the file table
@@ -522,7 +532,7 @@ impl StfsPackage {
 			panic!("invalid block: {:#x}", block.0);
 		}
 
-		(self.compute_data_block_num(block) * BLOCK_SIZE as u64) + self.hash_table_meta.first_table_address as u64
+		(self.compute_data_block_num(block) * BLOCK_SIZE as u64) + self.hash_table_meta().first_table_address as u64
 	}
 
 	/// Translates a data block to an absolute block, adjusting the block number to skip over any potential hash blocks.
@@ -588,10 +598,8 @@ pub struct StfsFileAttributes {
 	#[brw(little)]
 	pub starting_block: Block,
 
-	#[br(dbg)]
 	pub dirent: u16,
 	pub file_size: u32,
-	#[br(dbg)]
 	pub created_time_stamp: StfTimestamp,
 	pub access_time_stamp: StfTimestamp,
 }
@@ -604,7 +612,6 @@ pub struct StfsFileEntry {
 
 	#[brw(pad_size_to = 0x28)]
 	#[serde(serialize_with = "serialize_null_string")]
-	#[br(dbg)]
 	pub name: NullString,
 	pub flags: StfsEntryFlags,
 
@@ -715,7 +722,7 @@ impl std::ops::Deref for FixedLengthNullWideString {
 pub struct XContentHeader {
 	pub signature_type: SignatureType,
 
-	#[br(args(signature_type), dbg, pad_size_to = 0x228)]
+	#[br(args(signature_type), pad_size_to = 0x228)]
 	pub key_material: KeyMaterial,
 
 	pub license_data: [LicenseEntry; 0x10],
@@ -769,19 +776,15 @@ pub struct XContentMetadata {
 
 	#[serde(serialize_with = "serialize_null_wide_string")]
 	#[brw(seek_before = std::io::SeekFrom::Start(0x1611))]
-	#[br(dbg)]
 	pub publisher_name: NullWideString,
 
 	#[serde(serialize_with = "serialize_null_wide_string")]
 	#[brw(seek_before = std::io::SeekFrom::Start(0x1691))]
-	#[br(dbg)]
 	pub title_name: NullWideString,
 
 	#[brw(seek_before = std::io::SeekFrom::Start(0x1711))]
 	pub transfer_flags: u8,
-	#[br(dbg)]
 	pub thumbnail_image_size: u32,
-	#[br(dbg)]
 	pub title_thumbnail_image_size: u32,
 
 	#[br(count = thumbnail_image_size)]
@@ -793,7 +796,6 @@ pub struct XContentMetadata {
 	pub title_image: Vec<u8>,
 
 	#[br(if(((header_size + 0xFFF) & 0xFFFFF000) - 0x971A > 0x15F4))]
-	#[br(dbg)]
 	pub installer_type: Option<InstallerType>,
 	// #[br(if(installer_type.is_some()), args(installer_type.unwrap()))]
 	// pub installer_meta: Option<InstallerMeta>,
