@@ -12,7 +12,7 @@ use chrono::Utc;
 use clap::Parser;
 use clap::Subcommand;
 use humansize::DECIMAL;
-use memmap::MmapOptions;
+use memmap2::MmapOptions;
 use stfs::fs::StFS;
 use stfs::vfs::FileSystem;
 use stfs::vfs::VfsPath;
@@ -81,9 +81,9 @@ fn main() -> anyhow::Result<()> {
 		);
 		println!("Metadata Hash: {}", hex::encode(header.content_id));
 
+		let metadata = &header.metadata;
 		println!();
 		println!("=== XContentMetadata ==");
-		let metadata = &header.metadata;
 		println!("Content Type: {:?} (0x{:08X})", metadata.content_type, metadata.content_type as u32);
 		println!(
 			"Content Size: {} ({:X} bytes)",
@@ -189,7 +189,7 @@ fn main() -> anyhow::Result<()> {
 		return Ok(());
 	}
 
-	let xcontent_package = StFS { package, data: Arc::new(mmap) };
+	let xcontent_package = StFS::new_from(&package, Arc::new(mmap));
 	let mut path: VfsPath = VfsPath::new(xcontent_package);
 
 	match args.command.expect("default command should have been handled") {

@@ -9,9 +9,8 @@ name = "acceleration"
 path = "src/main.rs"
 
 [dependencies]
-memmap = "0.7"
-clap = { version = "4.5.4", features = ["derive"]}
-structopt = "0.3"
+memmap2 = "0.9"
+clap = { version = "4.5.4", features = ["derive"] }
 anyhow = "1.0"
 serde = { version = "1.0" }
 stfs = { version = "0.1", path = "../stfs" }

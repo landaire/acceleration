@@ -13,20 +13,21 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 egui = "0.27"
 eframe = { version = "0.27", features = ["persistence"] }
-serde = { version = "1", features = [
-    "derive",
-] } # You only need this if you want app persistence
-stfs_old = { version = "0.1", path = "../stfs_old" }
+serde = { version = "1", features = ["derive"] }
+stfs = { path = "../stfs" }
 rfd = "0.14"
-ouroboros = "0.15"
-image = { version = "0.25", features = ["jpeg", "png"] }
+image = { version = "0.25", features = [
+    "jpeg",
+    "png",
+], default-features = false }
 egui_extras = { version = "0.27", features = ["image"] }
 log = "0.4"
 clipboard = "0.5"
 wasm-bindgen-futures = "0.4"
 futures = "0.3"
-zip = { version = "0.6", default-features = false, features = ["deflate"] }
+zip = { version = "1.1", default-features = false, features = ["deflate"] }
 parking_lot = "0.12"
+anyhow = "1.0"
 
 # native:
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

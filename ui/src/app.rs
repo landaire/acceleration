@@ -1,5 +1,7 @@
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::Cursor;
+use std::io::Read;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
@@ -7,8 +9,10 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
+use egui::ColorImage;
+use egui::Image;
+use egui::ImageSource;
 use egui_extras::Column;
-use stfs_old as stfs;
 
 use clipboard::ClipboardContext;
 use clipboard::ClipboardProvider;
@@ -17,17 +21,18 @@ use egui::Sense;
 use egui::Spinner;
 use egui::TextBuffer;
 use egui_extras::RetainedImage;
+use image::io::Reader as ImageReader;
 use log::debug;
 use log::info;
-use ouroboros::self_referencing;
 use parking_lot::Mutex;
 use parking_lot::RwLock;
 use rfd::AsyncFileDialog;
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
-use stfs_old::StfsEntry;
-use stfs_old::StfsFileEntry;
-use stfs_old::StfsPackage;
+use stfs::binrw::meta;
+use stfs::fs::StFS;
+use stfs::vfs::VfsPath;
+use stfs::StfsPackage;
 use zip::write::FileOptions;
 
 #[cfg(target_arch = "wasm32")]
@@ -36,6 +41,7 @@ use eframe::wasm_bindgen::prelude::*;
 use eframe::wasm_bindgen::{
 	self,
 };
+use zip::write::SimpleFileOptions;
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -43,9 +49,16 @@ extern "C" {
 	fn download_file(file: &web_sys::File);
 }
 
+#[derive(Debug)]
+struct StfsPackageReference {
+	data: Arc<Vec<u8>>,
+	parsed: StfsPackage,
+	fs: StFS<Vec<u8>>,
+}
+
 enum BackgroundTaskMessage {
-	StfsPackageRead(PathBuf, Arc<RwLock<StfsPackageReference>>),
-	ZipFileUpdate(PathBuf),
+	StfsPackageRead(PathBuf, Arc<StfsPackageReference>),
+	ZipFileUpdate(String),
 	ZipDone,
 }
 
@@ -56,13 +69,13 @@ pub struct AccelerationApp {
 	active_stfs_file: Option<PathBuf>,
 
 	#[serde(skip)]
-	stfs_package: Option<Arc<RwLock<StfsPackageReference>>>,
+	stfs_package: Option<Arc<StfsPackageReference>>,
 
 	#[serde(skip)]
-	stfs_package_display_image: Option<RetainedImage>,
+	stfs_package_display_image: Option<Vec<u8>>,
 
 	#[serde(skip)]
-	stfs_package_title_image: Option<RetainedImage>,
+	stfs_package_title_image: Option<Vec<u8>>,
 
 	#[serde(skip)]
 	clipboard: ClipboardContext,
@@ -77,24 +90,15 @@ pub struct AccelerationApp {
 	status_message: Option<String>,
 
 	#[serde(skip)]
-	package_files: RefCell<Vec<StfsFileModel>>,
+	package_files: Vec<StfsFileModel>,
 }
 
 #[derive(Debug)]
 struct StfsFileModel {
 	name: String,
-	path: PathBuf,
+	path: String,
 	size: String,
-	file_ref: stfs::StfsEntryRef,
-}
-
-#[self_referencing]
-struct StfsPackageReference {
-	stfs_package_data: Vec<u8>,
-
-	#[borrows(stfs_package_data)]
-	#[covariant]
-	parsed_stfs_package: Result<StfsPackage<'this>, stfs::StfsError>,
+	file_ref: VfsPath,
 }
 
 impl<'package> Default for AccelerationApp {
@@ -109,7 +113,7 @@ impl<'package> Default for AccelerationApp {
 			send,
 			recv,
 			status_message: None,
-			package_files: RefCell::new(Vec::new()),
+			package_files: Vec::new(),
 		}
 	}
 }
@@ -130,7 +134,7 @@ impl AccelerationApp {
 	}
 }
 
-async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) {
+async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) -> anyhow::Result<()> {
 	let task = AsyncFileDialog::new().pick_file();
 	if let Some(file) = task.await {
 		#[cfg(not(target_arch = "wasm32"))]
@@ -138,27 +142,26 @@ async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) {
 		#[cfg(target_arch = "wasm32")]
 		let file_path = PathBuf::from(file.file_name());
 
-		let file_data = file.read().await;
-		let package_reference = StfsPackageReferenceBuilder {
-			stfs_package_data: file_data,
-			parsed_stfs_package_builder: |package_data| StfsPackage::try_from(package_data.as_slice()),
-		}
-		.build();
+		let data = Arc::new(file.read().await);
+		let parsed_package = StfsPackage::try_from(data.as_slice())?;
+		let stfs = StFS::new_from(&parsed_package, Arc::clone(&data));
+		let package_ref = StfsPackageReference { data, parsed: parsed_package, fs: stfs };
 
-		if package_reference.borrow_parsed_stfs_package().is_ok() {
-			sender
-				.send(BackgroundTaskMessage::StfsPackageRead(file_path, Arc::new(RwLock::new(package_reference))))
-				.expect("failed to send parsed STFS package to main thread");
-		}
+		sender
+			.send(BackgroundTaskMessage::StfsPackageRead(file_path, Arc::new(package_ref)))
+			.expect("failed to send parsed STFS package to main thread");
 	}
+	Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn save_file<'a>(file: StfsFileEntry, stfs_package: &'a StfsPackage<'a>) {
-	if let Some(path) = FileDialog::new().set_file_name(file.name.as_str()).save_file() {
+fn save_file<'a>(file: VfsPath) -> anyhow::Result<()> {
+	if let Some(path) = FileDialog::new().set_file_name(file.filename().as_str()).save_file() {
 		let mut out_file = std::fs::File::create(path).expect("failed to create output file");
-		stfs_package.extract_file(&mut out_file, &file).expect("failed to save file");
+		std::io::copy(&mut file.open_file()?, &mut out_file)?;
 	}
+
+	Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -172,84 +175,48 @@ fn save_file<'a>(file: StfsFileEntry, stfs_package: &'a StfsPackage<'a>) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn extract_all<'a>(stfs_package: &'a StfsPackage<'a>) {
-	if let Some(folder_root) = FileDialog::new().set_file_name(stfs_package.header.display_name.as_str()).pick_folder()
-	{
-		let mut path = PathBuf::new();
-		let mut queue = Vec::with_capacity(256);
-		if let StfsEntry::Folder { entry: _, files } = &*stfs_package.files.lock() {
-			queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
-		}
+fn extract_all<'a>(root: VfsPath) -> anyhow::Result<()> {
+	use std::fs::File;
 
-		let mut last_depth = 0;
-		while let Some((depth, file)) = queue.pop() {
-			if depth < last_depth {
-				path.pop();
-				last_depth -= 1;
-			}
-
-			let file = file.lock();
-			if let StfsEntry::File(entry) = &*file {
-				let file_path = path.join(entry.name.as_str());
-				let mut directory_path = folder_root.join(&path);
-				std::fs::create_dir_all(&directory_path).expect("failed to create path!");
-				directory_path.push(entry.name.as_str());
-
-				let mut file = std::fs::File::create(file_path).expect("failed to create output file");
-
-				stfs_package.extract_file(&mut file, entry).expect("failed to save file");
-			}
-
-			if let StfsEntry::Folder { entry, files } = &*file {
-				path.push(entry.name.as_str());
-				queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
-				last_depth += 1;
+	if let Some(folder_root) = FileDialog::new().set_file_name("GAME_NAME_HERE").pick_folder() {
+		// We're extracting a dir
+		for file in root.walk_dir()? {
+			let file = file?;
+			let target_path = folder_root.join(&file.as_str().strip_prefix(root.parent().as_str()).unwrap()[1..]);
+			if file.is_dir()? {
+				std::fs::create_dir_all(&target_path)?;
+			} else {
+				let mut out_file = File::create(&target_path)?;
+				println!("writing output file: {:?}, {:?}", target_path, file.metadata()?);
+				std::io::copy(&mut file.open_file()?, &mut out_file)?;
 			}
 		}
 	}
+
+	Ok(())
 }
 
-fn create_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundTaskMessage>) -> Vec<u8> {
+fn create_zip<'a>(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::Result<Vec<u8>> {
 	let mut zip_contents = Vec::new();
 	let writer = Cursor::new(&mut zip_contents);
 	let mut zip = zip::ZipWriter::new(writer);
-	let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o755);
+	let options =
+		SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).unix_permissions(0o755);
 
-	let mut path = PathBuf::new();
-	let mut queue = Vec::with_capacity(256);
-	if let StfsEntry::Folder { entry: _, files } = &*stfs_package.files.lock() {
-		queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
-	}
-
-	let mut last_depth = 0;
-	let mut buffer = Vec::new();
-	while let Some((depth, file)) = queue.pop() {
-		if depth < last_depth {
-			path.pop();
-			last_depth -= 1;
+	for file in path.read_dir()? {
+		let path_str = file.as_str().to_owned();
+		match file.metadata()?.file_type {
+			stfs::vfs::VfsFileType::File => {
+				zip.start_file(path_str.clone(), options)?;
+				let mut reader = file.open_file()?;
+				std::io::copy(&mut reader, &mut zip)?;
+			}
+			stfs::vfs::VfsFileType::Directory => {
+				zip.add_directory(path_str.clone(), options)?;
+			}
 		}
 
-		let file = file.lock();
-		if let StfsEntry::File(entry) = &*file {
-			let file_path = path.join(entry.name.as_str());
-			sender.send(BackgroundTaskMessage::ZipFileUpdate(file_path.clone())).expect("failed to send file update");
-			debug!("Adding file {:?} to zip", file_path);
-
-			zip.start_file(file_path.as_os_str().to_str().unwrap(), options).expect("failed to add file to zip");
-
-			stfs_package.extract_file(&mut buffer, entry).expect("failed to extract file");
-			zip.write_all(buffer.as_slice()).expect("failed to write file to zip");
-
-			buffer.clear();
-		}
-
-		if let StfsEntry::Folder { entry, files } = &*file {
-			path.push(entry.name.as_str());
-			info!("Adding folder {:?} to zip", path);
-			zip.add_directory(path.as_os_str().to_str().unwrap(), options).expect("failed to create directory");
-			queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
-			last_depth += 1;
-		}
+		sender.send(BackgroundTaskMessage::ZipFileUpdate(path_str));
 	}
 
 	zip.finish().expect("failed to finish zip");
@@ -257,16 +224,16 @@ fn create_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundTa
 
 	sender.send(BackgroundTaskMessage::ZipDone);
 
-	zip_contents
+	Ok(zip_contents)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundTaskMessage>) {
-	if let Some(zip_path) =
-		FileDialog::new().set_file_name(format!("{}.zip", stfs_package.header.display_name).as_str()).save_file()
-	{
-		std::fs::write(zip_path, create_zip(stfs_package, sender).as_slice()).expect("failed to write out zip file");
+fn save_as_zip(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::Result<()> {
+	if let Some(zip_path) = FileDialog::new().set_file_name("package.zip").save_file() {
+		std::fs::write(zip_path, create_zip(path, sender)?.as_slice()).expect("failed to write out zip file");
 	}
+
+	Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -316,7 +283,7 @@ impl eframe::App for AccelerationApp {
 
 	/// Called each time the UI needs repainting, which may be many times per second.
 	/// Put your widgets into a `SidePanel`, `TopPanel`, `CentralPanel`, `Window` or `Area`.
-	fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+	fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
 		let Self {
 			active_stfs_file,
 			stfs_package,
@@ -329,60 +296,50 @@ impl eframe::App for AccelerationApp {
 			package_files,
 		} = self;
 
+		egui_extras::install_image_loaders(ctx);
+
 		// We open the file on another thread. Check if that thread has sent us any data yet.
 		match recv.try_recv() {
 			Ok(BackgroundTaskMessage::StfsPackageRead(file_path, received_stfs_package)) => {
-				// We have a file!
-				*active_stfs_file = Some(file_path);
-				if let Ok(parsed_package) = received_stfs_package.read().borrow_parsed_stfs_package().as_ref() {
-					*stfs_package_display_image =
-						RetainedImage::from_image_bytes("display_image", parsed_package.header.thumbnail_image).ok();
-
-					*stfs_package_display_image =
-						RetainedImage::from_image_bytes("display_image", parsed_package.header.title_image).ok();
-
-					// Populate the files
-					let mut path = PathBuf::new();
-					let mut queue = Vec::with_capacity(256);
-					if let StfsEntry::Folder { entry: _, files } = &*parsed_package.files.lock() {
-						queue.extend(std::iter::repeat(0usize).zip(files.iter().cloned()));
-					}
-
-					let mut last_depth = 0;
-					while let Some((depth, file)) = queue.pop() {
-						if depth < last_depth {
-							path.pop();
-							last_depth -= 1;
-						}
-
-						let arc_file = file.clone();
-						let file = file.lock();
-						if let StfsEntry::File(entry) = &*file {
-							let mut package_files = package_files.borrow_mut();
-							package_files.push(StfsFileModel {
-								name: entry.name.clone(),
-								path: path.join(entry.name.as_str()),
-								size: human_readable_size(entry.file_size),
-								file_ref: arc_file,
-							});
-						}
-
-						if let StfsEntry::Folder { entry, files } = &*file {
-							path.push(entry.name.as_str());
-							queue.extend(std::iter::repeat(depth + 1).zip(files.iter().cloned()));
-							last_depth += 1;
-						}
-					}
-
-					// Sort the package files by their entry ID
-					let mut package_files = package_files.borrow_mut();
-					package_files.sort_by(|a, b| a.file_ref.lock().entry().index.cmp(&b.file_ref.lock().entry().index));
+				let root = VfsPath::new(received_stfs_package.fs.clone());
+				for file in root.walk_dir().unwrap() {
+					let file = file.unwrap();
+					package_files.push(StfsFileModel {
+						name: file.filename(),
+						path: file.as_str().to_owned(),
+						size: format!("{}", file.metadata().unwrap().len),
+						file_ref: file,
+					});
 				}
+				// let display_image = ImageReader::new(Cursor::new(
+				// 	received_stfs_package.parsed.header.metadata.thumbnail_image.as_slice(),
+				// ))
+				// .decode()
+				// .expect("display image is not a PNG");
+				// let size = [display_image.width() as _, display_image.height() as _];
+				// let display_image_buffer = display_image.to_rgba8();
+				// let pixels = display_image_buffer.as_flat_samples();
 
+				// *stfs_package_display_image = Some(ColorImage::from_rgba_unmultiplied(size, pixels.as_slice()));
+				*stfs_package_display_image =
+					Some(received_stfs_package.parsed.header.metadata.thumbnail_image.clone());
+
+				// let title_image =
+				// 	ImageReader::new(Cursor::new(received_stfs_package.parsed.header.metadata.title_image.as_slice()))
+				// 		.decode()
+				// 		.expect("title image is not a PNG");
+				// let size = [title_image.width() as _, title_image.height() as _];
+				// let title_image_buffer = title_image.to_rgba8();
+				// let pixels = title_image_buffer.as_flat_samples();
+
+				// *stfs_package_title_image = Some(ColorImage::from_rgba_unmultiplied(size, pixels.as_slice()));
+				*stfs_package_title_image = Some(received_stfs_package.parsed.header.metadata.title_image.clone());
+
+				*active_stfs_file = Some(file_path);
 				*stfs_package = Some(received_stfs_package);
 			}
 			Ok(BackgroundTaskMessage::ZipFileUpdate(path)) => {
-				*status_message = Some(format!("Extracting {}", path.as_os_str().to_str().unwrap()));
+				*status_message = Some(format!("Extracting {}", path));
 			}
 			Ok(BackgroundTaskMessage::ZipDone) => {
 				*status_message = None;
@@ -419,7 +376,7 @@ impl eframe::App for AccelerationApp {
 					if let Some(stfs_package) = stfs_package.as_ref() {
 						#[cfg(not(target_arch = "wasm32"))]
 						if ui.button("Extract All").clicked() {
-							extract_all(stfs_package.read().borrow_parsed_stfs_package().as_ref().unwrap());
+							extract_all(VfsPath::new(stfs_package.fs.clone()));
 
 							ui.close_menu();
 						}
@@ -434,9 +391,7 @@ impl eframe::App for AccelerationApp {
 							// });
 
 							#[cfg(not(target_arch = "wasm32"))]
-							std::thread::spawn(move || {
-								save_as_zip(stfs_package.read().borrow_parsed_stfs_package().as_ref().unwrap(), sender)
-							});
+							std::thread::spawn(move || save_as_zip(VfsPath::new(stfs_package.fs.clone()), sender));
 
 							ui.close_menu();
 						}
@@ -452,80 +407,68 @@ impl eframe::App for AccelerationApp {
 			ui.heading("STFS Metadata");
 
 			if let Some(image) = stfs_package_display_image {
-				image.show_max_size(ui, ui.available_size());
+				ui.add(Image::new(ImageSource::Bytes { uri: "bytes://asdf".into(), bytes: image.clone().into() }));
 			}
 
 			if let Some(image) = stfs_package_title_image {
-				image.show_max_size(ui, ui.available_size());
+				ui.add(Image::new(ImageSource::Bytes { uri: "bytes://asdf2".into(), bytes: image.clone().into() }));
 			}
 
 			if let Some(stfs_package_ref) = stfs_package.as_ref() {
-				if let Ok(parsed_package) = stfs_package_ref.read().borrow_parsed_stfs_package() {
-					ui.horizontal(|ui| {
-						ui.label("Name:");
-						if ui
-							.add(Label::new(parsed_package.header.display_name.as_str()).sense(Sense::click()))
-							.double_clicked()
-						{
-							let _ = clipboard.set_contents(parsed_package.header.display_name.to_owned());
-						}
-					});
+				let parsed_package = &stfs_package_ref.parsed;
+				let metadata = &parsed_package.header.metadata;
 
-					ui.horizontal(|ui| {
-						ui.label("Description:");
-						if ui
-							.add(
-								Label::new(parsed_package.header.display_description.as_str())
-									.wrap(true)
-									.sense(Sense::click()),
-							)
-							.double_clicked()
-						{
-							let _ = clipboard.set_contents(parsed_package.header.display_description.to_owned());
-						}
-					});
+				ui.horizontal(|ui| {
+					ui.label("Name:");
+					let display_name = metadata.display_name[0].to_string();
+					if ui.add(Label::new(&display_name).sense(Sense::click())).double_clicked() {
+						let _ = clipboard.set_contents(display_name);
+					}
+				});
 
-					ui.horizontal(|ui| {
-						ui.label("Title ID:");
-						let label_str = format!("{:#X}", parsed_package.header.title_id);
+				ui.horizontal(|ui| {
+					ui.label("Description:");
+					let description = metadata.display_description[0].to_string();
+					if ui.add(Label::new(&description).wrap(true).sense(Sense::click())).double_clicked() {
+						let _ = clipboard.set_contents(description);
+					}
+				});
 
-						if ui.add(Label::new(&label_str).sense(Sense::click())).double_clicked() {
-							let _ = clipboard.set_contents(label_str);
-						}
-					});
+				ui.horizontal(|ui| {
+					ui.label("Title ID:");
+					let label_str = format!("{:08X}", metadata.title_id);
 
-					ui.horizontal(|ui| {
-						ui.label("Profile ID:");
-						let profile_id = parsed_package
-							.header
-							.profile_id
-							.iter()
-							.fold(String::new(), |display_str, b| display_str + &format!("{:02x}", *b));
-						if ui.add(Label::new(&profile_id).sense(Sense::click())).double_clicked() {
-							let _ = clipboard.set_contents(profile_id);
-						}
-					});
+					if ui.add(Label::new(&label_str).sense(Sense::click())).double_clicked() {
+						let _ = clipboard.set_contents(label_str);
+					}
+				});
 
-					ui.horizontal(|ui| {
-						ui.label("Console ID:");
-						let console_id = parsed_package
-							.header
-							.console_id
-							.iter()
-							.fold(String::new(), |display_str, b| display_str + &format!("{:02x}", *b));
-						if ui.add(Label::new(&console_id).sense(Sense::click())).double_clicked() {
-							let _ = clipboard.set_contents(console_id);
-						}
-					});
+				ui.horizontal(|ui| {
+					ui.label("Profile ID:");
+					let profile_id = format!("{:016X}", metadata.creator_xuid);
+					if ui.add(Label::new(&profile_id).sense(Sense::click())).double_clicked() {
+						let _ = clipboard.set_contents(profile_id);
+					}
+				});
 
-					ui.horizontal(|ui| {
-						ui.label("Content Type:");
-						let content_type = format!("{:?}", parsed_package.header.content_type);
-						if ui.add(Label::new(&content_type).sense(Sense::click())).double_clicked() {
-							let _ = clipboard.set_contents(content_type);
-						}
-					});
-				}
+				ui.horizontal(|ui| {
+					ui.label("Console ID:");
+					let console_id = metadata
+						.console_id
+						.iter()
+						.fold(String::new(), |display_str, b| display_str + &format!("{:02x}", *b));
+					if ui.add(Label::new(&console_id).sense(Sense::click())).double_clicked() {
+						let _ = clipboard.set_contents(console_id);
+					}
+				});
+
+				ui.horizontal(|ui| {
+					ui.label("Content Type:");
+					let content_type = format!("{:?}", metadata.content_type);
+					if ui.add(Label::new(&content_type).sense(Sense::click())).double_clicked() {
+						let _ = clipboard.set_contents(content_type);
+					}
+				});
 			}
 		});
 
@@ -562,20 +505,15 @@ impl eframe::App for AccelerationApp {
 						});
 					})
 					.body(|mut body| {
-						if let Some(stfs_package) = stfs_package {
-							let package_files = package_files.borrow();
-							for file in &*package_files {
+						if let Some(stfs_package) = &stfs_package {
+							for file in package_files {
 								body.row(18.0, |mut row| {
-									let (_, resp) = row.col(|ui| {
+									let (_, response) = row.col(|ui| {
 										ui.label(file.name.as_str());
 									});
-									resp.context_menu(|ui| {
+									response.context_menu(|ui| {
 										if ui.button("Extract").clicked() {
-											let stfs_package = stfs_package.read();
-											save_file(
-												file.file_ref.lock().entry().clone(),
-												stfs_package.borrow_parsed_stfs_package().as_ref().unwrap(),
-											);
+											save_file(file.file_ref.clone());
 
 											ui.close_menu();
 										}
@@ -586,7 +524,7 @@ impl eframe::App for AccelerationApp {
 									});
 
 									row.col(|ui| {
-										ui.label(file.path.as_os_str().to_str().unwrap());
+										ui.label(file.path.as_str());
 									});
 								})
 							}
@@ -596,14 +534,5 @@ impl eframe::App for AccelerationApp {
 				// ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
 			});
 		});
-
-		if false {
-			egui::Window::new("Window").show(ctx, |ui| {
-				ui.label("Windows can be moved by dragging them.");
-				ui.label("They are automatically sized based on contents.");
-				ui.label("You can turn on resizing and scrolling if you like.");
-				ui.label("You would normally chose either panels OR windows.");
-			});
-		}
 	}
 }
