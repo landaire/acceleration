@@ -115,20 +115,32 @@ where
 }
 
 pub struct StFS<T> {
-	pub package: StfsPackage,
+	pub files: StfsEntryRef,
 	pub data: Arc<T>,
+}
+
+impl<T: Clone> Clone for StFS<T> {
+	fn clone(&self) -> Self {
+		Self { files: self.files.clone(), data: self.data.clone() }
+	}
+}
+
+impl<T> StFS<T> {
+	pub fn new_from(package: &StfsPackage, data: Arc<T>) -> StFS<T> {
+		Self { files: Arc::clone(&package.files), data }
+	}
 }
 
 impl<T> std::fmt::Debug for StFS<T> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("StFS").field("package", &self.package).field("data", &"...").finish()
+		f.debug_struct("StFS").field("files", &self.files).field("data", &"...").finish()
 	}
 }
 
 impl<T> StFS<T> {
 	fn find_file(&self, path: &str) -> vfs::VfsResult<StfsEntryRef> {
 		let path = PathBuf::from(path);
-		let mut current = Arc::clone(&self.package.files);
+		let mut current = Arc::clone(&self.files);
 
 		for part in path.iter() {
 			if part == "/" {
@@ -137,6 +149,7 @@ impl<T> StFS<T> {
 			// Look up this part of the path in our dir
 			let current_copy = Arc::clone(&current);
 			let node = current_copy.lock();
+
 			match &*node {
 				crate::StfsEntry::File(_, _) => return Err(VfsErrorKind::FileNotFound.into()),
 				crate::StfsEntry::Folder { entry, files } => {

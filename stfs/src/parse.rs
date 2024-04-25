@@ -250,7 +250,7 @@ impl TryFrom<&[u8]> for StfsPackage {
 		};
 
 		if is_stfs {
-			// package.read_files(input)?;
+			package.read_files(input)?;
 		}
 
 		Ok(package)
@@ -506,7 +506,7 @@ impl StfsPackage {
 		);
 
 		for block_idx in 0..(stfs_vol.file_table_block_count as usize) {
-			let current_addr = self.block_to_addr(block);
+			let current_addr = self.block_to_addr(block + block_idx);
 			reader.set_position(current_addr);
 
 			for file_entry_idx in 0..0x40 {
@@ -572,7 +572,7 @@ impl StfsPackage {
 
 	/// Translates a data block to an absolute block, adjusting the block number to skip over any potential hash blocks.
 	fn compute_data_block_num(&self, block: Block) -> u64 {
-		// Read-only filesystems have different properties
+		// // Read-only filesystems have different properties
 		let blocks_per_hash_block = if self.header.is_read_only() { 1 } else { 2 };
 
 		let mut block_num = block.0;
@@ -1151,15 +1151,16 @@ impl FileSystem {}
 
 #[bitfield]
 #[binrw]
-#[br(map = Self::from_bytes)]
-#[bw(map = |flags: &Self| flags.into_bytes())]
+#[br(map = |x: u8| Self::from(x))]
+#[bw(map = |flags: &Self| u8::from(*flags))]
 #[derive(Default, Debug, Copy, Clone, Serialize)]
+#[repr(u8)]
 pub struct StfsVolumeDescriptorFlags {
-	_reserved: B4,
-	dir_index_bounds_are_valid: bool,
-	dir_is_overallocated: bool,
-	root_active_index: bool,
 	read_only: bool,
+	root_active_index: bool,
+	dir_is_overallocated: bool,
+	dir_index_bounds_are_valid: bool,
+	_reserved: B4,
 }
 
 #[derive(Default, Debug, Serialize)]
