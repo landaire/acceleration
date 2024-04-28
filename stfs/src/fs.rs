@@ -103,7 +103,7 @@ where
 				|| (idx == self.block_ranges.len() - 1
 					&& mapping_start + bytes_to_copy == mapping_start + usize::try_from(block_len).unwrap())
 			{
-				self.position = u64::try_from(mapping_start + bytes_to_copy).unwrap();
+				self.position += u64::try_from(bytes_to_copy).unwrap();
 				self.recalculate_block();
 
 				break;
@@ -187,6 +187,7 @@ impl<T: AsRef<[u8]> + Send + Sync + 'static> FileSystem for StFS<T> {
 		let file = self.find_file(path)?;
 		let file = file.lock();
 		let file_info = file.file_ref().unwrap();
+		println!("opening file {}", path);
 		Ok(Box::new(StfsFileReader {
 			block_ranges: file_info.1.clone(),
 			block_position: 0,
