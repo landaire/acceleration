@@ -23,7 +23,7 @@ pub struct StfsFileReader<T> {
 	pub block_position: u64,
 	pub block_idx: usize,
 	pub position: u64,
-	pub data: Arc<T>,
+	pub data: Arc<StfsDataWrapper<T>>,
 	pub len: u64,
 }
 
@@ -50,7 +50,7 @@ where
 				self.recalculate_block();
 				return Ok(self.position);
 			}
-			std::io::SeekFrom::End(pos) => (self.data.deref().as_ref().len() as u64, pos),
+			std::io::SeekFrom::End(pos) => (self.data.as_slice().len() as u64, pos),
 			std::io::SeekFrom::Current(delta) => (self.position, delta),
 		};
 
@@ -91,8 +91,7 @@ where
 			let bytes_to_copy = std::cmp::min(self.len - self.position, block_remaining_len);
 			let bytes_to_copy = std::cmp::min(output_bytes_remaining, usize::try_from(bytes_to_copy).unwrap());
 
-			buf[..bytes_to_copy]
-				.copy_from_slice(&self.data.deref().as_ref()[mapping_start..(mapping_start + bytes_to_copy)]);
+			buf[..bytes_to_copy].copy_from_slice(&self.data.as_slice()[mapping_start..(mapping_start + bytes_to_copy)]);
 			buf = &mut buf[bytes_to_copy..];
 			bytes_read += bytes_to_copy;
 			println!("{} {}", bytes_to_copy, output_bytes_remaining);
@@ -114,9 +113,35 @@ where
 	}
 }
 
+#[derive(Clone)]
+struct StfsDataWrapper<T> {
+	/// Do not use directly. STFS filesystems may have a different start offset,/ and the caller may be handing us the
+	/// original file for a variety of reasons.
+	data: Arc<T>,
+	filesystem_start: usize,
+}
+
+impl<T: AsRef<[u8]>> StfsDataWrapper<T> {
+	fn as_slice(&self) -> &[u8] {
+		&self.data.deref().as_ref()[self.filesystem_start..]
+	}
+}
+
+impl<T> std::fmt::Debug for StfsDataWrapper<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("StfsDataWrapper").field("data", &"...").field("data_start", &self.filesystem_start).finish()
+	}
+}
+
 pub struct StFS<T> {
-	pub files: StfsEntryRef,
-	pub data: Arc<T>,
+	files: StfsEntryRef,
+	data: Arc<StfsDataWrapper<T>>,
+}
+
+impl<T> std::fmt::Debug for StFS<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.debug_struct("StFS").field("files", &self.files).field("data", &self.data).finish()
+	}
 }
 
 impl<T: Clone> Clone for StFS<T> {
@@ -126,14 +151,8 @@ impl<T: Clone> Clone for StFS<T> {
 }
 
 impl<T> StFS<T> {
-	pub fn new_from(package: &StfsPackage, data: Arc<T>) -> StFS<T> {
-		Self { files: Arc::clone(&package.files), data }
-	}
-}
-
-impl<T> std::fmt::Debug for StFS<T> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.debug_struct("StFS").field("files", &self.files).field("data", &"...").finish()
+	pub fn from_raw_parts(package: &StfsPackage, data: Arc<T>, filesystem_start: usize) -> StFS<T> {
+		Self { files: Arc::clone(&package.files), data: Arc::new(StfsDataWrapper { data, filesystem_start }) }
 	}
 }
 

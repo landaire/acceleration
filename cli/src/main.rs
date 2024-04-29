@@ -17,6 +17,7 @@ use stfs::fs::StFS;
 use stfs::vfs::FileSystem;
 use stfs::vfs::VfsPath;
 use stfs::StfsPackage;
+use xcontent::KeyMaterial;
 
 #[derive(Debug, Subcommand)]
 enum Commands {
@@ -64,7 +65,7 @@ fn main() -> anyhow::Result<()> {
 	let file = File::open(args.file_name)?;
 	let mmap = unsafe { MmapOptions::new().map(&file)? };
 
-	let package = StfsPackage::try_from(&mmap[..])?;
+	let package = xcontent::XContentPackage::try_from(&mmap[..])?;
 
 	if let Commands::Info { long } = args.command.as_ref().unwrap_or(&Commands::Info { long: false }) {
 		let header = &package.header;
@@ -73,8 +74,8 @@ fn main() -> anyhow::Result<()> {
 		println!(
 			"Signature: {}",
 			match &header.key_material {
-				stfs::KeyMaterial::Certificate(cert) => todo!("certificate"),
-				stfs::KeyMaterial::Signature(sig) => {
+				KeyMaterial::Certificate(cert) => todo!("certificate"),
+				KeyMaterial::Signature(sig) => {
 					hex::encode(sig)
 				}
 			}
@@ -189,8 +190,7 @@ fn main() -> anyhow::Result<()> {
 		return Ok(());
 	}
 
-	let xcontent_package = StFS::new_from(&package, Arc::new(mmap));
-	let mut path: VfsPath = VfsPath::new(xcontent_package);
+	let mut path: VfsPath = package.to_vfs_path(Arc::new(mmap));
 
 	match args.command.expect("default command should have been handled") {
 		Commands::Info { long } => {

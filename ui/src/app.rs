@@ -12,6 +12,7 @@ use std::sync::Arc;
 use egui::ColorImage;
 use egui::Image;
 use egui::ImageSource;
+use egui::Ui;
 use egui_extras::Column;
 
 use clipboard::ClipboardContext;
@@ -33,6 +34,7 @@ use stfs::binrw::meta;
 use stfs::fs::StFS;
 use stfs::vfs::VfsPath;
 use stfs::StfsPackage;
+use xcontent::XContentPackage;
 use zip::write::FileOptions;
 
 #[cfg(target_arch = "wasm32")]
@@ -50,14 +52,14 @@ extern "C" {
 }
 
 #[derive(Debug)]
-struct StfsPackageReference {
+struct XContentPackageReference {
 	data: Arc<Vec<u8>>,
-	parsed: StfsPackage,
-	fs: StFS<Vec<u8>>,
+	parsed: XContentPackage,
+	fs: VfsPath,
 }
 
 enum BackgroundTaskMessage {
-	StfsPackageRead(PathBuf, Arc<StfsPackageReference>),
+	StfsPackageRead(PathBuf, Arc<XContentPackageReference>),
 	ZipFileUpdate(String),
 	ZipDone,
 }
@@ -69,7 +71,7 @@ pub struct AccelerationApp {
 	active_stfs_file: Option<PathBuf>,
 
 	#[serde(skip)]
-	stfs_package: Option<Arc<StfsPackageReference>>,
+	stfs_package: Option<Arc<XContentPackageReference>>,
 
 	#[serde(skip)]
 	stfs_package_display_image: Option<Vec<u8>>,
@@ -101,7 +103,7 @@ struct StfsFileModel {
 	file_ref: VfsPath,
 }
 
-impl<'package> Default for AccelerationApp {
+impl Default for AccelerationApp {
 	fn default() -> Self {
 		let (send, recv) = channel();
 		Self {
@@ -143,9 +145,9 @@ async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) -> anyhow::Res
 		let file_path = PathBuf::from(file.file_name());
 
 		let data = Arc::new(file.read().await);
-		let parsed_package = StfsPackage::try_from(data.as_slice())?;
-		let stfs = StFS::new_from(&parsed_package, Arc::clone(&data));
-		let package_ref = StfsPackageReference { data, parsed: parsed_package, fs: stfs };
+		let parsed_package = XContentPackage::try_from(data.as_slice())?;
+		let fs = parsed_package.to_vfs_path(Arc::clone(&data));
+		let package_ref = XContentPackageReference { data, parsed: parsed_package, fs };
 
 		sender
 			.send(BackgroundTaskMessage::StfsPackageRead(file_path, Arc::new(package_ref)))
@@ -250,14 +252,14 @@ fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundT
 	}
 }
 
-fn human_readable_size(size: usize) -> String {
-	const KB: usize = 1024;
-	const MB: usize = KB * KB;
-	const GB: usize = KB * KB * KB;
+fn human_readable_size(size: u64) -> String {
+	const KB: u64 = 1024;
+	const MB: u64 = KB * KB;
+	const GB: u64 = KB * KB * KB;
 
-	const BYTES_END: usize = KB - 1;
-	const KB_END: usize = MB - 1;
-	const MB_END: usize = GB - 1;
+	const BYTES_END: u64 = KB - 1;
+	const KB_END: u64 = MB - 1;
+	const MB_END: u64 = GB - 1;
 
 	match size {
 		0..=BYTES_END => {
@@ -301,13 +303,13 @@ impl eframe::App for AccelerationApp {
 		// We open the file on another thread. Check if that thread has sent us any data yet.
 		match recv.try_recv() {
 			Ok(BackgroundTaskMessage::StfsPackageRead(file_path, received_stfs_package)) => {
-				let root = VfsPath::new(received_stfs_package.fs.clone());
+				let root = &received_stfs_package.fs;
 				for file in root.walk_dir().unwrap() {
 					let file = file.unwrap();
 					package_files.push(StfsFileModel {
 						name: file.filename(),
 						path: file.as_str().to_owned(),
-						size: format!("{}", file.metadata().unwrap().len),
+						size: human_readable_size(file.metadata().unwrap().len),
 						file_ref: file,
 					});
 				}
@@ -376,7 +378,7 @@ impl eframe::App for AccelerationApp {
 					if let Some(stfs_package) = stfs_package.as_ref() {
 						#[cfg(not(target_arch = "wasm32"))]
 						if ui.button("Extract All").clicked() {
-							extract_all(VfsPath::new(stfs_package.fs.clone()));
+							extract_all(stfs_package.fs.clone());
 
 							ui.close_menu();
 						}
@@ -391,7 +393,7 @@ impl eframe::App for AccelerationApp {
 							// });
 
 							#[cfg(not(target_arch = "wasm32"))]
-							std::thread::spawn(move || save_as_zip(VfsPath::new(stfs_package.fs.clone()), sender));
+							std::thread::spawn(move || save_as_zip(stfs_package.fs.clone(), sender));
 
 							ui.close_menu();
 						}
@@ -508,16 +510,18 @@ impl eframe::App for AccelerationApp {
 						if let Some(stfs_package) = &stfs_package {
 							for file in package_files {
 								body.row(18.0, |mut row| {
-									let (_, response) = row.col(|ui| {
-										ui.label(file.name.as_str());
-									});
-									response.context_menu(|ui| {
+									let do_extract = |ui: &mut Ui| {
 										if ui.button("Extract").clicked() {
 											save_file(file.file_ref.clone());
 
 											ui.close_menu();
 										}
+									};
+
+									let (_, response) = row.col(|ui| {
+										ui.label(file.name.as_str()).context_menu(do_extract);
 									});
+									response.context_menu(do_extract);
 
 									row.col(|ui| {
 										ui.label(file.size.as_str());

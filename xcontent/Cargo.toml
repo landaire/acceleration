@@ -1,5 +1,5 @@
 [package]
-name = "stfs"
+name = "xcontent"
 version = "0.1.0"
 edition = "2021"
 
@@ -16,5 +16,4 @@ binrw = "0.13"
 variantly = "0.4"
 parking_lot = { version = "0.12", features = ["serde"] }
 modular-bitfield = "0.11"
-
-[patch.crates-io]
+stfs = { path = "../stfs" }
