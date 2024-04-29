@@ -5,18 +5,14 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bytes::Buf;
-use bytes::Bytes;
 use chrono::DateTime;
 use chrono::Utc;
 use clap::Parser;
 use clap::Subcommand;
 use humansize::DECIMAL;
 use memmap2::MmapOptions;
-use stfs::fs::StFS;
 use stfs::vfs::FileSystem;
 use stfs::vfs::VfsPath;
-use stfs::StfsPackage;
 use xcontent::KeyMaterial;
 
 #[derive(Debug, Subcommand)]

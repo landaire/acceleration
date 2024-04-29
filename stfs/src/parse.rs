@@ -1,11 +1,9 @@
 use binrw::binrw;
 use binrw::BinReaderExt;
 use binrw::NullString;
-use binrw::NullWideString;
 use modular_bitfield::prelude::*;
 use std::collections::HashMap;
 use std::io::Read;
-use std::io::Write;
 use std::ops::Range;
 use std::ops::{
 	self,
@@ -13,15 +11,9 @@ use std::ops::{
 use std::sync::Arc;
 
 use crate::consts::*;
-use bitflags::bitflags;
-use chrono::DateTime;
-use chrono::Utc;
 use parking_lot::Mutex;
-use serde::Deserialize;
 use serde::Serialize;
-use serde::Serializer;
 use std::io::Cursor;
-use thiserror::Error;
 use variantly::Variantly;
 
 use crate::error::StfsError;
@@ -501,7 +493,7 @@ impl StfsPackage {
 			panic!("invalid block: {:#x}", block.0);
 		}
 
-		(self.compute_data_block_num(block) * BLOCK_SIZE as u64)
+		self.compute_data_block_num(block) * BLOCK_SIZE as u64
 	}
 
 	/// Translates a data block to an absolute block, adjusting the block number to skip over any potential hash blocks.

@@ -1,7 +1,5 @@
 use binrw::NullString;
 use binrw::NullWideString;
-use chrono::prelude::*;
-use chrono::Duration;
 use serde::Serializer;
 
 pub fn serialize_null_string<S>(x: &NullString, s: S) -> Result<S::Ok, S::Error>

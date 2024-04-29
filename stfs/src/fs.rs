@@ -1,21 +1,16 @@
-use std::fmt::Debug;
 use std::io::Read;
 use std::io::Seek;
 use std::ops::Deref;
 use std::ops::Range;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use vfs::error::VfsErrorKind;
 use vfs::FileSystem;
-use vfs::VfsError;
 
 use crate::consts::BLOCK_SIZE;
 use crate::StfsEntry;
 use crate::StfsEntryRef;
-use crate::StfsFileEntry;
 use crate::StfsPackage;
 
 pub struct StfsFileReader<T> {

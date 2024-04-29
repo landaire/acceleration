@@ -1,15 +1,11 @@
-use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::io::Cursor;
 use std::io::Read;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-use egui::ColorImage;
 use egui::Image;
 use egui::ImageSource;
 use egui::Ui;
@@ -21,21 +17,12 @@ use egui::Label;
 use egui::Sense;
 use egui::Spinner;
 use egui::TextBuffer;
-use egui_extras::RetainedImage;
-use image::io::Reader as ImageReader;
-use log::debug;
 use log::info;
-use parking_lot::Mutex;
-use parking_lot::RwLock;
 use rfd::AsyncFileDialog;
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
-use stfs::binrw::meta;
-use stfs::fs::StFS;
 use stfs::vfs::VfsPath;
-use stfs::StfsPackage;
 use xcontent::XContentPackage;
-use zip::write::FileOptions;
 
 #[cfg(target_arch = "wasm32")]
 use eframe::wasm_bindgen::prelude::*;
@@ -475,7 +462,7 @@ impl eframe::App for AccelerationApp {
 		});
 
 		egui::CentralPanel::default().show(ctx, |ui| {
-			use egui_extras::Size;
+			
 			use egui_extras::TableBuilder;
 
 			ui.vertical(|ui| {

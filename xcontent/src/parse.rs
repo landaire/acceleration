@@ -1,32 +1,14 @@
-use binrw::binread;
 use binrw::binrw;
 use binrw::BinReaderExt;
-use binrw::NullString;
 use binrw::NullWideString;
-use modular_bitfield::prelude::*;
-use std::collections::HashMap;
-use std::io::Read;
-use std::io::Write;
-use std::ops::Range;
-use std::ops::{
-	self,
-};
 use std::sync::Arc;
-use stfs::fs::StFS;
-use stfs::HashTableMeta;
 use stfs::StfsPackage;
 use stfs::StfsVolumeDescriptor;
 use vfs::VfsPath;
 
 use bitflags::bitflags;
-use chrono::DateTime;
-use chrono::Utc;
-use parking_lot::Mutex;
-use serde::Deserialize;
 use serde::Serialize;
-use serde::Serializer;
 use std::io::Cursor;
-use thiserror::Error;
 use variantly::Variantly;
 
 use crate::error::XContentError;
