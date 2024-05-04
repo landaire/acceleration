@@ -396,10 +396,12 @@ impl eframe::App for AccelerationApp {
 			ui.heading("STFS Metadata");
 
 			if let Some(image) = stfs_package_display_image {
+				// TODO: Cache
 				ui.add(Image::new(ImageSource::Bytes { uri: "bytes://asdf".into(), bytes: image.clone().into() }));
 			}
 
 			if let Some(image) = stfs_package_title_image {
+				// TODO: Cache
 				ui.add(Image::new(ImageSource::Bytes { uri: "bytes://asdf2".into(), bytes: image.clone().into() }));
 			}
 
@@ -462,7 +464,6 @@ impl eframe::App for AccelerationApp {
 		});
 
 		egui::CentralPanel::default().show(ctx, |ui| {
-			
 			use egui_extras::TableBuilder;
 
 			ui.vertical(|ui| {
