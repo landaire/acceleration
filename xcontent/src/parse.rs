@@ -1,61 +1,25 @@
 use binrw::binrw;
 use binrw::BinReaderExt;
 use binrw::NullWideString;
+use binrw::PosValue;
+use sha1::Digest;
+use sha1::Sha1;
 use std::sync::Arc;
 use stfs::StfsPackage;
 use stfs::StfsVolumeDescriptor;
 use vfs::VfsPath;
 
-use bitflags::bitflags;
 use serde::Serialize;
 use std::io::Cursor;
 use variantly::Variantly;
+
+use xecrypt::XContentKeyMaterial;
+use xecrypt::XContentSignatureType;
 
 use crate::error::XContentError;
 use crate::util::*;
 
 const MAX_IMAGE_SIZE: usize = 0x4000;
-
-#[derive(Debug, Serialize, PartialEq, Eq, Copy, Clone)]
-#[binrw]
-pub enum SignatureType {
-	/// User container packages that are created by an Xbox 360 console and
-	/// signed by the user's private key.
-	#[brw(magic = b"CON ")]
-	Console,
-	/// Xbox LIVE-distributed package that is signed by Microsoft's private key.
-	#[brw(magic = b"LIVE")]
-	Live,
-	/// Offline-distributed package that is signed by Microsoft's private key.
-	#[brw(magic = b"PIRS")]
-	Pirs,
-}
-
-impl std::fmt::Display for SignatureType {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		let description = match self {
-			SignatureType::Console => "Console (CON)",
-			SignatureType::Live => "Xbox LIVE Strong Signature (LIVE)",
-			SignatureType::Pirs => "Offline Strong Signature (PIRS)",
-		};
-
-		f.write_str(description)
-	}
-}
-
-#[derive(Debug, Serialize)]
-#[binrw]
-#[brw(big)]
-#[br(import(signature_type: SignatureType))]
-pub enum KeyMaterial {
-	/// Only present in console-signed packages
-	#[br(pre_assert(signature_type == SignatureType::Console))]
-	Certificate(Certificate),
-
-	/// Only present in strong-signed packages
-	#[br(pre_assert(signature_type != SignatureType::Console))]
-	Signature(#[br(count = 64)] Vec<u8>),
-}
 
 #[derive(Debug, Serialize)]
 #[binrw]
@@ -85,15 +49,22 @@ impl std::ops::Deref for FixedLengthNullWideString {
 #[binrw]
 #[brw(big)]
 pub struct XContentHeader {
-	pub signature_type: SignatureType,
+	pub signature_type: XContentSignatureType,
 
 	#[br(args(signature_type), pad_size_to = 0x228)]
-	pub key_material: KeyMaterial,
+	pub key_material: XContentKeyMaterial,
 
+	#[bw(ignore)]
+	#[serde(skip)]
+	pub license_data_pos: PosValue<()>,
 	pub license_data: [LicenseEntry; 0x10],
 	/// Content ID is the hash of the metadata and all headers below it.
 	pub content_id: [u8; 0x14],
 	pub header_size: u32,
+
+	#[serde(skip)]
+	#[bw(ignore)]
+	pub end_of_header_pos: PosValue<()>,
 
 	#[br(args(header_size))]
 	pub metadata: XContentMetadata,
@@ -102,6 +73,18 @@ pub struct XContentHeader {
 impl XContentHeader {
 	pub fn data_start_offset(&self) -> usize {
 		((self.header_size as usize) + 0x0FFF) & 0xFFFF_F000
+	}
+
+	pub fn header_hash(&self, data: &[u8]) -> [u8; 20] {
+		let signature_start_pos = self.license_data_pos.pos as usize;
+		let signature_end_pos = self.end_of_header_pos.pos as usize;
+
+		println!("header hash size: {:#X}", signature_end_pos - signature_start_pos);
+
+		let mut hasher = Sha1::new();
+		hasher.update(&data[signature_start_pos..signature_end_pos]);
+
+		hasher.finalize().into()
 	}
 }
 
@@ -206,6 +189,14 @@ impl XContentPackage {
 				Box::new(stfs::fs::StFS::from_raw_parts(package, data, self.header.data_start_offset()))
 			}
 		}
+	}
+
+	pub fn verify_signature(&self, data: &[u8]) -> Result<xecrypt::ConsoleKind, xecrypt::Error> {
+		xecrypt::verify_xcontent_signature(
+			self.header.signature_type,
+			&self.header.key_material,
+			&self.header.header_hash(data),
+		)
 	}
 }
 
@@ -420,38 +411,6 @@ pub enum InstallerMeta {
 	FullInstaller(FullInstallerMeta),
 	#[br(pre_assert(installer_type.has_installer_progress_cache()))]
 	InstallerProgressCache(InstallerProgressCache),
-}
-
-#[derive(Debug, Serialize)]
-#[binrw]
-pub struct Certificate {
-	pubkey_cert_size: u16,
-	owner_console_id: [u8; 5],
-	#[brw(pad_size_to = 0x11)]
-	#[serde(serialize_with = "serialize_null_wide_string")]
-	owner_console_part_number: NullWideString,
-	console_type_flags: Option<ConsoleTypeFlags>,
-	#[br(try_map = |x: [u8; 8]| String::from_utf8(x.to_vec()))]
-	#[bw(map = |x| x.as_bytes(), assert(date_generation.len() == 8, "date_generation.len() != 8"))]
-	date_generation: String,
-	public_exponent: u32,
-	#[br(count = 0x80)]
-	public_modulus: Vec<u8>,
-	#[br(count = 0x100)]
-	certificate_signature: Vec<u8>,
-	#[br(count = 0x80)]
-	signature: Vec<u8>,
-}
-
-bitflags! {
-	#[derive(Serialize)]
-	#[binrw]
-	struct ConsoleTypeFlags: u32 {
-		const DEVKIT = 0x1;
-		const RETAIL = 0x2;
-		const TESTKIT = 0x40000000;
-		const RECOVERY_GENERATED = 0x80000000;
-	}
 }
 
 #[derive(Debug, Serialize, Clone, Copy)]

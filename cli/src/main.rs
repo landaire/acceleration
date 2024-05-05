@@ -13,7 +13,7 @@ use humansize::DECIMAL;
 use memmap2::MmapOptions;
 use stfs::vfs::FileSystem;
 use stfs::vfs::VfsPath;
-use xcontent::KeyMaterial;
+use xcontent::xecrypt::XContentKeyMaterial;
 
 #[derive(Debug, Subcommand)]
 enum Commands {
@@ -65,18 +65,32 @@ fn main() -> anyhow::Result<()> {
 
 	if let Commands::Info { long } = args.command.as_ref().unwrap_or(&Commands::Info { long: false }) {
 		let header = &package.header;
+		let header_hash = header.header_hash(&mmap[..]);
+
+		println!("=== Calculated ===");
+		println!("Expected Signed Hash: {}", hex::encode(&header_hash));
+		println!(
+			"Hash Valid: {}",
+			if let Ok(console_kind) = package.verify_signature(&mmap[..]) {
+				format!("✅ ({:?})", console_kind)
+			} else {
+				"❌".to_string()
+			}
+		);
+
+		println!();
 		println!("=== XContentHeader ==");
 		println!("Signature Type: {}", header.signature_type);
 		println!(
 			"Signature: {}",
 			match &header.key_material {
-				KeyMaterial::Certificate(cert) => todo!("certificate"),
-				KeyMaterial::Signature(sig) => {
-					hex::encode(sig)
+				XContentKeyMaterial::Certificate(cert) => todo!("certificate"),
+				XContentKeyMaterial::Signature(sig, _) => {
+					hex::encode(xcontent::xecrypt::raw_signature_to_standard(sig))
 				}
 			}
 		);
-		println!("Metadata Hash: {}", hex::encode(header.content_id));
+		println!("Content ID (Header Hash): {}", hex::encode(header.content_id));
 
 		let metadata = &header.metadata;
 		println!();

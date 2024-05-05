@@ -39,6 +39,4 @@ pub fn windows_filetime_to_chrono(high: u32, low: u32) -> DateTime<Utc> {
 }
 
 #[cfg(test)]
-mod tests {
-	
-}
+mod tests {}

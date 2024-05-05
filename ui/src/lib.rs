@@ -3,6 +3,8 @@
 mod app;
 pub use app::AccelerationApp;
 
+pub const APP_NAME: &str = "Acceleration";
+
 // ----------------------------------------------------------------------------
 // When compiling for web:
 

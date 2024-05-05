@@ -1,2 +1,2 @@
 [workspace]
-members = ['cli', 'stfs', 'stfs_old', 'ui', "xcontent"]
+members = ['cli', 'stfs', 'stfs_old', 'ui', "xcontent", "xecrypt"]

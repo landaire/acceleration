@@ -144,7 +144,7 @@ async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) -> anyhow::Res
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn save_file<'a>(file: VfsPath) -> anyhow::Result<()> {
+fn save_file(file: VfsPath) -> anyhow::Result<()> {
 	if let Some(path) = FileDialog::new().set_file_name(file.filename().as_str()).save_file() {
 		let mut out_file = std::fs::File::create(path).expect("failed to create output file");
 		std::io::copy(&mut file.open_file()?, &mut out_file)?;
@@ -154,17 +154,19 @@ fn save_file<'a>(file: VfsPath) -> anyhow::Result<()> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn save_file<'a>(file: StfsFileEntry, stfs_package: &'a StfsPackage<'a>) {
+fn save_file(file: VfsPath) -> anyhow::Result<()> {
 	let mut out = Vec::with_capacity(file.file_size);
-	stfs_package.extract_file(&mut out, &file).expect("failed to save file");
+	std::io::copy(&mut file.open_file()?, &mut out)?;
 
 	unsafe {
-		download_file(gloo_file::File::new(file.name.as_str(), out.as_slice()).as_ref());
+		download_file(gloo_file::File::new(file.filename().as_str(), out.as_slice()).as_ref());
 	}
+
+	Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn extract_all<'a>(root: VfsPath) -> anyhow::Result<()> {
+fn extract_all(root: VfsPath) -> anyhow::Result<()> {
 	use std::fs::File;
 
 	if let Some(folder_root) = FileDialog::new().set_file_name("GAME_NAME_HERE").pick_folder() {
@@ -185,7 +187,7 @@ fn extract_all<'a>(root: VfsPath) -> anyhow::Result<()> {
 	Ok(())
 }
 
-fn create_zip<'a>(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::Result<Vec<u8>> {
+fn create_zip(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::Result<Vec<u8>> {
 	let mut zip_contents = Vec::new();
 	let writer = Cursor::new(&mut zip_contents);
 	let mut zip = zip::ZipWriter::new(writer);
@@ -226,8 +228,8 @@ fn save_as_zip(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::
 }
 
 #[cfg(target_arch = "wasm32")]
-fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundTaskMessage>) {
-	let contents = create_zip(stfs_package, sender);
+fn save_as_zip(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::Result<()> {
+	let contents = create_zip(path, sender)?;
 	unsafe {
 		download_file(
 			gloo_file::File::new(
@@ -237,6 +239,8 @@ fn save_as_zip<'a>(stfs_package: &'a StfsPackage<'a>, sender: Sender<BackgroundT
 			.as_ref(),
 		);
 	}
+
+	Ok(())
 }
 
 fn human_readable_size(size: u64) -> String {
@@ -258,7 +262,7 @@ fn human_readable_size(size: u64) -> String {
 		MB..=MB_END => {
 			format!("{} MB", size / MB)
 		}
-		_default => {
+		_ => {
 			format!("{} GB", size / GB)
 		}
 	}
@@ -495,31 +499,29 @@ impl eframe::App for AccelerationApp {
 						});
 					})
 					.body(|mut body| {
-						if let Some(stfs_package) = &stfs_package {
-							for file in package_files {
-								body.row(18.0, |mut row| {
-									let do_extract = |ui: &mut Ui| {
-										if ui.button("Extract").clicked() {
-											save_file(file.file_ref.clone());
+						for file in package_files {
+							body.row(18.0, |mut row| {
+								let do_extract = |ui: &mut Ui| {
+									if ui.button("Extract").clicked() {
+										save_file(file.file_ref.clone());
 
-											ui.close_menu();
-										}
-									};
+										ui.close_menu();
+									}
+								};
 
-									let (_, response) = row.col(|ui| {
-										ui.label(file.name.as_str()).context_menu(do_extract);
-									});
-									response.context_menu(do_extract);
+								let (_, response) = row.col(|ui| {
+									ui.label(file.name.as_str()).context_menu(do_extract);
+								});
+								response.context_menu(do_extract);
 
-									row.col(|ui| {
-										ui.label(file.size.as_str());
-									});
+								row.col(|ui| {
+									ui.label(file.size.as_str());
+								});
 
-									row.col(|ui| {
-										ui.label(file.path.as_str());
-									});
-								})
-							}
+								row.col(|ui| {
+									ui.label(file.path.as_str());
+								});
+							})
 						}
 					});
 
