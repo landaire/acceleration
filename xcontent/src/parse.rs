@@ -71,10 +71,15 @@ pub struct XContentHeader {
 }
 
 impl XContentHeader {
+	/// Returns the offset for data start in the XContent package. i.e. the first
+	/// writable offset after all of the XContent headers.
+	///
+	/// For an STFS package, this will be the start of the first hash table.
 	pub fn data_start_offset(&self) -> usize {
 		((self.header_size as usize) + 0x0FFF) & 0xFFFF_F000
 	}
 
+	/// Returns the hash of the data covered by the RSA signature. This covers the
 	pub fn header_hash(&self, data: &[u8]) -> [u8; 20] {
 		let signature_start_pos = self.license_data_pos.pos as usize;
 		let signature_end_pos = self.end_of_header_pos.pos as usize;
@@ -189,6 +194,9 @@ impl XContentPackage {
 		}
 	}
 
+	/// Attempts to verify this package's signature.
+	///
+	/// Upon success this function will return the kind of console this package is signed for.
 	pub fn verify_signature(&self, data: &[u8]) -> Result<xecrypt::ConsoleKind, xecrypt::Error> {
 		xecrypt::verify_xcontent_signature(
 			self.header.signature_type,
@@ -197,6 +205,7 @@ impl XContentPackage {
 		)
 	}
 
+	/// Returns the expected storage path for this file
 	pub fn storage_path(&self) -> String {
 		format!(
 			"Content/{:016X}/{:08X}/{:08X}/{}",
