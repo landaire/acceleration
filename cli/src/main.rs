@@ -68,6 +68,7 @@ fn main() -> anyhow::Result<()> {
 	if let Commands::Info { long } = args.command.as_ref().unwrap_or(&Commands::Info { long: false }) {
 		let header = &package.header;
 		let header_hash = header.header_hash(&mmap[..]);
+		let metadata = &header.metadata;
 
 		println!("=== Calculated ===");
 		println!("{: <padding$} {}", "Expected Signed Hash:", hex::encode(&header_hash), padding = GENERAL_PADDING);
@@ -81,6 +82,7 @@ fn main() -> anyhow::Result<()> {
 			},
 			padding = GENERAL_PADDING,
 		);
+		println!("{: <padding$} {}", "Storage Path:", package.storage_path(), padding = GENERAL_PADDING,);
 
 		println!();
 		println!("=== XContentHeader ==");
@@ -103,7 +105,6 @@ fn main() -> anyhow::Result<()> {
 			padding = GENERAL_PADDING
 		);
 
-		let metadata = &header.metadata;
 		println!();
 		println!("=== XContentMetadata ==");
 		println!(
