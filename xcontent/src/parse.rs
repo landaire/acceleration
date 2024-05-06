@@ -79,8 +79,6 @@ impl XContentHeader {
 		let signature_start_pos = self.license_data_pos.pos as usize;
 		let signature_end_pos = self.end_of_header_pos.pos as usize;
 
-		println!("header hash size: {:#X}", signature_end_pos - signature_start_pos);
-
 		let mut hasher = Sha1::new();
 		hasher.update(&data[signature_start_pos..signature_end_pos]);
 

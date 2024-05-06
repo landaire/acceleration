@@ -56,6 +56,8 @@ struct Args {
 	command: Option<Commands>,
 }
 
+const GENERAL_PADDING: usize = 25;
+
 fn main() -> anyhow::Result<()> {
 	let args = Args::parse();
 	let file = File::open(args.file_name)?;
@@ -68,58 +70,80 @@ fn main() -> anyhow::Result<()> {
 		let header_hash = header.header_hash(&mmap[..]);
 
 		println!("=== Calculated ===");
-		println!("Expected Signed Hash: {}", hex::encode(&header_hash));
+		println!("{: <padding$} {}", "Expected Signed Hash:", hex::encode(&header_hash), padding = GENERAL_PADDING);
 		println!(
-			"Hash Valid: {}",
+			"{: <padding$} {}",
+			"Hash Valid:",
 			if let Ok(console_kind) = package.verify_signature(&mmap[..]) {
 				format!("✅ ({:?})", console_kind)
 			} else {
 				"❌".to_string()
-			}
+			},
+			padding = GENERAL_PADDING,
 		);
 
 		println!();
 		println!("=== XContentHeader ==");
-		println!("Signature Type: {}", header.signature_type);
+		println!("{: <padding$} {}", "Signature Type:", header.signature_type, padding = GENERAL_PADDING);
 		println!(
-			"Signature: {}",
+			"{: <padding$} {}",
+			"Signature:",
 			match &header.key_material {
 				XContentKeyMaterial::Certificate(cert) => todo!("certificate"),
 				XContentKeyMaterial::Signature(sig, _) => {
 					hex::encode(xcontent::xecrypt::raw_signature_to_standard(sig))
 				}
-			}
+			},
+			padding = GENERAL_PADDING
 		);
-		println!("Content ID (Header Hash): {}", hex::encode(header.content_id));
+		println!(
+			"{: <padding$} {}",
+			"Content ID (Header Hash):",
+			hex::encode(header.content_id),
+			padding = GENERAL_PADDING
+		);
 
 		let metadata = &header.metadata;
 		println!();
 		println!("=== XContentMetadata ==");
-		println!("Content Type: {:?} (0x{:08X})", metadata.content_type, metadata.content_type as u32);
 		println!(
-			"Content Size: {} ({:X} bytes)",
-			humansize::format_size(metadata.content_size, DECIMAL),
-			metadata.content_size
+			"{: <padding$} {:?} (0x{:08X})",
+			"Content Type:",
+			metadata.content_type,
+			metadata.content_type as u32,
+			padding = GENERAL_PADDING
 		);
-		println!("Media ID: 0x{:08X}", metadata.media_id);
-		println!("Metadata Version: {}", metadata.metadata_version);
-		println!("Version: {}", metadata.version);
-		println!("Base Version: {}", metadata.base_version);
-		println!("Title ID: 0x{:08X}", metadata.title_id);
-		println!("Platform: {}", metadata.platform);
-		println!("Executable Type: {}", metadata.executable_type);
-		println!("Disc Number: {}", metadata.disc_number);
-		println!("Disc in Set: {}", metadata.disc_in_set);
-		println!("Savegame ID: 0x{:08X}", metadata.savegame_id);
-		println!("Console ID: {}", hex::encode(metadata.console_id));
-		println!("Creator XUID: {:016X}", metadata.creator_xuid);
+		println!(
+			"{: <padding$} {} ({:X} bytes)",
+			"Content Size:",
+			humansize::format_size(metadata.content_size, DECIMAL),
+			metadata.content_size,
+			padding = GENERAL_PADDING
+		);
+		println!("{: <padding$} 0x{:08X}", "Media ID:", metadata.media_id, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Metadata Version:", metadata.metadata_version, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Version:", metadata.version, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Base Version:", metadata.base_version, padding = GENERAL_PADDING);
+		println!("{: <padding$} 0x{:08X}", "Title ID:", metadata.title_id, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Platform:", metadata.platform, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Executable Type:", metadata.executable_type, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Disc Number:", metadata.disc_number, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Disc in Set:", metadata.disc_in_set, padding = GENERAL_PADDING);
+		println!("{: <padding$} 0x{:08X}", "Savegame ID:", metadata.savegame_id, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Console ID:", hex::encode(metadata.console_id), padding = GENERAL_PADDING);
+		println!("{: <padding$} {:016X}", "Creator XUID:", metadata.creator_xuid, padding = GENERAL_PADDING);
 
 		println!();
 		for (lang_id, display_name) in metadata.display_name.iter().enumerate() {
 			if display_name.is_empty() {
 				continue;
 			}
-			println!("Display Name ({}): {}", lang_id, display_name.deref())
+			println!(
+				"{: <padding$} {}",
+				format!("Display Name ({}):", lang_id),
+				display_name.deref(),
+				padding = GENERAL_PADDING
+			)
 		}
 
 		println!();
@@ -127,11 +151,16 @@ fn main() -> anyhow::Result<()> {
 			if description.is_empty() {
 				continue;
 			}
-			println!("Description ({}): {}", lang_id, description.deref())
+			println!(
+				"{: <padding$} {}",
+				format!("Description ({}):", lang_id),
+				description.deref(),
+				padding = GENERAL_PADDING
+			)
 		}
 
-		println!("Publisher Name: {}", metadata.publisher_name);
-		println!("Title Name: {}", metadata.title_name);
+		println!("{: <padding$} {}", "Publisher Name:", metadata.publisher_name, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Title Name:", metadata.title_name, padding = GENERAL_PADDING);
 
 		// pub content_type: ContentType,
 		// pub metadata_version: u32,
