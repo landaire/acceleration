@@ -196,6 +196,16 @@ impl XContentPackage {
 			&self.header.header_hash(data),
 		)
 	}
+
+	pub fn storage_path(&self) -> String {
+		format!(
+			"Content/{:016X}/{:08X}/{:08X}/{}",
+			self.header.metadata.creator_xuid,
+			self.header.metadata.title_id,
+			self.header.metadata.content_type as u32,
+			self.header.content_id.iter().map(|b| format!("{:02X}", b)).collect::<String>(),
+		)
+	}
 }
 
 impl TryFrom<&[u8]> for XContentPackage {
