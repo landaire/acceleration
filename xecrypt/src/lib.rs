@@ -328,9 +328,19 @@ mod tests {
 	}
 
 	#[test]
-	fn verify_round_trip_signature_works() {
+	fn verify_round_trip_signature_conversion_works() {
 		let (sig, _) = known_devkit_live_sig();
 
 		assert_eq!(standard_signature_to_raw(raw_signature_to_standard(sig).as_slice()), sig);
+	}
+
+	#[test]
+	fn verify_signing_works() {
+		let (sig, hash) = known_devkit_live_sig();
+
+		let key = RsaKeyKind::Live;
+		let digest = key.sign(ConsoleKind::Devkit, &hash).expect("signing failed");
+
+		assert_eq!(digest.as_slice(), sig);
 	}
 }
