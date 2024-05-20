@@ -85,7 +85,7 @@ fn main() -> anyhow::Result<()> {
 		println!("{: <padding$} {}", "Storage Path:", package.storage_path(), padding = GENERAL_PADDING,);
 
 		println!();
-		println!("=== XContentHeader ==");
+		println!("=== XContentHeader ===");
 		println!("{: <padding$} {}", "Signature Type:", header.signature_type, padding = GENERAL_PADDING);
 		println!(
 			"{: <padding$} {}",
@@ -106,7 +106,7 @@ fn main() -> anyhow::Result<()> {
 		);
 
 		println!();
-		println!("=== XContentMetadata ==");
+		println!("=== XContentMetadata ===");
 		println!(
 			"{: <padding$} {:?} (0x{:08X})",
 			"Content Type:",
@@ -135,6 +135,8 @@ fn main() -> anyhow::Result<()> {
 		println!("{: <padding$} {:016X}", "Creator XUID:", metadata.creator_xuid, padding = GENERAL_PADDING);
 
 		println!();
+		println!("{: <padding$} {}", "Title Name:", metadata.title_name, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Publisher Name:", metadata.publisher_name, padding = GENERAL_PADDING);
 		for (lang_id, display_name) in metadata.display_name.iter().enumerate() {
 			if display_name.is_empty() {
 				continue;
@@ -159,9 +161,6 @@ fn main() -> anyhow::Result<()> {
 				padding = GENERAL_PADDING
 			)
 		}
-
-		println!("{: <padding$} {}", "Publisher Name:", metadata.publisher_name, padding = GENERAL_PADDING);
-		println!("{: <padding$} {}", "Title Name:", metadata.title_name, padding = GENERAL_PADDING);
 
 		// pub content_type: ContentType,
 		// pub metadata_version: u32,

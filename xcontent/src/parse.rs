@@ -160,7 +160,7 @@ pub struct XContentMetadata {
 	// pub content_metadata: Option<ContentMetadata>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Variantly)]
 pub enum XboxFilesystem {
 	Stfs(StfsPackage),
 }
@@ -228,7 +228,8 @@ impl TryFrom<&[u8]> for XContentPackage {
 			FileSystem::Stfs(volume_descriptor) => {
 				let start_offset = header.data_start_offset();
 				let stfs_input = &input[start_offset..];
-				let package = StfsPackage::from_volume_descriptor(volume_descriptor.clone(), stfs_input)?;
+				let mut package = StfsPackage::from_volume_descriptor(volume_descriptor.clone())?;
+				package.load_from_complete_file(stfs_input)?;
 
 				XboxFilesystem::Stfs(package)
 			}

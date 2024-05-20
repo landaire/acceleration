@@ -1,6 +1,7 @@
 use binrw::binrw;
 use binrw::BinReaderExt;
 use binrw::NullString;
+use core::hash;
 use modular_bitfield::prelude::*;
 use std::collections::HashMap;
 use std::io::Read;
@@ -20,8 +21,6 @@ use crate::error::StfsError;
 use crate::util::*;
 
 pub type StfsEntryRef = Arc<Mutex<StfsEntry>>;
-
-const BLOCK_SIZE: usize = 0x1000;
 
 #[derive(Debug, Serialize, Variantly)]
 pub enum StfsEntry {
@@ -50,28 +49,71 @@ impl StfsEntry {
 }
 
 #[derive(Debug, Serialize, Copy, Clone)]
-pub enum StfsPackageReadFlag {
-	ReadWrite = 0,
-	ReadOnly,
+pub enum HashTableShift {
+	// These values are used as part of hash block shifts
+	ReadOnlyShift = 0,
+	ReadWriteShift = 1,
 }
 
-impl StfsPackageReadFlag {
+impl HashTableShift {
 	/// The "block step" depends on the package's "sex". This basically determines
 	/// which hash tables are used.
 	const fn block_step(&self) -> [usize; 2] {
 		match self {
-			StfsPackageReadFlag::ReadWrite => [0xAB, 0x718F],
-			StfsPackageReadFlag::ReadOnly => [0xAC, 0x723A],
+			HashTableShift::ReadOnlyShift => [0xAB, 0x718F],
+			HashTableShift::ReadWriteShift => [0xAC, 0x723A],
 		}
 	}
 }
 
-#[derive(Default, Debug, Serialize)]
+#[bitfield]
 #[binrw]
+#[br(map = |x: u32| {Self::from(x)} )]
+#[bw(map = |ts: &Self| u32::from(*ts))]
+#[derive(Default, Debug, Copy, Clone, Serialize, Eq, PartialEq)]
+#[repr(u32)]
+pub struct HashEntryLevelFirstMeta {
+	next_block: B24,
+	reserved: B6,
+	state: B2,
+}
+
+#[bitfield]
+#[binrw]
+#[br(map = |x: u32| {Self::from(x)} )]
+#[bw(map = |ts: &Self| u32::from(*ts))]
+#[derive(Default, Debug, Copy, Clone, Serialize, Eq, PartialEq)]
+#[repr(u32)]
+pub struct HashEntryLevelNMeta {
+	num_free_blocks: B15,
+	num_free_pending_blocks: B15,
+	active_index: bool,
+	writeable: bool,
+}
+
+#[binrw]
+#[derive(Debug, Copy, Clone, Serialize, Variantly)]
+#[br(import(level: HashTableLevel))]
+pub enum HashEntryMeta {
+	#[br(pre_assert(level == HashTableLevel::Zero))]
+	LevelFirst(HashEntryLevelFirstMeta),
+	#[br(pre_assert(level != HashTableLevel::Zero))]
+	LevelN(HashEntryLevelNMeta),
+}
+
+#[derive(Debug, Serialize)]
+#[binrw]
+#[br(import(level: HashTableLevel))]
 struct HashEntry {
 	block_hash: [u8; 0x14],
-	status: u8,
-	next_block: Block,
+	#[br(args(level))]
+	meta: HashEntryMeta,
+}
+
+impl Default for HashEntry {
+	fn default() -> Self {
+		Self { block_hash: Default::default(), meta: HashEntryMeta::LevelFirst(Default::default()) }
+	}
 }
 
 #[derive(Default, Debug, Serialize)]
@@ -85,7 +127,7 @@ impl HashTableMeta {
 	pub fn from_volume_descriptor(stfs_vol: &StfsVolumeDescriptor) -> Result<Self, StfsError> {
 		let mut meta = HashTableMeta::default();
 
-		meta.block_step = stfs_vol.sex().block_step();
+		meta.block_step = stfs_vol.hash_block_shift().block_step();
 
 		let allocated_block_count = stfs_vol.allocated_block_count as usize;
 		meta.tables_per_level[0] = ((allocated_block_count as usize) / HASHES_PER_BLOCK)
@@ -107,68 +149,96 @@ impl HashTableMeta {
 				0
 			};
 
-		meta.top_table.level = stfs_vol.root_hash_table_level()?;
-		meta.top_table.true_block_number =
-			meta.compute_backing_hash_block_number_for_level(Block(0), meta.top_table.level, stfs_vol.sex());
+		let mut table = HashTable::default();
 
-		let base_address = meta.top_table.true_block_number.0 * BLOCK_SIZE;
-		meta.top_table.address_in_file = base_address + ((stfs_vol.flags.root_active_index() as usize) << 0xC);
+		table.level = stfs_vol.root_hash_table_level()?;
+		table.true_block_number =
+			meta.compute_backing_hash_block_number_for_level(Block(0), table.level, stfs_vol.hash_block_shift());
 
-		meta.top_table.entry_count =
-			(allocated_block_count as usize) / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[meta.top_table.level as usize];
+		let base_address = table.true_block_number.0 * BLOCK_SIZE;
+		table.address_in_file = base_address + ((stfs_vol.flags.root_active_index() as usize) * BLOCK_SIZE);
 
+		table.entry_count =
+			(allocated_block_count as usize) / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[table.level as usize];
+
+		// If the allocated block count spills over either level, add one entry
 		if (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]
 			&& allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2] != 0)
-			|| (allocated_block_count > HASHES_PER_BLOCK && allocated_block_count % HASHES_PER_BLOCK != 0)
+			|| (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]
+				&& allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL[1] != 0)
 		{
-			meta.top_table.entry_count += 1;
+			table.entry_count += 1;
 		}
 
-		meta.top_table.entries.reserve(meta.top_table.entry_count);
+		table.entries.reserve(table.entry_count);
+		meta.top_table = table;
 
 		Ok(meta)
 	}
 
+	pub fn top_table(&self) -> &HashTable {
+		&self.top_table
+		// self.hash_tables.last().expect("no hash tables?")
+	}
+
+	pub fn top_table_mut(&mut self) -> &mut HashTable {
+		&mut self.top_table
+		// self.hash_tables.last_mut().expect("no hash tables?")
+	}
+
+	/// Computes which level N hash table block contains the provided block by taking into account
+	/// any intermediate hash tables.
 	pub fn compute_backing_hash_block_number_for_level(
 		&self,
 		block: Block,
 		level: HashTableLevel,
-		sex: StfsPackageReadFlag,
+		shift: HashTableShift,
 	) -> Block {
 		match level {
-			HashTableLevel::First => self.compute_first_level_backing_hash_block_number(block, sex),
-			HashTableLevel::Second => self.compute_second_level_backing_hash_block_number(block, sex),
-			HashTableLevel::Third => self.compute_third_level_backing_hash_block_number(),
+			HashTableLevel::Zero => self.compute_first_level_backing_hash_block_number(block, shift),
+			HashTableLevel::One => self.compute_second_level_backing_hash_block_number(block, shift),
+			HashTableLevel::Two => self.compute_third_level_backing_hash_block_number(),
 		}
 	}
 
-	pub fn compute_first_level_backing_hash_block_number(&self, block: Block, sex: StfsPackageReadFlag) -> Block {
-		if block.0 < HASHES_PER_BLOCK {
-			return Block(0);
+	/// Compute which level 0 table contains this block
+	fn compute_first_level_backing_hash_block_number(&self, block: Block, shift: HashTableShift) -> Block {
+		// Account for level 0 hash tables
+		let mut hash_table_idx = block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL[0];
+		let mut block = hash_table_idx * self.block_step[0];
+
+		// First level 0 table so no more work is needed
+		if hash_table_idx != 0 {
+			// Account for level 1 hash tables
+			hash_table_idx = block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[1];
+			block += (hash_table_idx + 1) << shift as u8;
+
+			if hash_table_idx != 0 {
+				// Account for level 2 hash table
+				block += 1 << shift as u8;
+			}
 		}
-
-		let mut block_number = (block.0 / HASHES_PER_BLOCK) * self.block_step[0];
-		block_number += ((block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]) + 1) << (sex as u8);
-
-		let block = if block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2] == 0 {
-			block_number
-		} else {
-			block_number + (1 << (sex as u8))
-		};
 
 		block.into()
 	}
 
-	pub fn compute_second_level_backing_hash_block_number(&self, block: Block, sex: StfsPackageReadFlag) -> Block {
-		let block = if block.0 < DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2] {
-			self.block_step[0]
+	/// Compute which level 1 table contains the provided block
+	pub fn compute_second_level_backing_hash_block_number(&self, block: Block, shift: HashTableShift) -> Block {
+		// Account for level 0 hash tables
+		let hash_table_idx = block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL[1];
+		let mut block = hash_table_idx * self.block_step[1];
+
+		// First level 0 table so no more work is needed
+		if hash_table_idx != 0 {
+			block += self.block_step[0];
 		} else {
-			(1 << (sex as u8)) + (block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]) * self.block_step[1]
-		};
+			block += 1 << shift as u8;
+		}
 
 		block.into()
 	}
 
+	/// Compute the level 2 table block
 	pub fn compute_third_level_backing_hash_block_number(&self) -> Block {
 		self.block_step[1].into()
 	}
@@ -190,9 +260,18 @@ pub struct Block(
 	usize,
 );
 
+#[derive(Default, Debug, Serialize, Copy, Clone)]
+pub struct AbsoluteBlock(usize);
+
 impl From<usize> for Block {
 	fn from(value: usize) -> Self {
 		Block(value)
+	}
+}
+
+impl From<u32> for Block {
+	fn from(value: u32) -> Self {
+		Block(value as usize)
 	}
 }
 
@@ -220,30 +299,31 @@ impl ops::Mul<usize> for Block {
 	}
 }
 
-#[derive(Copy, Clone, Debug)]
-enum HashBlockTable {
-	Level0,
-	Level1,
-	Level2,
-}
-
 impl StfsPackage {
-	pub fn from_volume_descriptor(volume_descriptor: StfsVolumeDescriptor, input: &[u8]) -> Result<Self, StfsError> {
-		let mut hash_table_meta = HashTableMeta::from_volume_descriptor(&volume_descriptor)?;
-		hash_table_meta.top_table.parse_hash_entries(&input[hash_table_meta.top_table.data_range()])?;
+	pub fn from_volume_descriptor(volume_descriptor: StfsVolumeDescriptor) -> Result<Self, StfsError> {
+		let hash_table_meta = HashTableMeta::from_volume_descriptor(&volume_descriptor)?;
 
-		let mut package = Self {
+		let package = Self {
 			volume_descriptor,
 			hash_table_meta,
 			files: Arc::new(Mutex::new(StfsEntry::Folder { entry: Default::default(), files: Default::default() })),
 		};
 
-		package.read_files(input)?;
-
 		Ok(package)
 	}
 
-	fn compute_hash_block_number(&self, block: Block, table_level: HashBlockTable) -> usize {
+	/// Loads the STFS file from a complete file slice. This is a wrapper for
+	pub fn load_from_complete_file(&mut self, input: &[u8]) -> Result<(), StfsError> {
+		let top_table = &mut self.hash_table_meta.top_table;
+		let data_range = top_table.data_range();
+		top_table.parse_hash_entries(&input[data_range])?;
+
+		self.read_files(input)?;
+
+		Ok(())
+	}
+
+	fn compute_hash_block_number(&self, block: Block, table_level: HashTableLevel) -> usize {
 		const BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY: usize = HASHES_PER_BLOCK + 1;
 		const BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_ONLY: usize =
 			(BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY * BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY) + 1;
@@ -258,15 +338,15 @@ impl StfsPackage {
 
 		if self.volume_descriptor.is_read_only() {
 			match table_level {
-				HashBlockTable::Level0 => BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY,
-				HashBlockTable::Level1 => BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_ONLY,
-				HashBlockTable::Level2 => BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_ONLY,
+				HashTableLevel::Zero => BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_ONLY,
+				HashTableLevel::One => BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_ONLY,
+				HashTableLevel::Two => BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_ONLY,
 			}
 		} else {
 			match table_level {
-				HashBlockTable::Level0 => BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_WRITE,
-				HashBlockTable::Level1 => BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_WRITE,
-				HashBlockTable::Level2 => BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_WRITE,
+				HashTableLevel::Zero => BLOCKS_FOR_LEVEL_0_HASH_TREE_READ_WRITE,
+				HashTableLevel::One => BLOCKS_FOR_LEVEL_1_HASH_TREE_READ_WRITE,
+				HashTableLevel::Two => BLOCKS_FOR_LEVEL_2_HASH_TREE_READ_WRITE,
 			}
 		}
 	}
@@ -291,7 +371,10 @@ impl StfsPackage {
 		if entry.flags.has_consecutive_blocks() {
 			let blocks_until_hash_table = (self
 				.hash_table_meta
-				.compute_first_level_backing_hash_block_number(attributes.starting_block, self.volume_descriptor.sex())
+				.compute_first_level_backing_hash_block_number(
+					attributes.starting_block,
+					self.volume_descriptor.hash_block_shift(),
+				)
 				.0 + self.hash_table_meta.block_step[0])
 				- ((start_address as usize) / BLOCK_SIZE);
 
@@ -327,8 +410,8 @@ impl StfsPackage {
 				let block_address = self.block_to_addr(block);
 				mappings.push(block_address..(block_address + read_len));
 
-				let hash_entry = self.block_hash_entry(block, input)?;
-				block = hash_entry.next_block;
+				let hash_entry = self.block_hash_entry(block, HashTableLevel::Zero, input)?;
+				block = Block(hash_entry.meta.level_first().expect("hash entry is not level0").next_block() as usize);
 				data_remaining -= read_len;
 			}
 		}
@@ -337,7 +420,7 @@ impl StfsPackage {
 	}
 
 	fn hash_table_skip_for_address(&self, table_address: usize) -> Result<usize, StfsError> {
-		let sex = self.volume_descriptor.sex() as usize;
+		let sex = self.volume_descriptor.hash_block_shift() as usize;
 		let hash_table_meta = &self.hash_table_meta;
 
 		// Convert the address to a true block number
@@ -364,7 +447,7 @@ impl StfsPackage {
 		}
 	}
 
-	fn block_hash_entry(&self, block: Block, input: &[u8]) -> Result<HashEntry, StfsError> {
+	fn block_hash_entry(&self, block: Block, level: HashTableLevel, input: &[u8]) -> Result<HashEntry, StfsError> {
 		if block.0 > self.volume_descriptor.allocated_block_count as usize {
 			panic!(
 				"Reference to illegal block number: {:#x} ({:#x} allocated)",
@@ -374,41 +457,71 @@ impl StfsPackage {
 
 		let mut reader = Cursor::new(input);
 		reader.set_position(self.block_hash_address(block, input)?);
-		Ok(reader.read_be::<HashEntry>()?)
+
+		// TODO: cache
+		Ok(reader.read_be_args::<HashEntry>((level,))?)
+	}
+
+	fn block_hash_idx(&self, block: Block) -> Result<(HashTableLevel, usize), StfsError> {
+		if block.0 > self.volume_descriptor.allocated_block_count as usize {
+			return Err(StfsError::IllegalBlockNumber(block.0, self.volume_descriptor.allocated_block_count as usize));
+		}
+
+		todo!()
+
+		// let res = if block.0 <= DATA_BLOCKS_PER_HASH_TREE_LEVEL[0] {
+		// 	(HashTableLevel::Zero, block.0)
+		// } else if block.0 <= DATA_BLOCKS_PER_HASH_TREE_LEVEL[1] {
+		// 	(HashTableLevel::One, block.0 % )
+		// } else {
+
+		// };
+
+		// Ok(res)
 	}
 
 	fn block_hash_address(&self, block: Block, input: &[u8]) -> Result<u64, StfsError> {
 		if block.0 > self.volume_descriptor.allocated_block_count as usize {
-			panic!(
-				"Reference to illegal block number: {:#x} ({:#x} allocated)",
-				block.0, self.volume_descriptor.allocated_block_count
-			);
+			return Err(StfsError::IllegalBlockNumber(block.0, self.volume_descriptor.allocated_block_count as usize));
 		}
 
 		let hash_table_meta = &self.hash_table_meta;
 
 		let mut hash_addr = hash_table_meta
-			.compute_first_level_backing_hash_block_number(block, self.volume_descriptor.sex())
+			.compute_first_level_backing_hash_block_number(block, self.volume_descriptor.hash_block_shift())
 			.0 * BLOCK_SIZE;
+
 		// 0x18 here is the size of the HashEntry structure
 		hash_addr += (block.0 % HASHES_PER_BLOCK) * 0x18;
-		let address = match hash_table_meta.top_table.level {
+
+		let address = match hash_table_meta.top_table().level {
 			// TODO: might have broken things with the flags here
-			HashTableLevel::First => {
+			HashTableLevel::Zero => {
 				hash_addr as u64 + ((self.volume_descriptor.flags.root_active_index() as u64) << 0xC)
 			}
-			HashTableLevel::Second => {
-				hash_addr as u64
-					+ ((hash_table_meta.top_table.entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]].status
-						as u64 & 0x40) << 6)
-			}
-			HashTableLevel::Third => {
-				let first_level_offset =
-					(hash_table_meta.top_table.entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]].status
-						as u64 & 0x40) << 6;
+			HashTableLevel::One => {
+				let hash_entry_meta =
+					hash_table_meta.top_table().entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]].meta;
 
+				hash_addr as u64
+					+ ((hash_entry_meta
+						.level_n()
+						.expect("second-level hash table entry does not have LevelN meta")
+						.active_index() as u64) << 0xC)
+			}
+			HashTableLevel::Two => {
+				let hash_entry_meta =
+					hash_table_meta.top_table().entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]].meta;
+
+				let first_level_offset = hash_addr as u64
+					+ ((hash_entry_meta
+						.level_n()
+						.expect("second-level hash table entry does not have LevelN meta")
+						.active_index() as u64) << 0xC);
+
+				// TODO
 				let position = (hash_table_meta
-					.compute_second_level_backing_hash_block_number(block, self.volume_descriptor.sex())
+					.compute_second_level_backing_hash_block_number(block, self.volume_descriptor.hash_block_shift())
 					.0 * BLOCK_SIZE) + first_level_offset as usize
 					+ ((block.0 % DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]) * 0x18);
 
@@ -463,7 +576,13 @@ impl StfsPackage {
 				}
 			}
 
-			block = self.block_hash_entry(block.into(), input)?.next_block;
+			block = self
+				.block_hash_entry(block.into(), HashTableLevel::Zero, input)?
+				.meta
+				.level_first()
+				.expect("hash table entry was not constructed as a Level0 entry")
+				.next_block()
+				.into();
 		}
 
 		// Associate each file with the folder it needs to be in
@@ -488,16 +607,17 @@ impl StfsPackage {
 		Ok(())
 	}
 
-	fn block_to_addr(&self, block: Block) -> u64 {
+	pub(crate) fn block_to_addr(&self, block: Block) -> u64 {
 		if block.0 > 2usize.pow(24) - 1 {
 			panic!("invalid block: {:#x}", block.0);
 		}
 
-		self.compute_data_block_num(block) * BLOCK_SIZE as u64
+		(self.compute_absolute_block_num(block).0 as u64) * (BLOCK_SIZE as u64)
 	}
 
-	/// Translates a data block to an absolute block, adjusting the block number to skip over any potential hash blocks.
-	fn compute_data_block_num(&self, block: Block) -> u64 {
+	/// Translates a logical STFS block to an absolute block, adjusting the block
+	/// number to skip over any potential hash blocks.
+	pub(crate) fn compute_absolute_block_num(&self, block: Block) -> AbsoluteBlock {
 		// // Read-only filesystems have different properties
 		let blocks_per_hash_block = if self.volume_descriptor.is_read_only() { 1 } else { 2 };
 
@@ -518,7 +638,7 @@ impl StfsPackage {
 			}
 		}
 
-		u64::try_from(block_num).expect("failed to convert usize to u64")
+		AbsoluteBlock(block_num)
 	}
 }
 
@@ -603,7 +723,7 @@ pub struct HashTable {
 impl Default for HashTable {
 	fn default() -> Self {
 		HashTable {
-			level: HashTableLevel::First,
+			level: HashTableLevel::Zero,
 			true_block_number: Block(0),
 			entry_count: 0,
 			address_in_file: 0,
@@ -614,11 +734,11 @@ impl Default for HashTable {
 
 impl HashTable {
 	/// Reads top-level hashes
-	pub fn parse_hash_entries(&mut self, data: &[u8]) -> Result<(), StfsError> {
-		let mut reader = Cursor::new(data);
+	pub fn parse_hash_entries(&mut self, entry_data: &[u8]) -> Result<(), StfsError> {
+		let mut reader = Cursor::new(entry_data);
 
 		for _ in 0..self.entry_count {
-			let entry = reader.read_be::<HashEntry>()?;
+			let entry = reader.read_be_args::<HashEntry>((self.level,))?;
 			self.entries.push(entry);
 		}
 
@@ -627,27 +747,44 @@ impl HashTable {
 
 	/// Returns the file range (start..end offset) this hash table occupies
 	pub fn data_range(&self) -> Range<usize> {
-		// HashEntry has 1 u24 field, so subtract 1 since it's represented internally as a u32
-		self.address_in_file..(self.address_in_file + self.entry_count * (std::mem::size_of::<HashEntry>() - 1))
+		self.address_in_file..(self.address_in_file + (self.entry_count * HASH_ENTRY_LEN))
 	}
 }
 
-#[derive(Debug, Serialize, Copy, Clone)]
+#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HashTableLevel {
-	First,
-	Second,
-	Third,
+	Zero,
+	One,
+	Two,
+}
+
+impl HashTableLevel {
+	pub fn previous(&self) -> Option<HashTableLevel> {
+		match self {
+			HashTableLevel::Zero => None,
+			HashTableLevel::One => Some(HashTableLevel::Zero),
+			HashTableLevel::Two => Some(HashTableLevel::One),
+		}
+	}
+
+	pub fn next(&self) -> Option<HashTableLevel> {
+		match self {
+			HashTableLevel::Zero => Some(HashTableLevel::One),
+			HashTableLevel::One => Some(HashTableLevel::Two),
+			HashTableLevel::Two => None,
+		}
+	}
 }
 
 impl StfsVolumeDescriptor {
 	/// Returns which hash table level the root hash is in
 	fn root_hash_table_level(&self) -> Result<HashTableLevel, StfsError> {
 		let level = if self.allocated_block_count as usize <= HASHES_PER_BLOCK {
-			HashTableLevel::First
+			HashTableLevel::Zero
 		} else if self.allocated_block_count as usize <= DATA_BLOCKS_PER_HASH_TREE_LEVEL[1] {
-			HashTableLevel::Second
+			HashTableLevel::One
 		} else if self.allocated_block_count as usize <= DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] {
-			HashTableLevel::Third
+			HashTableLevel::Two
 		} else {
 			return Err(StfsError::InvalidVolumeDescriptor);
 		};
@@ -659,11 +796,11 @@ impl StfsVolumeDescriptor {
 		self.flags.read_only()
 	}
 
-	pub fn sex(&self) -> StfsPackageReadFlag {
+	pub fn hash_block_shift(&self) -> HashTableShift {
 		if self.is_read_only() {
-			StfsPackageReadFlag::ReadOnly
+			HashTableShift::ReadOnlyShift
 		} else {
-			StfsPackageReadFlag::ReadWrite
+			HashTableShift::ReadWriteShift
 		}
 	}
 }

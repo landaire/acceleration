@@ -186,7 +186,7 @@ impl<T: AsRef<[u8]> + Send + Sync + 'static> FileSystem for StFS<T> {
 
 		let dir = dir.lock();
 
-		if let StfsEntry::Folder { entry, files } = &*dir {
+		if let StfsEntry::Folder { entry: _, files } = &*dir {
 			Ok(Box::new(files.iter().map(|file| file.lock().name()).collect::<Vec<_>>().into_iter()))
 		} else {
 			unreachable!("we should never have a file here")
