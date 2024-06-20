@@ -109,8 +109,8 @@ where
 }
 
 #[derive(Clone)]
-struct StfsDataWrapper<T> {
-	/// Do not use directly. STFS filesystems may have a different start offset,/ and the caller may be handing us the
+pub struct StfsDataWrapper<T> {
+	/// Do not use directly. STFS filesystems may have a different start offset, and the caller may be handing us the
 	/// original file for a variety of reasons.
 	data: Arc<T>,
 	filesystem_start: usize,
