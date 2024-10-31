@@ -11,6 +11,7 @@ use clap::Parser;
 use clap::Subcommand;
 use humansize::DECIMAL;
 use memmap2::MmapOptions;
+use serde_json::json;
 use stfs::vfs::FileSystem;
 use stfs::vfs::VfsPath;
 use xcontent::xecrypt::XContentKeyMaterial;
@@ -21,6 +22,10 @@ enum Commands {
 		/// Show additional header information
 		#[arg(short, long)]
 		long: bool,
+		#[arg(long)]
+		json: bool,
+		#[arg(long)]
+		json_pretty: bool,
 	},
 	/// Lists files
 	List {
@@ -65,45 +70,60 @@ fn main() -> anyhow::Result<()> {
 
 	let package = xcontent::XContentPackage::try_from(&mmap[..])?;
 
-	if let Commands::Info { long } = args.command.as_ref().unwrap_or(&Commands::Info { long: false }) {
+	if let Commands::Info { long, json, json_pretty } =
+		args.command.as_ref().unwrap_or(&Commands::Info { long: false, json: false, json_pretty: false })
+	{
 		let header = &package.header;
 		let header_hash = header.header_hash(&mmap[..]);
+		let header_hash_hex = hex::encode(&header_hash);
 		let metadata = &header.metadata;
+		let signature_verification = package.verify_signature(&mmap[..]);
+		let storage_path = package.storage_path();
+
+		if *json || *json_pretty {
+			let value = json!({
+				"calculated": {
+					"header_hash": header_hash_hex,
+				},
+				"header": serde_json::value::to_value(header).expect("failed to convert XContentHeader to JSON Value"),
+				"metadata": serde_json::value::to_value(metadata).expect("failed to convert XContentMetadata to JSON Value"),
+			});
+
+			if *json_pretty {
+				serde_json::to_writer_pretty(std::io::stdout(), &value).expect("failed to write JSON output");
+			} else {
+				serde_json::to_writer(std::io::stdout(), &value).expect("failed to write JSON output");
+			}
+			return Ok(());
+		}
 
 		println!("=== Calculated ===");
-		println!("{: <padding$} {}", "Expected Signed Hash:", hex::encode(&header_hash), padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Expected Signed Hash:", header_hash_hex, padding = GENERAL_PADDING);
 		println!(
 			"{: <padding$} {}",
 			"Hash Valid:",
-			if let Ok(console_kind) = package.verify_signature(&mmap[..]) {
+			if let Ok(console_kind) = signature_verification {
 				format!("✅ ({:?})", console_kind)
 			} else {
 				"❌".to_string()
 			},
 			padding = GENERAL_PADDING,
 		);
-		println!("{: <padding$} {}", "Storage Path:", package.storage_path(), padding = GENERAL_PADDING,);
+		println!("{: <padding$} {}", "Storage Path:", storage_path, padding = GENERAL_PADDING,);
 
+		let content_id = hex::encode(header.content_id);
+		let signature = match &header.key_material {
+			XContentKeyMaterial::Certificate(cert) => {
+				hex::encode([0x0])
+				//todo!("certificate");
+			}
+			XContentKeyMaterial::Signature(sig, _) => hex::encode(xcontent::xecrypt::raw_signature_to_standard(sig)),
+		};
 		println!();
 		println!("=== XContentHeader ===");
 		println!("{: <padding$} {}", "Signature Type:", header.signature_type, padding = GENERAL_PADDING);
-		println!(
-			"{: <padding$} {}",
-			"Signature:",
-			match &header.key_material {
-				XContentKeyMaterial::Certificate(cert) => todo!("certificate"),
-				XContentKeyMaterial::Signature(sig, _) => {
-					hex::encode(xcontent::xecrypt::raw_signature_to_standard(sig))
-				}
-			},
-			padding = GENERAL_PADDING
-		);
-		println!(
-			"{: <padding$} {}",
-			"Content ID (Header Hash):",
-			hex::encode(header.content_id),
-			padding = GENERAL_PADDING
-		);
+		println!("{: <padding$} {}", "Signature:", signature, padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Content ID (Header Hash):", content_id, padding = GENERAL_PADDING);
 
 		println!();
 		println!("=== XContentMetadata ===");
@@ -232,7 +252,7 @@ fn main() -> anyhow::Result<()> {
 	let mut path: VfsPath = package.to_vfs_path(Arc::new(mmap));
 
 	match args.command.expect("default command should have been handled") {
-		Commands::Info { long } => {
+		Commands::Info { long, json, json_pretty } => {
 			unreachable!("Handled above")
 		}
 		Commands::List { tree: true, long: _, recursive: _, path: start_path } => {
