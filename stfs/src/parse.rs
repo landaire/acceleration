@@ -507,7 +507,8 @@ impl StfsPackage {
 					+ ((hash_entry_meta
 						.level_n()
 						.expect("second-level hash table entry does not have LevelN meta")
-						.active_index() as u64) << 0xC)
+						.active_index() as u64)
+						<< 0xC)
 			}
 			HashTableLevel::Two => {
 				let hash_entry_meta =
@@ -517,12 +518,14 @@ impl StfsPackage {
 					+ ((hash_entry_meta
 						.level_n()
 						.expect("second-level hash table entry does not have LevelN meta")
-						.active_index() as u64) << 0xC);
+						.active_index() as u64)
+						<< 0xC);
 
 				// TODO
 				let position = (hash_table_meta
 					.compute_second_level_backing_hash_block_number(block, self.volume_descriptor.hash_block_shift())
-					.0 * BLOCK_SIZE) + first_level_offset as usize
+					.0 * BLOCK_SIZE)
+					+ first_level_offset as usize
 					+ ((block.0 % DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]) * 0x18);
 
 				let status_byte = input[position + 0x14];
@@ -530,7 +533,7 @@ impl StfsPackage {
 			}
 		};
 
-		Ok(address)
+		Ok(hash_addr as u64)
 	}
 
 	fn read_files(&mut self, input: &[u8]) -> Result<(), StfsError> {
@@ -545,7 +548,8 @@ impl StfsPackage {
 		);
 
 		for block_idx in 0..(self.volume_descriptor.file_table_block_count as usize) {
-			let current_addr = self.block_to_addr(block + block_idx);
+			let current_addr = self.block_to_addr(block);
+			assert!(current_addr < input.len() as u64);
 			reader.set_position(current_addr);
 
 			for file_entry_idx in 0..0x40 {
@@ -555,6 +559,8 @@ impl StfsPackage {
 				};
 
 				let mut entry = reader.read_be::<StfsFileEntry>()?;
+				// println!("{:#X?}", &input[(reader.position() as usize)..((reader.position() as usize) + 0x40)]);
+				// println!("{:#X?}", entry);
 
 				// If we encounter a NULL name, that signifies that we've reached the end of the file table
 				if entry.flags.name_len() == 0 {
@@ -621,24 +627,25 @@ impl StfsPackage {
 		// // Read-only filesystems have different properties
 		let blocks_per_hash_block = if self.volume_descriptor.is_read_only() { 1 } else { 2 };
 
-		let mut block_num = block.0;
+		let block_num = block.0;
+		let mut absolute_block_num = block_num;
 		let mut num_hash_and_data_blocks =
 			(block_num + DATA_BLOCKS_PER_HASH_TREE_LEVEL[0]) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[0];
-		block_num += num_hash_and_data_blocks * blocks_per_hash_block;
+		absolute_block_num += num_hash_and_data_blocks * blocks_per_hash_block;
 
 		if block_num >= DATA_BLOCKS_PER_HASH_TREE_LEVEL[0] {
 			// Skip past the level 0 hash table
 			num_hash_and_data_blocks =
 				(block_num + DATA_BLOCKS_PER_HASH_TREE_LEVEL[1]) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[1];
-			block_num += num_hash_and_data_blocks * blocks_per_hash_block;
+			absolute_block_num += num_hash_and_data_blocks * blocks_per_hash_block;
 
 			// Skip past the level 1 hash table
 			if block_num >= DATA_BLOCKS_PER_HASH_TREE_LEVEL[1] {
-				block_num += blocks_per_hash_block;
+				absolute_block_num += blocks_per_hash_block;
 			}
 		}
 
-		AbsoluteBlock(block_num)
+		AbsoluteBlock(absolute_block_num)
 	}
 }
 
