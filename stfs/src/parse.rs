@@ -12,6 +12,7 @@ use std::ops::{
 use std::sync::Arc;
 
 use crate::consts::*;
+use crate::hashing::StfsBlockHash;
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::io::Cursor;
@@ -101,13 +102,13 @@ pub enum HashEntryMeta {
 	LevelN(HashEntryLevelNMeta),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[binrw]
 #[br(import(level: HashTableLevel))]
-struct HashEntry {
-	block_hash: [u8; 0x14],
+pub(crate) struct HashEntry {
+	pub(crate) block_hash: [u8; 0x14],
 	#[br(args(level))]
-	meta: HashEntryMeta,
+	pub(crate) meta: HashEntryMeta,
 }
 
 impl Default for HashEntry {
@@ -251,13 +252,13 @@ pub struct StfsPackage {
 	pub files: StfsEntryRef,
 }
 
-#[derive(Default, Debug, Serialize, Copy, Clone)]
+#[derive(Default, Debug, Serialize, Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 #[binrw]
 pub struct Block(
 	#[br(parse_with = binrw::helpers::read_u24, map = |block: u32| block as usize)]
 	// TODO: write u24
 	#[bw(map = |block: &usize| *block as u32 )] //, write_with = binrw::helpers::write_u24)]
-	usize,
+	pub  usize,
 );
 
 #[derive(Default, Debug, Serialize, Copy, Clone)]
@@ -447,7 +448,12 @@ impl StfsPackage {
 		}
 	}
 
-	fn block_hash_entry(&self, block: Block, level: HashTableLevel, input: &[u8]) -> Result<HashEntry, StfsError> {
+	pub(crate) fn block_hash_entry(
+		&self,
+		block: Block,
+		level: HashTableLevel,
+		input: &[u8],
+	) -> Result<HashEntry, StfsError> {
 		if block.0 > self.volume_descriptor.allocated_block_count as usize {
 			panic!(
 				"Reference to illegal block number: {:#x} ({:#x} allocated)",
@@ -456,7 +462,7 @@ impl StfsPackage {
 		}
 
 		let mut reader = Cursor::new(input);
-		reader.set_position(self.block_hash_address(block, input)?);
+		reader.set_position(self.block_hash_address(block, input, HashTableLevel::Zero)?);
 
 		// TODO: cache
 		Ok(reader.read_be_args::<HashEntry>((level,))?)
@@ -480,58 +486,39 @@ impl StfsPackage {
 		// Ok(res)
 	}
 
-	fn block_hash_address(&self, block: Block, input: &[u8]) -> Result<u64, StfsError> {
-		if block.0 > self.volume_descriptor.allocated_block_count as usize {
-			return Err(StfsError::IllegalBlockNumber(block.0, self.volume_descriptor.allocated_block_count as usize));
+	/// Returns the address of the hash for the provided data block.
+	pub(crate) fn data_block_to_hash_block(
+		&self,
+		data_block: Block,
+		level: HashTableLevel,
+	) -> Result<Block, StfsError> {
+		if data_block.0 > self.volume_descriptor.allocated_block_count as usize {
+			return Err(StfsError::IllegalBlockNumber(
+				data_block.0,
+				self.volume_descriptor.allocated_block_count as usize,
+			));
 		}
 
 		let hash_table_meta = &self.hash_table_meta;
 
-		let mut hash_addr = hash_table_meta
-			.compute_first_level_backing_hash_block_number(block, self.volume_descriptor.hash_block_shift())
+		let hash_addr = hash_table_meta
+			.compute_backing_hash_block_number_for_level(data_block, level, self.volume_descriptor.hash_block_shift())
 			.0 * BLOCK_SIZE;
 
+		Ok(Block(hash_addr))
+	}
+
+	/// Returns the address of the hash for the provided data block.
+	pub(crate) fn block_hash_address(
+		&self,
+		data_block: Block,
+		input: &[u8],
+		level: HashTableLevel,
+	) -> Result<u64, StfsError> {
+		let mut hash_addr = self.data_block_to_hash_block(data_block, level)?.0;
+
 		// 0x18 here is the size of the HashEntry structure
-		hash_addr += (block.0 % HASHES_PER_BLOCK) * 0x18;
-
-		let address = match hash_table_meta.top_table().level {
-			// TODO: might have broken things with the flags here
-			HashTableLevel::Zero => {
-				hash_addr as u64 + ((self.volume_descriptor.flags.root_active_index() as u64) << 0xC)
-			}
-			HashTableLevel::One => {
-				let hash_entry_meta =
-					hash_table_meta.top_table().entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]].meta;
-
-				hash_addr as u64
-					+ ((hash_entry_meta
-						.level_n()
-						.expect("second-level hash table entry does not have LevelN meta")
-						.active_index() as u64)
-						<< 0xC)
-			}
-			HashTableLevel::Two => {
-				let hash_entry_meta =
-					hash_table_meta.top_table().entries[block.0 / DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[2]].meta;
-
-				let first_level_offset = hash_addr as u64
-					+ ((hash_entry_meta
-						.level_n()
-						.expect("second-level hash table entry does not have LevelN meta")
-						.active_index() as u64)
-						<< 0xC);
-
-				// TODO
-				let position = (hash_table_meta
-					.compute_second_level_backing_hash_block_number(block, self.volume_descriptor.hash_block_shift())
-					.0 * BLOCK_SIZE)
-					+ first_level_offset as usize
-					+ ((block.0 % DATA_BLOCKS_PER_HASH_TREE_LEVEL_TEMP[1]) * 0x18);
-
-				let status_byte = input[position + 0x14];
-				hash_addr as u64 + ((status_byte as u64 & 0x40) << 0x6)
-			}
-		};
+		hash_addr += (data_block.0 % HASHES_PER_BLOCK) * 0x18;
 
 		Ok(hash_addr as u64)
 	}
@@ -756,9 +743,29 @@ impl HashTable {
 	pub fn data_range(&self) -> Range<usize> {
 		self.address_in_file..(self.address_in_file + (self.entry_count * HASH_ENTRY_LEN))
 	}
+
+	pub fn level(&self) -> HashTableLevel {
+		self.level
+	}
+
+	pub fn true_block_number(&self) -> Block {
+		self.true_block_number
+	}
+
+	pub fn entry_count(&self) -> usize {
+		self.entry_count
+	}
+
+	pub fn address_in_file(&self) -> usize {
+		self.address_in_file
+	}
+
+	pub fn entries(&self) -> &[HashEntry] {
+		&self.entries
+	}
 }
 
-#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HashTableLevel {
 	Zero,
 	One,
@@ -819,10 +826,10 @@ impl StfsVolumeDescriptor {
 #[derive(Default, Debug, Copy, Clone, Serialize)]
 #[repr(u8)]
 pub struct StfsVolumeDescriptorFlags {
-	read_only: bool,
-	root_active_index: bool,
-	dir_is_overallocated: bool,
-	dir_index_bounds_are_valid: bool,
+	pub(crate) read_only: bool,
+	pub(crate) root_active_index: B1,
+	pub(crate) dir_is_overallocated: bool,
+	pub(crate) dir_index_bounds_are_valid: bool,
 	_reserved: B4,
 }
 
@@ -839,6 +846,16 @@ pub struct StfsVolumeDescriptor {
 	top_hash_table_hash: [u8; 0x14],
 	allocated_block_count: u32,
 	unallocated_block_count: u32,
+}
+
+impl StfsVolumeDescriptor {
+	pub fn top_hash_table_hash(&self) -> &StfsBlockHash {
+		&self.top_hash_table_hash
+	}
+
+	pub(crate) fn flags(&self) -> &StfsVolumeDescriptorFlags {
+		&self.flags
+	}
 }
 
 #[cfg(test)]
