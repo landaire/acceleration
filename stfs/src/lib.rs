@@ -5,6 +5,8 @@ pub mod header;
 pub mod io;
 pub mod package;
 pub mod types;
+#[cfg(feature = "vfs")]
+pub mod vfs;
 pub mod wrappers;
 
 // Re-export key types at crate root for convenience

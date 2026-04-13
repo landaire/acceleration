@@ -1,12 +1,3 @@
-use byteorder::BigEndian;
-use byteorder::LittleEndian;
-use byteorder::ReadBytesExt;
-use serde::Serialize;
-use std::collections::HashMap;
-use std::io::Cursor;
-use std::path::Path;
-use std::path::PathBuf;
-
 use crate::error::StfsError;
 use crate::hash::block_to_addr;
 use crate::hash::read_block_hash_entry;
@@ -14,6 +5,12 @@ use crate::hash::HashTableMeta;
 use crate::header::StfsVolumeDescriptor;
 use crate::io::ReadAt;
 use crate::types::*;
+use byteorder::BigEndian;
+use byteorder::LittleEndian;
+use byteorder::ReadBytesExt;
+use serde::Serialize;
+use std::collections::HashMap;
+use std::io::Cursor;
 
 #[derive(Default, Clone, Debug, Serialize)]
 pub struct StfsFileEntry {
@@ -169,22 +166,26 @@ impl StfsFileTable {
         }
     }
 
-    pub fn walk_files(&self) -> Vec<(PathBuf, StfsFileEntry)> {
+    pub fn walk_files(&self) -> Vec<(String, StfsFileEntry)> {
         let tree = self.build_tree();
         let mut result = Vec::new();
 
-        fn walk(node: &StfsTreeNode, path: &Path, result: &mut Vec<(PathBuf, StfsFileEntry)>) {
+        fn walk(node: &StfsTreeNode, path: &str, result: &mut Vec<(String, StfsFileEntry)>) {
             for child in &node.children {
-                if child.entry.is_directory() {
-                    let dir_path = path.join(&child.entry.name);
-                    walk(child, &dir_path, result);
+                let child_path = if path.is_empty() {
+                    child.entry.name.clone()
                 } else {
-                    result.push((path.join(&child.entry.name), child.entry.clone()));
+                    format!("{}/{}", path, child.entry.name)
+                };
+                if child.entry.is_directory() {
+                    walk(child, &child_path, result);
+                } else {
+                    result.push((child_path, child.entry.clone()));
                 }
             }
         }
 
-        walk(&tree, &PathBuf::new(), &mut result);
+        walk(&tree, "", &mut result);
         result
     }
 }
