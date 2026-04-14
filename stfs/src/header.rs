@@ -49,7 +49,7 @@ fn read_utf16_cstr(cursor: &mut Cursor<&[u8]>, input: &[u8]) -> String {
 #[derive(Debug, Serialize)]
 pub struct Certificate {
 	pub pubkey_cert_size: u16,
-	pub owner_console_id: [u8; 5],
+	pub owner_console_id: ConsoleId,
 	pub owner_console_part_number: String,
 	pub owner_console_type: Option<ConsoleType>,
 	pub console_type_flags: Option<ConsoleTypeFlags>,
@@ -139,8 +139,7 @@ pub struct StfsVolumeDescriptor {
 	pub file_table_block_count: u16,
 	/// Encoded as a 24-bit integer
 	pub file_table_block_num: BlockNumber,
-	#[serde(with = "serde_bytes::fixed")]
-	pub top_hash_table_hash: [u8; 0x14],
+	pub top_hash_table_hash: Sha1Digest,
 	pub allocated_block_count: u32,
 	pub unallocated_block_count: u32,
 }
@@ -151,8 +150,7 @@ pub struct SvodVolumeDescriptor {
 	pub block_cache_element_count: u8,
 	pub worker_thread_processor: u8,
 	pub worker_thread_priority: u8,
-	#[serde(with = "serde_bytes::fixed")]
-	pub root_hash: [u8; 0x14],
+	pub root_hash: Sha1Digest,
 	pub flags: u8,
 	/// Encoded as an int24
 	pub data_block_count: u32,
@@ -171,23 +169,22 @@ pub struct XContentHeader {
 	pub package_signature: Option<[u8; 0x100]>,
 
 	pub license_data: [LicenseEntry; 0x10],
-	#[serde(with = "serde_bytes::fixed")]
-	pub header_hash: [u8; 0x14],
+	pub header_hash: Sha1Digest,
 	pub header_size: u32,
 	pub content_type: ContentType,
 	pub metadata_version: u32,
 	pub content_size: u64,
-	pub media_id: u32,
+	pub media_id: MediaId,
 	pub version: u32,
 	pub base_version: u32,
-	pub title_id: u32,
+	pub title_id: TitleId,
 	pub platform: u8,
 	pub executable_type: u8,
 	pub disc_number: u8,
 	pub disc_in_set: u8,
-	pub savegame_id: u32,
-	pub console_id: [u8; 5],
-	pub profile_id: [u8; 8],
+	pub savegame_id: SavegameId,
+	pub console_id: ConsoleId,
+	pub profile_id: ProfileId,
 	pub volume_descriptor: FileSystem,
 	pub filesystem_type: FileSystemType,
 	/// Only in PEC
@@ -196,8 +193,7 @@ pub struct XContentHeader {
 	// Metadata v1
 	pub data_file_count: u32,
 	pub data_file_combined_size: u64,
-	#[serde(with = "serde_bytes::fixed")]
-	pub device_id: [u8; 0x14],
+	pub device_id: DeviceId,
 	pub display_name: String,
 	pub display_description: String,
 	pub publisher_name: String,
@@ -240,7 +236,7 @@ impl XContentHeader {
 
 fn parse_certificate(cursor: &mut Cursor<&[u8]>) -> Result<Certificate, StfsError> {
 	let pubkey_cert_size = cursor.read_u16::<BigEndian>()?;
-	let owner_console_id: [u8; 5] = read_array(cursor)?;
+	let owner_console_id = ConsoleId(read_array(cursor)?);
 
 	let part_number_bytes: [u8; 0x11] = read_array(cursor)?;
 	let end = part_number_bytes.iter().position(|b| *b == 0x0).unwrap_or(part_number_bytes.len());
@@ -299,7 +295,7 @@ fn parse_stfs_volume_descriptor(cursor: &mut Cursor<&[u8]>) -> Result<StfsVolume
 		block_separation: cursor.read_u8()?,
 		file_table_block_count: cursor.read_u16::<LittleEndian>()?,
 		file_table_block_num: BlockNumber(cursor.read_u24::<LittleEndian>()? as usize),
-		top_hash_table_hash: read_array(cursor)?,
+		top_hash_table_hash: Sha1Digest(read_array(cursor)?),
 		allocated_block_count: cursor.read_u32::<BigEndian>()?,
 		unallocated_block_count: cursor.read_u32::<BigEndian>()?,
 	})
@@ -311,7 +307,7 @@ fn parse_svod_volume_descriptor(cursor: &mut Cursor<&[u8]>) -> Result<SvodVolume
 		block_cache_element_count: cursor.read_u8()?,
 		worker_thread_processor: cursor.read_u8()?,
 		worker_thread_priority: cursor.read_u8()?,
-		root_hash: read_array(cursor)?,
+		root_hash: Sha1Digest(read_array(cursor)?),
 		flags: cursor.read_u8()?,
 		data_block_count: cursor.read_u24::<BigEndian>()?,
 		data_block_offset: cursor.read_u24::<BigEndian>()?,
@@ -348,23 +344,23 @@ fn parse_header_inner(input: &[u8]) -> Result<XContentHeader, StfsError> {
 		entry.flags = cursor.read_u32::<BigEndian>()?;
 	}
 
-	let header_hash: [u8; 0x14] = read_array(&mut cursor)?;
+	let header_hash = Sha1Digest(read_array(&mut cursor)?);
 	let header_size = cursor.read_u32::<BigEndian>()?;
 	let content_type = ContentType::try_from(cursor.read_u32::<BigEndian>()?).expect("invalid content type");
 	let metadata_version = cursor.read_u32::<BigEndian>()?;
 	let content_size = cursor.read_u64::<BigEndian>()?;
-	let media_id = cursor.read_u32::<BigEndian>()?;
+	let media_id = MediaId(cursor.read_u32::<BigEndian>()?);
 	let version = cursor.read_u32::<BigEndian>()?;
 	let base_version = cursor.read_u32::<BigEndian>()?;
-	let title_id = cursor.read_u32::<BigEndian>()?;
+	let title_id = TitleId(cursor.read_u32::<BigEndian>()?);
 	let platform = cursor.read_u8()?;
 	let executable_type = cursor.read_u8()?;
 	let disc_number = cursor.read_u8()?;
 	let disc_in_set = cursor.read_u8()?;
-	let savegame_id = cursor.read_u32::<BigEndian>()?;
+	let savegame_id = SavegameId(cursor.read_u32::<BigEndian>()?);
 
-	let console_id: [u8; 5] = read_array(&mut cursor)?;
-	let profile_id: [u8; 8] = read_array(&mut cursor)?;
+	let console_id = ConsoleId(read_array(&mut cursor)?);
+	let profile_id = ProfileId(read_array(&mut cursor)?);
 
 	// Read filesystem type
 	cursor.set_position(0x3a9);
@@ -395,7 +391,7 @@ fn parse_header_inner(input: &[u8]) -> Result<XContentHeader, StfsError> {
 	};
 
 	cursor.set_position(0x3fd);
-	let device_id: [u8; 0x14] = read_array(&mut cursor)?;
+	let device_id = DeviceId(read_array(&mut cursor)?);
 
 	let display_name = read_utf16_cstr(&mut cursor, input);
 

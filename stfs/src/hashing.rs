@@ -9,7 +9,7 @@ use crate::header::StfsVolumeDescriptor;
 use crate::io::ReadAt;
 use crate::types::*;
 
-pub type BlockHash = [u8; 20];
+pub use crate::types::Sha1Digest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct HashCacheKey {
@@ -21,8 +21,8 @@ struct HashCacheKey {
 pub struct BlockHashReport {
 	pub block: usize,
 	pub level: HashTableLevel,
-	pub calculated_hash: BlockHash,
-	pub expected_hash: BlockHash,
+	pub calculated_hash: Sha1Digest,
+	pub expected_hash: Sha1Digest,
 	pub is_valid: bool,
 }
 
@@ -35,10 +35,10 @@ impl StfsHasher {
 		StfsHasher { cache: HashMap::new() }
 	}
 
-	pub fn hash_block(data: &[u8]) -> BlockHash {
+	pub fn hash_block(data: &[u8]) -> Sha1Digest {
 		let mut hasher = Sha1::new();
 		hasher.update(data);
-		hasher.finalize().into()
+		Sha1Digest(hasher.finalize().into())
 	}
 
 	/// Verify the hash chain for a data block, walking top-down from the root.
@@ -173,7 +173,7 @@ impl StfsHasher {
 		source: &R,
 		data_block: usize,
 		level: HashTableLevel,
-		expected_hash: &BlockHash,
+		expected_hash: &Sha1Digest,
 		sex: StfsPackageSex,
 		hash_meta: &HashTableMeta,
 		stfs_vol: &StfsVolumeDescriptor,
@@ -238,7 +238,7 @@ impl StfsHasher {
 		sex: StfsPackageSex,
 		hash_meta: &HashTableMeta,
 		stfs_vol: &StfsVolumeDescriptor,
-	) -> Result<BlockHash, StfsError> {
+	) -> Result<Sha1Digest, StfsError> {
 		let hash_block_num = hash_meta.compute_backing_hash_block_number_for_level(data_block, level, sex);
 
 		let active_index = self.active_index_for_level(level, data_block, hash_meta, stfs_vol);
@@ -253,9 +253,9 @@ impl StfsHasher {
 
 		let entry_addr = base_addr + entry_index * 0x18;
 		let data = source.read_at(entry_addr..entry_addr + 0x14)?;
-		let mut hash = [0u8; 0x14];
-		hash.copy_from_slice(data.as_ref());
-		Ok(hash)
+		let mut bytes = [0u8; 0x14];
+		bytes.copy_from_slice(data.as_ref());
+		Ok(Sha1Digest(bytes))
 	}
 
 	pub fn reports(&self) -> impl Iterator<Item = &BlockHashReport> {

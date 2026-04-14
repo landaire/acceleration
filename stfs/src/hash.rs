@@ -12,7 +12,7 @@ use crate::types::*;
 
 #[derive(Default, Debug, Serialize, Clone)]
 pub struct HashEntry {
-	pub block_hash: [u8; 0x14],
+	pub block_hash: Sha1Digest,
 	pub status: u8,
 	pub next_block: BlockNumber,
 }
@@ -99,11 +99,11 @@ impl HashTableMeta {
 		self.top_table.entries.reserve(self.top_table.entry_count);
 
 		for _ in 0..self.top_table.entry_count {
-			let mut block_hash = [0u8; 0x14];
-			cursor.read_exact(&mut block_hash)?;
+			let mut hash_bytes = [0u8; 0x14];
+			cursor.read_exact(&mut hash_bytes)?;
 			let status = cursor.read_u8()?;
 			let next_block = BlockNumber(cursor.read_u24::<BigEndian>()? as usize);
-			self.top_table.entries.push(HashEntry { block_hash, status, next_block });
+			self.top_table.entries.push(HashEntry { block_hash: Sha1Digest(hash_bytes), status, next_block });
 		}
 
 		Ok(())
@@ -207,12 +207,12 @@ impl HashTableMeta {
 		let data = data.as_ref();
 
 		let mut cursor = Cursor::new(data);
-		let mut block_hash = [0u8; 0x14];
-		cursor.read_exact(&mut block_hash)?;
+		let mut hash_bytes = [0u8; 0x14];
+		cursor.read_exact(&mut hash_bytes)?;
 		let status = cursor.read_u8()?;
 		let next_block = BlockNumber(cursor.read_u24::<BigEndian>()? as usize);
 
-		Ok(HashEntry { block_hash, status, next_block })
+		Ok(HashEntry { block_hash: Sha1Digest(hash_bytes), status, next_block })
 	}
 
 	pub fn block_hash_address<R: ReadAt>(

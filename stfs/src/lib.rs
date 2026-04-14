@@ -6,6 +6,7 @@ pub mod header;
 pub mod io;
 pub mod package;
 pub mod serde_bytes;
+pub mod serde_hex;
 #[cfg(feature = "vfs")]
 pub mod stfs_vfs;
 pub mod types;

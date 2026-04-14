@@ -7,6 +7,98 @@ use crate::error::StfsError;
 #[derive(Default, Debug, Serialize, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockNumber(pub usize);
 
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct Sha1Digest(#[serde(with = "crate::serde_bytes::fixed")] pub [u8; 20]);
+
+impl Sha1Digest {
+	pub fn as_bytes(&self) -> &[u8; 20] {
+		&self.0
+	}
+}
+
+impl AsRef<[u8]> for Sha1Digest {
+	fn as_ref(&self) -> &[u8] {
+		&self.0
+	}
+}
+
+impl From<[u8; 20]> for Sha1Digest {
+	fn from(v: [u8; 20]) -> Self {
+		Sha1Digest(v)
+	}
+}
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct ConsoleId(#[serde(with = "crate::serde_hex::fixed")] pub [u8; 5]);
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct ProfileId(#[serde(with = "crate::serde_hex::fixed")] pub [u8; 8]);
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct DeviceId(#[serde(with = "crate::serde_hex::fixed")] pub [u8; 0x14]);
+
+impl std::fmt::Display for ConsoleId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		for b in &self.0 {
+			write!(f, "{:02x}", b)?;
+		}
+		Ok(())
+	}
+}
+
+impl std::fmt::Display for ProfileId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		for b in &self.0 {
+			write!(f, "{:02x}", b)?;
+		}
+		Ok(())
+	}
+}
+
+impl std::fmt::Display for DeviceId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		for b in &self.0 {
+			write!(f, "{:02x}", b)?;
+		}
+		Ok(())
+	}
+}
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct TitleId(pub u32);
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct MediaId(pub u32);
+
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
+pub struct SavegameId(pub u32);
+
+macro_rules! impl_id_hex_display {
+	($ty:ty) => {
+		impl std::fmt::Display for $ty {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				write!(f, "{:08X}", self.0)
+			}
+		}
+
+		impl std::fmt::LowerHex for $ty {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				write!(f, "{:08x}", self.0)
+			}
+		}
+
+		impl std::fmt::UpperHex for $ty {
+			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+				write!(f, "{:08X}", self.0)
+			}
+		}
+	};
+}
+
+impl_id_hex_display!(TitleId);
+impl_id_hex_display!(MediaId);
+impl_id_hex_display!(SavegameId);
+
 impl BlockNumber {
 	pub fn as_usize(self) -> usize {
 		self.0

@@ -18,28 +18,13 @@ executable_type = 0
 disc_number = 0
 disc_in_set = 0
 savegame_id = 0
-console_id = [
-    0,
-    0,
-    0,
-    0,
-    0,
-]
-profile_id = [
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-]
+console_id = '0000000000'
+profile_id = '0000000000000000'
 filesystem_type = 'STFS'
 enabled = false
 data_file_count = 0
 data_file_combined_size = 0
-device_id = 'AAAAAAAAAAAAAAAAAAAAAAAAAAA='
+device_id = '0000000000000000000000000000000000000000'
 display_name = 'Trials HD - Highway to 2010'
 display_description = '''Special New Year's Eve track for all Trials HD fans to start the 2010 with a bang!'''
 publisher_name = ''

@@ -73,10 +73,10 @@ fixture_tests!(live_120k_a, "live_120k_a.stfs");
 fixture_tests!(live_120k_b, "live_120k_b.stfs");
 
 mod hash_validation {
-	use stfs::hashing::BlockHash;
 	use stfs::hashing::StfsHasher;
 	use stfs::io::SliceReader;
 	use stfs::types::HashTableLevel;
+	use stfs::types::Sha1Digest;
 	use stfs::StfsPackage;
 
 	fn open_package(name: &str) -> (Vec<u8>, StfsPackage) {
@@ -201,10 +201,10 @@ mod hash_validation {
 		let data = b"hello world";
 		let hash = StfsHasher::hash_block(data);
 		// known SHA-1 of "hello world"
-		let expected: BlockHash = [
+		let expected = Sha1Digest([
 			0x2a, 0xae, 0x6c, 0x35, 0xc9, 0x4f, 0xcf, 0xb4, 0x15, 0xdb, 0xe9, 0x5f, 0x40, 0x8b, 0x9c, 0xe9, 0x1e, 0xe8,
 			0x46, 0xed,
-		];
+		]);
 		assert_eq!(hash, expected);
 	}
 
