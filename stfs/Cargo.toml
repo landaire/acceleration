@@ -8,17 +8,22 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
+base64-serde = ["dep:base64"]
 vfs = ["dep:fskit", "dep:vfs"]
 async-vfs = ["vfs", "fskit/async-vfs", "dep:async-trait", "dep:futures"]
 
 [dependencies]
-sha-1 = "0.10.0"
-thiserror = "1.0"
-bitflags = "1.3"
-byteorder = "1.4"
-num_enum = { version = "0.5" }
-serde = { version = "1.0", features = ["derive"] }
-fskit = { version = "0.2", path = "../../fskit", features = ["vfs"], optional = true }
-vfs = { version = "0.13", optional = true }
-async-trait = { version = "0.1", optional = true }
-futures = { version = "0.3", optional = true }
+sha-1 = { workspace = true }
+thiserror = { workspace = true }
+bitflags = { workspace = true }
+byteorder = { workspace = true }
+num_enum = { workspace = true }
+serde = { workspace = true }
+base64 = { workspace = true, optional = true }
+fskit = { workspace = true, optional = true }
+vfs = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta = { workspace = true }

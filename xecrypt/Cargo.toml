@@ -6,10 +6,10 @@ edition = "2021"
 [dependencies]
 rsa = { version = "0.9.6", features = ["sha1"] }
 sha1 = { version = "0.10.6", features = ["oid"] }
-serde = { version = "1.0", features = ["derive", "rc"], optional = true }
-binrw = { version = "0.13" }
-thiserror = "1.0"
-bitflags = "2.5"
+serde = { workspace = true, optional = true }
+byteorder = { workspace = true }
+thiserror = { workspace = true }
+bitflags = { workspace = true }
 
 [features]
 serde = ["dep:serde"]

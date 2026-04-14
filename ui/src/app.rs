@@ -21,7 +21,7 @@ use log::info;
 use rfd::AsyncFileDialog;
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
-use stfs::vfs::VfsPath;
+use vfs::VfsPath;
 use xcontent::XContentPackage;
 
 #[cfg(target_arch = "wasm32")]
@@ -197,12 +197,12 @@ fn create_zip(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::R
 	for file in path.read_dir()? {
 		let path_str = file.as_str().to_owned();
 		match file.metadata()?.file_type {
-			stfs::vfs::VfsFileType::File => {
+			vfs::VfsFileType::File => {
 				zip.start_file(path_str.clone(), options)?;
 				let mut reader = file.open_file()?;
 				std::io::copy(&mut reader, &mut zip)?;
 			}
-			stfs::vfs::VfsFileType::Directory => {
+			vfs::VfsFileType::Directory => {
 				zip.add_directory(path_str.clone(), options)?;
 			}
 		}
@@ -342,7 +342,7 @@ impl eframe::App for AccelerationApp {
 			}
 		}
 
-		if let Some(file_path) = active_stfs_file.as_ref() {
+		if let Some(_file_path) = active_stfs_file.as_ref() {
 
 			// frame.set_window_title(&format!("acceleration - {:?}", file_path));
 		}

@@ -1,0 +1,11 @@
+---
+source: stfs/tests/parse_fixtures.rs
+expression: walk_snapshot(& wrapper)
+---
+[[files]]
+path = 'asset_V2.bin'
+size = 38780
+
+[[files]]
+path = 'icon.png'
+size = 28162

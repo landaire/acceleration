@@ -19,7 +19,7 @@ use crate::sparse_reader::SparseReader;
 
 pub type StfsEntryRef = Arc<Mutex<StfsEntry>>;
 
-const INVALID_STR: &'static str = "<INVALID>";
+const INVALID_STR: &str = "<INVALID>";
 const BLOCK_SIZE: usize = 0x1000;
 
 fn input_byte_ref<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8], size: usize) -> &'a [u8] {
@@ -187,8 +187,8 @@ impl<'a> HashTableMeta<'a> {
 		let stfs_vol = header.volume_descriptor.stfs_ref();
 
 		let allocated_block_count = stfs_vol.allocated_block_count as usize;
-		meta.tables_per_level[0] = ((allocated_block_count as usize) / HASHES_PER_HASH_TABLE)
-			+ if (allocated_block_count as usize) % HASHES_PER_HASH_TABLE != 0 { 1 } else { 0 };
+		meta.tables_per_level[0] = (allocated_block_count / HASHES_PER_HASH_TABLE)
+			+ if !allocated_block_count.is_multiple_of(HASHES_PER_HASH_TABLE) { 1 } else { 0 };
 
 		meta.tables_per_level[1] = (meta.tables_per_level[1] / HASHES_PER_HASH_TABLE)
 			+ if meta.tables_per_level[1] % HASHES_PER_HASH_TABLE != 0 && allocated_block_count > HASHES_PER_HASH_TABLE
@@ -215,11 +215,12 @@ impl<'a> HashTableMeta<'a> {
 		meta.top_table.address_in_file = base_address + (((stfs_vol.block_separation as usize) & 2) << 0xB);
 
 		meta.top_table.entry_count =
-			(allocated_block_count as usize) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[meta.top_table.level as usize];
+			allocated_block_count / DATA_BLOCKS_PER_HASH_TREE_LEVEL[meta.top_table.level as usize];
 
 		if (allocated_block_count > DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]
-			&& allocated_block_count % DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] != 0)
-			|| (allocated_block_count > HASHES_PER_HASH_TABLE && allocated_block_count % HASHES_PER_HASH_TABLE != 0)
+			&& !allocated_block_count.is_multiple_of(DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]))
+			|| (allocated_block_count > HASHES_PER_HASH_TABLE
+				&& !allocated_block_count.is_multiple_of(HASHES_PER_HASH_TABLE))
 		{
 			meta.top_table.entry_count += 1;
 		}
@@ -232,7 +233,7 @@ impl<'a> HashTableMeta<'a> {
 			let entry = HashEntry {
 				block_hash: input_byte_ref(&mut reader, data, 0x14),
 				status: reader.read_u8().expect("failed to read hash table entry status"),
-				next_block: reader.read_u24::<BigEndian>().expect("failed to read hash table entry next_block") as u32,
+				next_block: reader.read_u24::<BigEndian>().expect("failed to read hash table entry next_block"),
 			};
 
 			meta.top_table.entries.push(entry);
@@ -367,7 +368,7 @@ impl<'a> StfsPackage<'a> {
 
 			// This file does not have all-consecutive blocks
 			let mut block_count = data_remaining / BLOCK_SIZE;
-			if data_remaining % BLOCK_SIZE != 0 {
+			if !data_remaining.is_multiple_of(BLOCK_SIZE) {
 				block_count += 1;
 			}
 
@@ -409,16 +410,17 @@ impl<'a> StfsPackage<'a> {
 		}
 
 		// Check if it's at a level 2 table
-		if block_number == self.hash_table_meta.block_step[0] || block_number % self.hash_table_meta.block_step[1] == 0
+		if block_number == self.hash_table_meta.block_step[0]
+			|| block_number.is_multiple_of(self.hash_table_meta.block_step[1])
 		{
 			return 0x2000 << self.sex as usize;
 		}
 
 		// Assume it's the level 0 table
-		return BLOCK_SIZE << self.sex as usize;
+		BLOCK_SIZE << self.sex as usize
 	}
 
-	fn block_hash_entry(&self, block: usize, input: &'a [u8]) -> HashEntry {
+	fn block_hash_entry(&self, block: usize, input: &'a [u8]) -> HashEntry<'_> {
 		let stfs_vol = self.header.volume_descriptor.stfs_ref();
 		let mut reader = Cursor::new(input);
 		if block > stfs_vol.allocated_block_count as usize {
@@ -429,7 +431,7 @@ impl<'a> StfsPackage<'a> {
 		HashEntry {
 			block_hash: input_byte_ref(&mut reader, input, 0x14),
 			status: reader.read_u8().expect("failed to read hash table entry status"),
-			next_block: reader.read_u24::<BigEndian>().expect("failed to read hash table entry next_block") as u32,
+			next_block: reader.read_u24::<BigEndian>().expect("failed to read hash table entry next_block"),
 		}
 	}
 
@@ -466,8 +468,8 @@ impl<'a> StfsPackage<'a> {
 				hash_addr as u64
 					+ ((reader
 						.read_u8()
-						.unwrap_or_else(|_| panic!("failed to read hash entry status byte at {:#x}", position)) as u64
-						& 0x40) << 0x6)
+						.unwrap_or_else(|_| panic!("failed to read hash entry status byte at {:#x}", position))
+						as u64 & 0x40) << 0x6)
 			}
 		}
 	}
@@ -784,14 +786,14 @@ fn xcontent_header_parser<'a>(cursor: &mut Cursor<&'a [u8]>, input: &'a [u8]) ->
 				// TODO: Fix
 				let last_modified = Utc::now();
 
-				Some(InstallerMeta::InstallerProgressCache(InstallerProgressCache {
+				InstallerProgressCache {
 					resume_state,
 					current_file_index,
 					current_file_offset,
 					bytes_processed,
 					last_modified,
 					cab_resume_data: todo!("need to implement CAB resume data"),
-				}));
+				};
 			}
 			_ => {
 				// anything else is ok
@@ -1005,7 +1007,9 @@ bitflags! {
 
 #[derive(Debug, Serialize, Clone, Copy, TryFromPrimitive)]
 #[repr(u16)]
+#[derive(Default)]
 enum LicenseType {
+	#[default]
 	Unused = 0x0000,
 	Unrestricted = 0xFFFF,
 	ConsoleProfileLicense = 0x0009,
@@ -1015,12 +1019,6 @@ enum LicenseType {
 	KeyVaultPrivileges = 0xD000,
 	HyperVisorFlags = 0xC000,
 	UserPrivileges = 0xB000,
-}
-
-impl Default for LicenseType {
-	fn default() -> Self {
-		Self::Unused
-	}
 }
 
 #[derive(Default, Debug, Serialize, Clone, Copy)]

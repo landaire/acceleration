@@ -1,36 +1,39 @@
-use binrw::binrw;
-use binrw::NullWideString;
 use bitflags::bitflags;
+use byteorder::BigEndian;
+use byteorder::ReadBytesExt;
 use rsa::BigUint;
 use rsa::Pkcs1v15Sign;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
 use sha1::Sha1;
+use std::io::Cursor;
+use std::io::Read;
 
 mod error;
 mod keys;
 
 #[cfg(feature = "serde")]
 use serde::Serialize;
-#[cfg(feature = "serde")]
-use serde::Serializer;
 
 pub use error::Error;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[binrw]
 pub enum XContentSignatureType {
-	/// User container packages that are created by an Xbox 360 console and
-	/// signed by the user's private key.
-	#[brw(magic = b"CON ")]
 	Console,
-	/// Xbox LIVE-distributed package that is signed by Microsoft's private key.
-	#[brw(magic = b"LIVE")]
 	Live,
-	/// Offline-distributed package that is signed by Microsoft's private key.
-	#[brw(magic = b"PIRS")]
 	Pirs,
+}
+
+impl XContentSignatureType {
+	pub fn parse(data: &[u8; 4]) -> Option<Self> {
+		match data {
+			b"CON " => Some(Self::Console),
+			b"LIVE" => Some(Self::Live),
+			b"PIRS" => Some(Self::Pirs),
+			_ => None,
+		}
+	}
 }
 
 impl std::fmt::Display for XContentSignatureType {
@@ -40,59 +43,93 @@ impl std::fmt::Display for XContentSignatureType {
 			XContentSignatureType::Live => "Xbox LIVE Strong Signature (LIVE)",
 			XContentSignatureType::Pirs => "Offline Strong Signature (PIRS)",
 		};
-
 		f.write_str(description)
 	}
 }
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[binrw]
-#[brw(big)]
-#[br(import(signature_type: XContentSignatureType)) ]
 pub enum XContentKeyMaterial {
-	/// Only present in console-signed packages
-	#[br(pre_assert(signature_type == XContentSignatureType::Console))]
 	Certificate(Certificate),
+	Signature(Vec<u8>, Vec<u8>),
+}
 
-	/// Only present in strong-signed packages
-	#[br(pre_assert(signature_type != XContentSignatureType::Console)) ]
-	Signature(#[br(count = 256)] Vec<u8>, #[br(count = 256)] Vec<u8>),
+impl XContentKeyMaterial {
+	pub fn parse(cursor: &mut Cursor<&[u8]>, signature_type: XContentSignatureType) -> std::io::Result<Self> {
+		let start_pos = cursor.position();
+		let result = if signature_type == XContentSignatureType::Console {
+			Self::Certificate(Certificate::parse(cursor)?)
+		} else {
+			let mut sig = vec![0u8; 256];
+			cursor.read_exact(&mut sig)?;
+			let mut reserved = vec![0u8; 256];
+			cursor.read_exact(&mut reserved)?;
+			Self::Signature(sig, reserved)
+		};
+		// Pad to 0x228 bytes total
+		cursor.set_position(start_pos + 0x228);
+		Ok(result)
+	}
 }
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[binrw]
-#[brw(big)]
 pub struct Certificate {
-	pubkey_cert_size: u16,
-	owner_console_id: [u8; 5],
+	pub pubkey_cert_size: u16,
+	pub owner_console_id: [u8; 5],
+	pub owner_console_part_number: String,
+	pub console_type_flags: Option<ConsoleTypeFlags>,
+	pub date_generation: String,
+	pub public_exponent: u32,
+	pub public_modulus: Vec<u8>,
+	pub certificate_signature: Vec<u8>,
+	pub signature: Vec<u8>,
+}
 
-	#[cfg_attr(feature = "binrw", brw(pad_size_to = 0x11))]
-	#[cfg_attr(feature = "serde", serde(serialize_with = "serialize_null_wide_string"))]
-	owner_console_part_number: NullWideString,
+impl Certificate {
+	pub fn parse(cursor: &mut Cursor<&[u8]>) -> std::io::Result<Self> {
+		let pubkey_cert_size = cursor.read_u16::<BigEndian>()?;
+		let mut owner_console_id = [0u8; 5];
+		cursor.read_exact(&mut owner_console_id)?;
 
-	console_type_flags: Option<ConsoleTypeFlags>,
+		let mut part_number_raw = [0u8; 0x11 * 2];
+		cursor.read_exact(&mut part_number_raw)?;
+		let owner_console_part_number = read_wide_string(&part_number_raw);
 
-	#[br(try_map = |x: [u8; 8]| String::from_utf8(x.to_vec()))]
-	#[bw(map = |x| x.as_bytes(), assert(date_generation.len() == 8, "date_generation.len() != 8"))]
-	date_generation: String,
+		let console_type_raw = cursor.read_u32::<BigEndian>()?;
+		let console_type_flags = ConsoleTypeFlags::from_bits(console_type_raw);
 
-	public_exponent: u32,
+		let mut date_gen_raw = [0u8; 8];
+		cursor.read_exact(&mut date_gen_raw)?;
+		let date_generation = String::from_utf8_lossy(
+			&date_gen_raw[..date_gen_raw.iter().position(|b| *b == 0).unwrap_or(date_gen_raw.len())],
+		)
+		.into_owned();
 
-	#[br(count = 0x80)]
-	public_modulus: Vec<u8>,
+		let public_exponent = cursor.read_u32::<BigEndian>()?;
+		let mut public_modulus = vec![0u8; 0x80];
+		cursor.read_exact(&mut public_modulus)?;
+		let mut certificate_signature = vec![0u8; 0x100];
+		cursor.read_exact(&mut certificate_signature)?;
+		let mut signature = vec![0u8; 0x80];
+		cursor.read_exact(&mut signature)?;
 
-	#[br(count = 0x100)]
-	certificate_signature: Vec<u8>,
-
-	#[br(count = 0x80)]
-	signature: Vec<u8>,
+		Ok(Certificate {
+			pubkey_cert_size,
+			owner_console_id,
+			owner_console_part_number,
+			console_type_flags,
+			date_generation,
+			public_exponent,
+			public_modulus,
+			certificate_signature,
+			signature,
+		})
+	}
 }
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
-#[binrw]
 pub struct ConsoleTypeFlags(u32);
 
 bitflags! {
@@ -104,31 +141,29 @@ bitflags! {
 	}
 }
 
-#[cfg(feature = "serde")]
-fn serialize_null_wide_string<S>(x: &NullWideString, s: S) -> Result<S::Ok, S::Error>
-where
-	S: Serializer,
-{
-	s.serialize_str(x.to_string().as_str())
+fn read_wide_string(data: &[u8]) -> String {
+	let mut chars = Vec::new();
+	for chunk in data.chunks(2) {
+		if chunk.len() < 2 {
+			break;
+		}
+		let c = ((chunk[0] as u16) << 8) | chunk[1] as u16;
+		if c == 0 {
+			break;
+		}
+		chars.push(c);
+	}
+	String::from_utf16_lossy(&chars)
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-/// Defines various keys used for RSA operations
 pub enum RsaKeyKind {
-	/// XEX signing key
 	Executable,
-	/// Synonymous with [`RsaKeyKind::Executable`] and is only provided for convenience as it's not obvious
-	/// the executable key is also the PIRS key
 	Pirs,
-	/// LIVE DRM key
 	Live,
-	/// Console-signed content key (will use a default keyvault for generic APIs)
 	Console,
-	/// Used for verifying Xbox 360 dashboard manifests/LUA scripts
 	Dashboard,
-	/// Used for signing and verifying Xbox 360 manufacturing challenges
 	Manufacturing,
-	/// XMACS key (Kerberos)
 	XMacs,
 }
 
@@ -168,6 +203,7 @@ impl RsaKeyKind {
 			},
 		}
 	}
+
 	pub fn public_key(&self, console_kind: ConsoleKind) -> Result<RsaPublicKey, crate::Error> {
 		match console_kind {
 			ConsoleKind::Devkit => Ok(self.private_key(console_kind)?.to_public_key()),
@@ -176,7 +212,6 @@ impl RsaKeyKind {
 				RsaKeyKind::Pirs => todo!(),
 				RsaKeyKind::Live => {
 					use crate::keys::retail::live::*;
-
 					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), PUB_EXPONENT.into())?)
 				}
 				RsaKeyKind::Console => todo!(),
@@ -191,16 +226,13 @@ impl RsaKeyKind {
 		let key = self.public_key(console_kind)?;
 		let scheme = Pkcs1v15Sign::new::<Sha1>();
 		let standard_signature = raw_signature_to_standard(sig);
-
 		Ok(key.verify(scheme, hash, &standard_signature)?)
 	}
 
 	pub fn sign(&self, console_kind: ConsoleKind, digest: &[u8]) -> Result<Vec<u8>, crate::Error> {
 		let key = self.private_key(console_kind)?;
-
 		let scheme = Pkcs1v15Sign::new::<Sha1>();
 		let signature = key.sign(scheme, digest)?;
-
 		Ok(standard_signature_to_raw(signature.as_slice()))
 	}
 }
@@ -221,22 +253,17 @@ pub enum ConsoleKind {
 	Retail,
 }
 
-/// Verifies an XContent signature, trying retail keys first then devkit keys.
-///
-/// Upon success this returns the type of console the content is signed for.
 pub fn verify_xcontent_strong_signature(
 	signature_kind: XContentSignatureType,
 	signature: &[u8],
 	hash: &[u8],
 ) -> rsa::Result<ConsoleKind> {
 	let key_kind: RsaKeyKind = signature_kind.into();
-
 	for console_kind in [ConsoleKind::Retail, ConsoleKind::Devkit] {
 		if key_kind.verify_signature(console_kind, signature, hash).is_ok() {
 			return Ok(console_kind);
 		}
 	}
-
 	Err(rsa::Error::Verification)
 }
 
@@ -246,7 +273,6 @@ pub fn verify_xcontent_signature(
 	hash: &[u8],
 ) -> Result<ConsoleKind, crate::Error> {
 	let key_kind: RsaKeyKind = signature_kind.into();
-
 	if key_kind == RsaKeyKind::Console {
 		todo!()
 	} else if let XContentKeyMaterial::Signature(sig, _reserved) = key_material {
@@ -258,20 +284,15 @@ pub fn verify_xcontent_signature(
 	} else {
 		panic!("Key material variant cannot satisfy signature kind {:?}", signature_kind);
 	}
-
 	Err(rsa::Error::Verification.into())
 }
 
-/// Converts a standard signature to an Xbox 360 LE bytes BigNum signature
 fn standard_signature_to_raw(sig: &[u8]) -> Vec<u8> {
 	let mut sig = sig.to_vec();
-
 	sig.reverse();
-
 	sig
 }
 
-/// Converts a raw Xbox 360 signature (LE bytes BigNum) to a standarized signature format.
 pub fn raw_signature_to_standard(sig: &[u8]) -> Vec<u8> {
 	let sig_bignum = BigUint::from_bytes_le(sig);
 	sig_bignum.to_bytes_be()
@@ -321,26 +342,21 @@ mod tests {
 	#[test]
 	fn devkit_live_key_validates_known_sig() {
 		let key = RsaKeyKind::Live;
-
 		let (sig, hash) = known_devkit_live_sig();
-
 		key.verify_signature(ConsoleKind::Devkit, sig, &hash).expect("signature verification failed");
 	}
 
 	#[test]
 	fn verify_round_trip_signature_conversion_works() {
 		let (sig, _) = known_devkit_live_sig();
-
 		assert_eq!(standard_signature_to_raw(raw_signature_to_standard(sig).as_slice()), sig);
 	}
 
 	#[test]
 	fn verify_signing_works() {
 		let (sig, hash) = known_devkit_live_sig();
-
 		let key = RsaKeyKind::Live;
 		let digest = key.sign(ConsoleKind::Devkit, &hash).expect("signing failed");
-
 		assert_eq!(digest.as_slice(), sig);
 	}
 }

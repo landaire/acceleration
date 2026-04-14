@@ -1,0 +1,51 @@
+---
+source: stfs/tests/parse_fixtures.rs
+expression: walk_snapshot(& wrapper)
+---
+[[files]]
+path = 'de-de/pack2.xus'
+size = 760
+
+[[files]]
+path = 'es-es/pack2.xus'
+size = 736
+
+[[files]]
+path = 'fr-fr/pack2.xus'
+size = 822
+
+[[files]]
+path = 'it-it/pack2.xus'
+size = 858
+
+[[files]]
+path = 'ja-jp/pack2.xus'
+size = 542
+
+[[files]]
+path = 'ko-kr/pack2.xus'
+size = 516
+
+[[files]]
+path = 'marketplace.png'
+size = 57517
+
+[[files]]
+path = 'pack.pak'
+size = 369777
+
+[[files]]
+path = 'pack2.xus'
+size = 712
+
+[[files]]
+path = 'pt-pt/pack2.xus'
+size = 848
+
+[[files]]
+path = 'title.png'
+size = 7401
+
+[[files]]
+path = 'zh-cht/pack2.xus'
+size = 466

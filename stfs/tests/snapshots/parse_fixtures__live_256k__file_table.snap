@@ -1,0 +1,27 @@
+---
+source: stfs/tests/parse_fixtures.rs
+expression: wrapper.package().file_table
+---
+[[entries]]
+index = 0
+name = 'asset_V2.bin'
+flags = 1
+block_count = 47
+starting_block_num = 1
+path_indicator = 65535
+file_size = 192272
+created_time_stamp = 1081053997
+access_time_stamp = 1066883143
+file_entry_address = 49152
+
+[[entries]]
+index = 1
+name = 'icon.png'
+flags = 1
+block_count = 4
+starting_block_num = 48
+path_indicator = 65535
+file_size = 15088
+created_time_stamp = 1081053997
+access_time_stamp = 1066883144
+file_entry_address = 49216

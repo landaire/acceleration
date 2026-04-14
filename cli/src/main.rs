@@ -12,8 +12,8 @@ use clap::Subcommand;
 use humansize::DECIMAL;
 use memmap2::MmapOptions;
 use serde_json::json;
-use stfs::vfs::FileSystem;
-use stfs::vfs::VfsPath;
+use vfs::FileSystem;
+use vfs::VfsPath;
 use xcontent::xecrypt::XContentKeyMaterial;
 
 #[derive(Debug, Subcommand)]
@@ -70,12 +70,12 @@ fn main() -> anyhow::Result<()> {
 
 	let package = xcontent::XContentPackage::try_from(&mmap[..])?;
 
-	if let Commands::Info { long, json, json_pretty } =
+	if let Commands::Info { long: _, json, json_pretty } =
 		args.command.as_ref().unwrap_or(&Commands::Info { long: false, json: false, json_pretty: false })
 	{
 		let header = &package.header;
 		let header_hash = header.header_hash(&mmap[..]);
-		let header_hash_hex = hex::encode(&header_hash);
+		let header_hash_hex = hex::encode(header_hash);
 		let metadata = &header.metadata;
 		let signature_verification = package.verify_signature(&mmap[..]);
 		let storage_path = package.storage_path();
@@ -113,7 +113,7 @@ fn main() -> anyhow::Result<()> {
 
 		let content_id = hex::encode(header.content_id);
 		let signature = match &header.key_material {
-			XContentKeyMaterial::Certificate(cert) => {
+			XContentKeyMaterial::Certificate(_cert) => {
 				hex::encode([0x0])
 				//todo!("certificate");
 			}
@@ -252,7 +252,7 @@ fn main() -> anyhow::Result<()> {
 	let mut path: VfsPath = package.to_vfs_path(Arc::new(mmap));
 
 	match args.command.expect("default command should have been handled") {
-		Commands::Info { long, json, json_pretty } => {
+		Commands::Info { long: _, json: _, json_pretty: _ } => {
 			unreachable!("Handled above")
 		}
 		Commands::List { tree: true, long: _, recursive: _, path: start_path } => {
@@ -282,7 +282,7 @@ fn main() -> anyhow::Result<()> {
 				queue.push_back((0, "", path_as_str, children));
 			}
 			while let Some((depth, tree_char, name, children)) = queue.pop_front() {
-				let file_name = name.split('/').last().unwrap_or(name.as_ref());
+				let file_name = name.split('/').next_back().unwrap_or(name.as_ref());
 				println!(
 					"{tree_char:>width$}{space}{file_name}",
 					space = if depth == 0 { "" } else { " " },
@@ -307,7 +307,7 @@ fn main() -> anyhow::Result<()> {
 				}
 			}
 		}
-		Commands::List { tree: false, long, recursive, path: start_path } => {
+		Commands::List { tree: false, long: _, recursive: _, path: _start_path } => {
 			for file in path.walk_dir()? {
 				let file = file?;
 				let meta = file.metadata()?;
@@ -331,7 +331,7 @@ fn main() -> anyhow::Result<()> {
 			println!("{:?}", path.as_str());
 
 			if path.is_dir()? {
-				let target_path = output_path.join(&path.filename());
+				let target_path = output_path.join(path.filename());
 				std::fs::create_dir_all(&target_path)?;
 
 				// We're extracting a dir

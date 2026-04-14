@@ -13,6 +13,4 @@ pub enum XContentError {
 	InvalidStfs(#[from] StfsError),
 	#[error("I/O error")]
 	Io(#[from] std::io::Error),
-	#[error("I/O error (binrw)")]
-	Binrw(#[from] binrw::Error),
 }

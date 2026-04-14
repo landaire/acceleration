@@ -1,0 +1,243 @@
+---
+source: stfs/tests/parse_fixtures.rs
+expression: wrapper.package().file_table
+---
+[[entries]]
+index = 0
+name = 'de-de'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49152
+
+[[entries]]
+index = 1
+name = 'es-es'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49216
+
+[[entries]]
+index = 2
+name = 'fr-fr'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49280
+
+[[entries]]
+index = 3
+name = 'it-it'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49344
+
+[[entries]]
+index = 4
+name = 'ja-jp'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49408
+
+[[entries]]
+index = 5
+name = 'ko-kr'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49472
+
+[[entries]]
+index = 6
+name = 'marketplace.png'
+flags = 1
+block_count = 15
+starting_block_num = 1
+path_indicator = 65535
+file_size = 57517
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49536
+
+[[entries]]
+index = 7
+name = 'pack.pak'
+flags = 1
+block_count = 91
+starting_block_num = 16
+path_indicator = 65535
+file_size = 369777
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49600
+
+[[entries]]
+index = 8
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 107
+path_indicator = 65535
+file_size = 712
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49664
+
+[[entries]]
+index = 9
+name = 'pt-pt'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49728
+
+[[entries]]
+index = 10
+name = 'title.png'
+flags = 1
+block_count = 2
+starting_block_num = 108
+path_indicator = 65535
+file_size = 7401
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49792
+
+[[entries]]
+index = 11
+name = 'zh-cht'
+flags = 3
+block_count = 0
+starting_block_num = 0
+path_indicator = 65535
+file_size = 0
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49856
+
+[[entries]]
+index = 12
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 110
+path_indicator = 0
+file_size = 760
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49920
+
+[[entries]]
+index = 13
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 111
+path_indicator = 1
+file_size = 736
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 49984
+
+[[entries]]
+index = 14
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 112
+path_indicator = 2
+file_size = 822
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 50048
+
+[[entries]]
+index = 15
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 113
+path_indicator = 3
+file_size = 858
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 50112
+
+[[entries]]
+index = 16
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 114
+path_indicator = 4
+file_size = 542
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 50176
+
+[[entries]]
+index = 17
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 115
+path_indicator = 5
+file_size = 516
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 50240
+
+[[entries]]
+index = 18
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 116
+path_indicator = 9
+file_size = 848
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 50304
+
+[[entries]]
+index = 19
+name = 'pack2.xus'
+flags = 1
+block_count = 1
+starting_block_num = 117
+path_indicator = 11
+file_size = 466
+created_time_stamp = 762249248
+access_time_stamp = 762249248
+file_entry_address = 50368
