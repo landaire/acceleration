@@ -62,7 +62,7 @@ impl StfsPackage {
 		let start_address = self.hash_table_meta.block_to_addr(entry.starting_block_num, self.sex);
 
 		let blocks_until_hash_table =
-			(self.hash_table_meta.compute_first_level_backing_hash_block_number(entry.starting_block_num, self.sex)
+			(self.hash_table_meta.compute_first_level_backing_hash_block_number(entry.starting_block_num.0, self.sex)
 				+ self.hash_table_meta.block_step[0])
 				- ((start_address - self.hash_table_meta.first_table_address) / BLOCK_SIZE);
 
@@ -113,7 +113,7 @@ impl StfsPackage {
 			writer.write_all(data.as_ref())?;
 
 			let hash_entry = self.hash_table_meta.read_block_hash_entry(source, block, self.sex, stfs_vol)?;
-			block = hash_entry.next_block as usize;
+			block = hash_entry.next_block;
 			data_remaining -= read_len;
 		}
 

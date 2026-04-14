@@ -8,25 +8,25 @@ fn open_fixture(name: &str) -> BytesStfsWrapper<Vec<u8>> {
 }
 
 #[derive(Serialize)]
-struct WalkEntry {
+struct WalkSnapshotEntry {
 	path: String,
 	size: usize,
 }
 
 #[derive(Serialize)]
-struct WalkResult {
-	files: Vec<WalkEntry>,
+struct WalkSnapshot {
+	files: Vec<WalkSnapshotEntry>,
 }
 
-fn walk_snapshot(wrapper: &BytesStfsWrapper<Vec<u8>>) -> WalkResult {
+fn walk_snapshot(wrapper: &BytesStfsWrapper<Vec<u8>>) -> WalkSnapshot {
 	let files = wrapper
 		.package()
 		.file_table
 		.walk_files()
 		.into_iter()
-		.map(|(path, entry)| WalkEntry { path, size: entry.file_size })
+		.map(|w| WalkSnapshotEntry { path: w.path, size: w.entry.file_size })
 		.collect();
-	WalkResult { files }
+	WalkSnapshot { files }
 }
 
 macro_rules! fixture_tests {
@@ -55,12 +55,12 @@ macro_rules! fixture_tests {
 			#[test]
 			fn extract_all() {
 				let wrapper = open_fixture($file);
-				for (path, entry) in wrapper.package().file_table.walk_files() {
+				for w in wrapper.package().file_table.walk_files() {
 					let mut buf = Vec::new();
 					wrapper
-						.extract_file(&mut buf, &entry)
-						.unwrap_or_else(|e| panic!("failed to extract {}: {}", path, e));
-					assert_eq!(buf.len(), entry.file_size, "extracted size mismatch for {}", path);
+						.extract_file(&mut buf, &w.entry)
+						.unwrap_or_else(|e| panic!("failed to extract {}: {}", w.path, e));
+					assert_eq!(buf.len(), w.entry.file_size, "extracted size mismatch for {}", w.path);
 				}
 			}
 		}
@@ -71,6 +71,149 @@ fixture_tests!(live_532k, "live_532k.stfs");
 fixture_tests!(live_256k, "live_256k.stfs");
 fixture_tests!(live_120k_a, "live_120k_a.stfs");
 fixture_tests!(live_120k_b, "live_120k_b.stfs");
+
+mod hash_validation {
+	use stfs::hashing::BlockHash;
+	use stfs::hashing::StfsHasher;
+	use stfs::io::SliceReader;
+	use stfs::types::HashTableLevel;
+	use stfs::StfsPackage;
+
+	fn open_package(name: &str) -> (Vec<u8>, StfsPackage) {
+		let path = format!("tests/fixtures/{}", name);
+		let data = std::fs::read(&path).unwrap();
+		let reader = SliceReader(&data);
+		let package = StfsPackage::open(&reader).unwrap();
+		(data, package)
+	}
+
+	fn verify_all_hash_chains(name: &str) {
+		let (data, package) = open_package(name);
+		let reader = SliceReader(&data);
+		let stfs_vol = package.header.volume_descriptor.stfs_ref();
+		let mut hasher = StfsHasher::new();
+
+		for w in package.file_table.walk_files() {
+			let reports = hasher
+				.verify_data_block(&reader, w.entry.starting_block_num, package.sex, &package.hash_table_meta, stfs_vol)
+				.unwrap();
+			for report in &reports {
+				assert!(
+					report.is_valid,
+					"{}: hash chain invalid at block {} level {:?}",
+					name, report.block, report.level
+				);
+			}
+		}
+		assert!(hasher.all_valid(), "{}: not all cached reports valid", name);
+	}
+
+	fn verify_all_data_blocks(name: &str) {
+		let (data, package) = open_package(name);
+		let reader = SliceReader(&data);
+		let stfs_vol = package.header.volume_descriptor.stfs_ref();
+		let hasher = StfsHasher::new();
+
+		for w in package.file_table.walk_files() {
+			let mut block = w.entry.starting_block_num;
+			for _ in 0..w.entry.block_count {
+				let report = hasher
+					.verify_data_block_content(&reader, block, package.sex, &package.hash_table_meta, stfs_vol)
+					.unwrap();
+				assert!(report.is_valid, "{}: data block {:?} hash mismatch", name, block);
+
+				let hash_entry =
+					package.hash_table_meta.read_block_hash_entry(&reader, block, package.sex, stfs_vol).unwrap();
+				block = hash_entry.next_block;
+			}
+		}
+	}
+
+	#[test]
+	fn hash_chain_live_532k() {
+		verify_all_hash_chains("live_532k.stfs");
+	}
+
+	#[test]
+	fn hash_chain_live_256k() {
+		verify_all_hash_chains("live_256k.stfs");
+	}
+
+	#[test]
+	fn hash_chain_live_120k_a() {
+		verify_all_hash_chains("live_120k_a.stfs");
+	}
+
+	#[test]
+	fn hash_chain_live_120k_b() {
+		verify_all_hash_chains("live_120k_b.stfs");
+	}
+
+	#[test]
+	fn data_blocks_live_532k() {
+		verify_all_data_blocks("live_532k.stfs");
+	}
+
+	#[test]
+	fn data_blocks_live_256k() {
+		verify_all_data_blocks("live_256k.stfs");
+	}
+
+	#[test]
+	fn data_blocks_live_120k_a() {
+		verify_all_data_blocks("live_120k_a.stfs");
+	}
+
+	#[test]
+	fn data_blocks_live_120k_b() {
+		verify_all_data_blocks("live_120k_b.stfs");
+	}
+
+	#[test]
+	fn cache_deduplicates_hash_table_lookups() {
+		let (data, package) = open_package("live_532k.stfs");
+		let reader = SliceReader(&data);
+		let stfs_vol = package.header.volume_descriptor.stfs_ref();
+		let mut hasher = StfsHasher::new();
+
+		let files = package.file_table.walk_files();
+		assert!(files.len() > 1, "need multiple files to test caching");
+
+		for w in &files {
+			hasher
+				.verify_data_block(&reader, w.entry.starting_block_num, package.sex, &package.hash_table_meta, stfs_vol)
+				.unwrap();
+		}
+
+		// All files in a small package share the same level-0 hash table,
+		// so the cache should have fewer entries than files
+		let cache_size = hasher.reports().count();
+		assert!(
+			cache_size <= files.len(),
+			"cache should deduplicate: {} cache entries for {} files",
+			cache_size,
+			files.len()
+		);
+	}
+
+	#[test]
+	fn hash_block_produces_correct_sha1() {
+		let data = b"hello world";
+		let hash = StfsHasher::hash_block(data);
+		// known SHA-1 of "hello world"
+		let expected: BlockHash = [
+			0x2a, 0xae, 0x6c, 0x35, 0xc9, 0x4f, 0xcf, 0xb4, 0x15, 0xdb, 0xe9, 0x5f, 0x40, 0x8b, 0x9c, 0xe9, 0x1e, 0xe8,
+			0x46, 0xed,
+		];
+		assert_eq!(hash, expected);
+	}
+
+	#[test]
+	fn top_table_is_level_first_for_small_packages() {
+		let (_data, package) = open_package("live_120k_a.stfs");
+		assert_eq!(package.hash_table_meta.top_table.level, HashTableLevel::First);
+	}
+}
 
 #[cfg(feature = "vfs")]
 mod vfs_tests {

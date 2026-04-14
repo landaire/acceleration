@@ -1,6 +1,7 @@
 pub mod error;
 pub mod file_table;
 pub mod hash;
+pub mod hashing;
 pub mod header;
 pub mod io;
 pub mod package;
@@ -10,11 +11,11 @@ pub mod stfs_vfs;
 pub mod types;
 pub mod wrappers;
 
-// Re-export key types at crate root for convenience
 pub use error::StfsError;
 pub use file_table::StfsFileEntry;
 pub use file_table::StfsFileTable;
 pub use file_table::StfsTreeNode;
+pub use file_table::WalkEntry;
 pub use hash::HashTableMeta;
 pub use header::StfsVolumeDescriptor;
 pub use header::SvodVolumeDescriptor;

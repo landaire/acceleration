@@ -138,7 +138,7 @@ pub struct StfsVolumeDescriptor {
 	pub block_separation: u8,
 	pub file_table_block_count: u16,
 	/// Encoded as a 24-bit integer
-	pub file_table_block_num: u32,
+	pub file_table_block_num: BlockNumber,
 	#[serde(with = "serde_bytes::fixed")]
 	pub top_hash_table_hash: [u8; 0x14],
 	pub allocated_block_count: u32,
@@ -298,7 +298,7 @@ fn parse_stfs_volume_descriptor(cursor: &mut Cursor<&[u8]>) -> Result<StfsVolume
 		reserved: cursor.read_u8()?,
 		block_separation: cursor.read_u8()?,
 		file_table_block_count: cursor.read_u16::<LittleEndian>()?,
-		file_table_block_num: cursor.read_u24::<LittleEndian>()?,
+		file_table_block_num: BlockNumber(cursor.read_u24::<LittleEndian>()? as usize),
 		top_hash_table_hash: read_array(cursor)?,
 		allocated_block_count: cursor.read_u32::<BigEndian>()?,
 		unallocated_block_count: cursor.read_u32::<BigEndian>()?,

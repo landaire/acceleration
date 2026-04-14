@@ -16,12 +16,18 @@ pub struct StfsFileEntry {
 	pub name: String,
 	pub flags: u8,
 	pub block_count: usize,
-	pub starting_block_num: usize,
+	pub starting_block_num: BlockNumber,
 	pub path_indicator: u16,
 	pub file_size: usize,
 	pub created_time_stamp: u32,
 	pub access_time_stamp: u32,
 	pub file_entry_address: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WalkEntry {
+	pub path: String,
+	pub entry: StfsFileEntry,
 }
 
 impl StfsFileEntry {
@@ -52,7 +58,7 @@ impl StfsFileTable {
 		let mut block = stfs_vol.file_table_block_num;
 
 		for block_idx in 0..(stfs_vol.file_table_block_count as usize) {
-			let current_addr = hash_meta.block_to_addr(block as usize, sex);
+			let current_addr = hash_meta.block_to_addr(block, sex);
 			let block_data = source.read_at(current_addr..current_addr + BLOCK_SIZE)?;
 			let block_data = block_data.as_ref();
 			let mut cursor = Cursor::new(block_data);
@@ -84,7 +90,7 @@ impl StfsFileTable {
 				// Skip 3 bytes padding
 				cursor.set_position(cursor.position() + 3);
 
-				let starting_block_num = cursor.read_u24::<LittleEndian>()? as usize;
+				let starting_block_num = BlockNumber(cursor.read_u24::<LittleEndian>()? as usize);
 				let path_indicator = cursor.read_u16::<BigEndian>()?;
 				let file_size = cursor.read_u32::<BigEndian>()? as usize;
 				let created_time_stamp = cursor.read_u32::<BigEndian>()?;
@@ -106,7 +112,7 @@ impl StfsFileTable {
 			}
 
 			// Follow block chain to next file table block
-			let hash_entry = hash_meta.read_block_hash_entry(source, block as usize, sex, stfs_vol)?;
+			let hash_entry = hash_meta.read_block_hash_entry(source, block, sex, stfs_vol)?;
 			block = hash_entry.next_block;
 		}
 
@@ -151,18 +157,18 @@ impl StfsFileTable {
 		StfsTreeNode { entry: root, children }
 	}
 
-	pub fn walk_files(&self) -> Vec<(String, StfsFileEntry)> {
+	pub fn walk_files(&self) -> Vec<WalkEntry> {
 		let tree = self.build_tree();
 		let mut result = Vec::new();
 
-		fn walk(node: &StfsTreeNode, path: &str, result: &mut Vec<(String, StfsFileEntry)>) {
+		fn walk(node: &StfsTreeNode, path: &str, result: &mut Vec<WalkEntry>) {
 			for child in &node.children {
 				let child_path =
 					if path.is_empty() { child.entry.name.clone() } else { format!("{}/{}", path, child.entry.name) };
 				if child.entry.is_directory() {
 					walk(child, &child_path, result);
 				} else {
-					result.push((child_path, child.entry.clone()));
+					result.push(WalkEntry { path: child_path, entry: child.entry.clone() });
 				}
 			}
 		}

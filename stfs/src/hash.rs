@@ -14,7 +14,7 @@ use crate::types::*;
 pub struct HashEntry {
 	pub block_hash: [u8; 0x14],
 	pub status: u8,
-	pub next_block: u32,
+	pub next_block: BlockNumber,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,7 +102,7 @@ impl HashTableMeta {
 			let mut block_hash = [0u8; 0x14];
 			cursor.read_exact(&mut block_hash)?;
 			let status = cursor.read_u8()?;
-			let next_block = cursor.read_u24::<BigEndian>()?;
+			let next_block = BlockNumber(cursor.read_u24::<BigEndian>()? as usize);
 			self.top_table.entries.push(HashEntry { block_hash, status, next_block });
 		}
 
@@ -149,7 +149,8 @@ impl HashTableMeta {
 		self.block_step[1]
 	}
 
-	pub fn block_to_addr(&self, block: usize, sex: StfsPackageSex) -> usize {
+	pub fn block_to_addr(&self, block: BlockNumber, sex: StfsPackageSex) -> usize {
+		let block = block.0;
 		if block > 2usize.pow(24) - 1 {
 			panic!("invalid block: {:#x}", block);
 		}
@@ -193,15 +194,15 @@ impl HashTableMeta {
 	pub fn read_block_hash_entry<R: ReadAt>(
 		&self,
 		source: &R,
-		block: usize,
+		block: BlockNumber,
 		sex: StfsPackageSex,
 		stfs_vol: &StfsVolumeDescriptor,
 	) -> Result<HashEntry, StfsError> {
-		if block > stfs_vol.allocated_block_count as usize {
-			return Err(StfsError::InvalidBlock { block, allocated: stfs_vol.allocated_block_count as usize });
+		if block.0 > stfs_vol.allocated_block_count as usize {
+			return Err(StfsError::InvalidBlock { block: block.0, allocated: stfs_vol.allocated_block_count as usize });
 		}
 
-		let addr = self.block_hash_address(block, sex, stfs_vol, source)?;
+		let addr = self.block_hash_address(block.0, sex, stfs_vol, source)?;
 		let data = source.read_at(addr..addr + 0x18)?;
 		let data = data.as_ref();
 
@@ -209,7 +210,7 @@ impl HashTableMeta {
 		let mut block_hash = [0u8; 0x14];
 		cursor.read_exact(&mut block_hash)?;
 		let status = cursor.read_u8()?;
-		let next_block = cursor.read_u24::<BigEndian>()?;
+		let next_block = BlockNumber(cursor.read_u24::<BigEndian>()? as usize);
 
 		Ok(HashEntry { block_hash, status, next_block })
 	}

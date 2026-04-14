@@ -4,6 +4,27 @@ use serde::Serialize;
 
 use crate::error::StfsError;
 
+#[derive(Default, Debug, Serialize, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct BlockNumber(pub usize);
+
+impl BlockNumber {
+	pub fn as_usize(self) -> usize {
+		self.0
+	}
+}
+
+impl From<u32> for BlockNumber {
+	fn from(v: u32) -> Self {
+		BlockNumber(v as usize)
+	}
+}
+
+impl From<usize> for BlockNumber {
+	fn from(v: usize) -> Self {
+		BlockNumber(v)
+	}
+}
+
 pub const BLOCK_SIZE: usize = 0x1000;
 pub const HASHES_PER_HASH_TABLE: usize = 0xAA;
 pub const HASHES_PER_HASH_TABLE_LEVEL: [usize; 3] = [
@@ -110,7 +131,7 @@ pub enum FileSystemType {
 	FATX,
 }
 
-#[derive(Debug, Serialize, Copy, Clone)]
+#[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum HashTableLevel {
 	First,
 	Second,

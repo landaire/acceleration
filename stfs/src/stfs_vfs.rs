@@ -54,8 +54,8 @@ impl<S: ReadAt> StfsVfs<S> {
 
 fn build_tree(file_table: &StfsFileTable) -> VfsTree<StfsFileMeta> {
 	let mut builder = VfsTree::builder();
-	for (path, entry) in file_table.walk_files() {
-		builder = builder.insert(path, StfsFileMeta { entry });
+	for walk_entry in file_table.walk_files() {
+		builder = builder.insert(walk_entry.path, StfsFileMeta { entry: walk_entry.entry });
 	}
 	builder.build()
 }
