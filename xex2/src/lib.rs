@@ -4,7 +4,8 @@ pub mod error;
 pub mod header;
 
 use crate::error::Result;
-use crate::header::{SecurityInfo, Xex2Header};
+use crate::header::SecurityInfo;
+use crate::header::Xex2Header;
 
 pub struct Xex2 {
 	pub header: Xex2Header,

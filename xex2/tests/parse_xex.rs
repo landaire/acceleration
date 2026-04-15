@@ -1,5 +1,5 @@
-use xex2::Xex2;
 use xex2::header::CompressionType;
+use xex2::Xex2;
 
 fn load_xex(name: &str) -> Xex2 {
 	let path = format!("../xex_files/{}", name);
@@ -65,4 +65,46 @@ fn execution_info_parsed() {
 fn security_info_file_key_not_all_zeros_for_encrypted() {
 	let xex = load_xex("AntiPiracyUI.xex");
 	assert_ne!(xex.security_info.image_info.file_key, [0u8; 16]);
+}
+
+#[test]
+fn extract_unencrypted_normal_produces_pe() {
+	let xex = load_xex("xshell twi.xex");
+	let fmt = xex.header.file_format_info(xex.raw()).unwrap();
+	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::None);
+	assert_eq!(fmt.compression_type, CompressionType::Normal);
+	let basefile = xex.extract_basefile().unwrap();
+	assert_eq!(&basefile[0..2], b"MZ");
+}
+
+#[test]
+fn extract_encrypted_normal_produces_pe() {
+	let xex = load_xex("ArchEngine.xex");
+	let fmt = xex.header.file_format_info(xex.raw()).unwrap();
+	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::Normal);
+	assert_eq!(fmt.compression_type, CompressionType::Normal);
+	let basefile = xex.extract_basefile().unwrap();
+	assert_eq!(&basefile[0..2], b"MZ");
+}
+
+#[test]
+fn extract_large_window_normal() {
+	let xex = load_xex("xshell - Copy.xex");
+	let fmt = xex.header.file_format_info(xex.raw()).unwrap();
+	assert_eq!(fmt.compression_type, CompressionType::Normal);
+	assert_eq!(fmt.window_size, Some(0x100000));
+	let basefile = xex.extract_basefile().unwrap();
+	assert_eq!(&basefile[0..2], b"MZ");
+}
+
+#[test]
+fn extract_multiple_normal_compression() {
+	for name in &["xbdm.xex", "mfgbootlauncher.xex", "BBNeo!_0424.xex"] {
+		let xex = load_xex(name);
+		let fmt = xex.header.file_format_info(xex.raw()).unwrap();
+		if fmt.compression_type == CompressionType::Normal {
+			let basefile = xex.extract_basefile().unwrap();
+			assert_eq!(&basefile[0..2], b"MZ", "failed for {}", name);
+		}
+	}
 }

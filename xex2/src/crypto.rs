@@ -1,14 +1,16 @@
-use aes::cipher::{BlockDecryptMut, KeyIvInit};
-use sha1::{Digest, Sha1};
+use aes::cipher::BlockDecryptMut;
+use aes::cipher::KeyIvInit;
+use sha1::Digest;
+use sha1::Sha1;
 
-use crate::error::{Result, Xex2Error};
+use crate::error::Result;
+use crate::error::Xex2Error;
 use rootcause::IntoReport;
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
-pub const RETAIL_KEY: [u8; 16] = [
-	0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3, 0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91,
-];
+pub const RETAIL_KEY: [u8; 16] =
+	[0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3, 0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91];
 
 pub const DEVKIT_KEY: [u8; 16] = [0u8; 16];
 

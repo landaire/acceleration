@@ -1,10 +1,14 @@
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::BigEndian;
+use byteorder::ReadBytesExt;
 use num_enum::TryFromPrimitive;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
+use std::io::Read;
 
-use crate::error::{IoResultExt, Result, Xex2Error};
+use crate::error::IoResultExt;
+use crate::error::Result;
+use crate::error::Xex2Error;
 use rootcause::IntoReport;
 
 pub const XEX2_MAGIC: [u8; 4] = *b"XEX2";
@@ -186,19 +190,13 @@ impl Xex2Header {
 		let optional_header_count = cursor.read_u32::<BigEndian>().io()?;
 
 		if data_offset as usize > data.len() {
-			return Err(Xex2Error::InvalidHeaderOffset {
-				offset: data_offset,
-				file_size: data.len(),
-			}
-			.into_report());
+			return Err(Xex2Error::InvalidHeaderOffset { offset: data_offset, file_size: data.len() }.into_report());
 		}
 
 		if security_offset as usize > data.len() {
-			return Err(Xex2Error::InvalidSecurityOffset {
-				offset: security_offset,
-				file_size: data.len(),
-			}
-			.into_report());
+			return Err(
+				Xex2Error::InvalidSecurityOffset { offset: security_offset, file_size: data.len() }.into_report()
+			);
 		}
 
 		let mut optional_headers = BTreeMap::new();
@@ -230,13 +228,7 @@ impl Xex2Header {
 			optional_headers.insert(key, header_value);
 		}
 
-		Ok(Xex2Header {
-			module_flags,
-			data_offset,
-			security_offset,
-			optional_header_count,
-			optional_headers,
-		})
+		Ok(Xex2Header { module_flags, data_offset, security_offset, optional_header_count, optional_headers })
 	}
 
 	pub fn get_optional_header(&self, key: u32) -> Option<&OptionalHeaderValue> {
@@ -288,7 +280,7 @@ impl Xex2Header {
 		})
 	}
 
-	pub fn file_format_info(&self, data: &[u8]) -> Result<FileFormatInfo> {
+	pub fn file_format_info(&self, _data: &[u8]) -> Result<FileFormatInfo> {
 		let header_data = match self.get_optional_header(optional_header_keys::FILE_FORMAT_INFO) {
 			Some(OptionalHeaderValue::Data(d)) => d.as_slice(),
 			Some(OptionalHeaderValue::Inline(_)) => {
@@ -298,9 +290,7 @@ impl Xex2Header {
 				}
 				.into_report())
 			}
-			None => {
-				return Err(Xex2Error::MissingOptionalHeader(optional_header_keys::FILE_FORMAT_INFO).into_report())
-			}
+			None => return Err(Xex2Error::MissingOptionalHeader(optional_header_keys::FILE_FORMAT_INFO).into_report()),
 		};
 
 		let mut c = Cursor::new(header_data);
@@ -331,13 +321,7 @@ impl Xex2Header {
 			_ => {}
 		}
 
-		Ok(FileFormatInfo {
-			encryption_type,
-			compression_type,
-			blocks,
-			window_size,
-			first_block_size,
-		})
+		Ok(FileFormatInfo { encryption_type, compression_type, blocks, window_size, first_block_size })
 	}
 }
 
@@ -389,17 +373,11 @@ impl SecurityInfo {
 
 		let page_descriptor_count = c.read_u32::<BigEndian>().io()?;
 
-		Ok(SecurityInfo {
-			header_size,
-			image_size,
-			rsa_signature,
-			image_info,
-			page_descriptor_count,
-		})
+		Ok(SecurityInfo { header_size, image_size, rsa_signature, image_info, page_descriptor_count })
 	}
 }
 
 fn cursor_read_u32_at(data: &[u8], offset: usize) -> Result<u32> {
 	let mut c = Cursor::new(&data[offset..]);
-	Ok(c.read_u32::<BigEndian>().io()?)
+	c.read_u32::<BigEndian>().io()
 }

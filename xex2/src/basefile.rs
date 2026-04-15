@@ -1,9 +1,16 @@
-use byteorder::{BigEndian, ReadBytesExt};
-use std::io::{Cursor, Read};
+use byteorder::BigEndian;
+use byteorder::ReadBytesExt;
+use std::io::Cursor;
 
 use crate::crypto;
-use crate::error::{IoResultExt, Result, Xex2Error};
-use crate::header::{CompressionType, EncryptionType, FileFormatInfo, SecurityInfo, Xex2Header};
+use crate::error::IoResultExt;
+use crate::error::Result;
+use crate::error::Xex2Error;
+use crate::header::CompressionType;
+use crate::header::EncryptionType;
+use crate::header::FileFormatInfo;
+use crate::header::SecurityInfo;
+use crate::header::Xex2Header;
 use rootcause::IntoReport;
 
 pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &SecurityInfo) -> Result<Vec<u8>> {
@@ -15,11 +22,8 @@ pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &Securi
 	let decrypted = match file_format.encryption_type {
 		EncryptionType::None => encrypted_data.to_vec(),
 		EncryptionType::Normal => {
-			let key = if try_decrypt_with_key(encrypted_data, &retail_key, &file_format) {
-				retail_key
-			} else {
-				devkit_key
-			};
+			let key =
+				if try_decrypt_with_key(encrypted_data, &retail_key, &file_format) { retail_key } else { devkit_key };
 			crypto::decrypt_data(encrypted_data, &key)
 		}
 	};
@@ -78,11 +82,8 @@ fn decompress_basic(data: &[u8], format: &FileFormatInfo) -> Result<Vec<u8>> {
 fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> Result<Vec<u8>> {
 	let mut output = Vec::new();
 	let window_size = window_size_from_format(format);
-	let window_bytes = window_size as usize;
-
-	let first_chunk_size = format
-		.first_block_size
-		.ok_or_else(|| Xex2Error::DecompressionFailed.into_report())? as usize;
+	let first_chunk_size =
+		format.first_block_size.ok_or_else(|| Xex2Error::DecompressionFailed.into_report())? as usize;
 
 	let mut block_offset = 0;
 	let mut block_size = first_chunk_size;
@@ -119,7 +120,7 @@ fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> R
 
 			let chunk_data = &compressed_payload[payload_offset..payload_offset + chunk_compressed_size];
 			let remaining = image_size as usize - output.len();
-			let out_size = std::cmp::min(remaining, window_bytes);
+			let out_size = std::cmp::min(remaining, 0x8000);
 
 			match lzx.decompress_next(chunk_data, out_size) {
 				Ok(decompressed) => {

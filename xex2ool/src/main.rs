@@ -1,7 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
+use clap::Subcommand;
 use xex2::Xex2;
 
 #[derive(Parser)]
