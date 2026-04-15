@@ -138,34 +138,85 @@ pub struct ImageInfo {
 	pub allowed_media_types: u32,
 }
 
-pub mod optional_header_keys {
-	pub const RESOURCE_INFO: u32 = 0x000002FF;
-	pub const FILE_FORMAT_INFO: u32 = 0x000003FF;
-	pub const BASE_REFERENCE: u32 = 0x00000405;
-	pub const DELTA_PATCH_DESCRIPTOR: u32 = 0x000005FF;
-	pub const BASE_FILE_FORMAT: u32 = 0x000003FF;
-	pub const BASE_FILE_TIMESTAMP: u32 = 0x00000405;
-	pub const ORIGINAL_PE_NAME: u32 = 0x000183FF;
-	pub const BOUNDING_PATH: u32 = 0x000080FF;
-	pub const DEVICE_ID: u32 = 0x00008105;
-	pub const ORIGINAL_BASE_ADDRESS: u32 = 0x00010001;
-	pub const ENTRY_POINT: u32 = 0x00010100;
-	pub const TLS_INFO: u32 = 0x000100FF;
-	pub const DEFAULT_STACK_SIZE: u32 = 0x00010200;
-	pub const DEFAULT_FS_CACHE_SIZE: u32 = 0x000102FF;
-	pub const DEFAULT_HEAP_SIZE: u32 = 0x00010301;
-	pub const PAGE_HEAP_SIZE_AND_FLAGS: u32 = 0x00010302;
-	pub const IMPORT_LIBRARIES: u32 = 0x000103FF;
-	pub const EXECUTION_INFO: u32 = 0x00040006;
-	pub const SERVICE_ID_LIST: u32 = 0x000401FF;
-	pub const TITLE_WORKSPACE_SIZE: u32 = 0x00040201;
-	pub const GAME_RATINGS: u32 = 0x00040310;
-	pub const LAN_KEY: u32 = 0x00040404;
-	pub const XBOX_360_LOGO: u32 = 0x000405FF;
-	pub const MULTIDISC_MEDIA_IDS: u32 = 0x000406FF;
-	pub const ALTERNATE_TITLE_IDS: u32 = 0x000407FF;
-	pub const ADDITIONAL_TITLE_MEMORY: u32 = 0x00040801;
-	pub const EXPORTS_BY_NAME: u32 = 0x00E10402;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[repr(u32)]
+pub enum OptionalHeaderKey {
+	ResourceInfo = 0x000002FF,
+	FileFormatInfo = 0x000003FF,
+	BaseReference = 0x00000405,
+	DeltaPatchDescriptor = 0x000005FF,
+	BoundingPath = 0x000080FF,
+	DeviceId = 0x00008105,
+	OriginalBaseAddress = 0x00010001,
+	TlsInfo = 0x000100FF,
+	EntryPoint = 0x00010100,
+	DefaultStackSize = 0x00010200,
+	DefaultFsCacheSize = 0x000102FF,
+	DefaultHeapSize = 0x00010301,
+	PageHeapSizeAndFlags = 0x00010302,
+	ImportLibraries = 0x000103FF,
+	ChecksumTimestamp = 0x00018002,
+	OriginalPeName = 0x000183FF,
+	StaticLibraries = 0x000200FF,
+	BuildVersions = 0x00020104,
+	TlsData = 0x00020200,
+	SystemFlags = 0x00030000,
+	Privileges = 0x00030100,
+	ExecutionInfo = 0x00040006,
+	ServiceIdList = 0x000401FF,
+	TitleWorkspaceSize = 0x00040201,
+	GameRatings = 0x00040310,
+	LanKey = 0x00040404,
+	Xbox360Logo = 0x000405FF,
+	MultidiscMediaIds = 0x000406FF,
+	AlternateTitleIds = 0x000407FF,
+	AdditionalTitleMemory = 0x00040801,
+	ExportsByName = 0x00E10402,
+}
+
+impl OptionalHeaderKey {
+	pub fn from_u32(value: u32) -> Option<Self> {
+		match value {
+			0x000002FF => Some(Self::ResourceInfo),
+			0x000003FF => Some(Self::FileFormatInfo),
+			0x00000405 => Some(Self::BaseReference),
+			0x000005FF => Some(Self::DeltaPatchDescriptor),
+			0x000080FF => Some(Self::BoundingPath),
+			0x00008105 => Some(Self::DeviceId),
+			0x00010001 => Some(Self::OriginalBaseAddress),
+			0x000100FF => Some(Self::TlsInfo),
+			0x00010100 => Some(Self::EntryPoint),
+			0x00010200 | 0x00010201 => Some(Self::DefaultStackSize),
+			0x000102FF => Some(Self::DefaultFsCacheSize),
+			0x00010301 => Some(Self::DefaultHeapSize),
+			0x00010302 => Some(Self::PageHeapSizeAndFlags),
+			0x000103FF => Some(Self::ImportLibraries),
+			0x00018002 => Some(Self::ChecksumTimestamp),
+			0x000183FF => Some(Self::OriginalPeName),
+			0x000200FF => Some(Self::StaticLibraries),
+			0x00020104 => Some(Self::BuildVersions),
+			0x00020200 => Some(Self::TlsData),
+			0x00030000 => Some(Self::SystemFlags),
+			0x00030100 => Some(Self::Privileges),
+			0x00040006 => Some(Self::ExecutionInfo),
+			0x000401FF => Some(Self::ServiceIdList),
+			0x00040201 => Some(Self::TitleWorkspaceSize),
+			0x00040310 => Some(Self::GameRatings),
+			0x00040404 => Some(Self::LanKey),
+			0x000405FF => Some(Self::Xbox360Logo),
+			0x000406FF => Some(Self::MultidiscMediaIds),
+			0x000407FF => Some(Self::AlternateTitleIds),
+			0x00040801 => Some(Self::AdditionalTitleMemory),
+			0x00E10402 => Some(Self::ExportsByName),
+			_ => None,
+		}
+	}
+}
+
+impl std::fmt::Display for OptionalHeaderKey {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
 }
 
 #[derive(Debug, Serialize)]
@@ -239,38 +290,38 @@ impl Xex2Header {
 		Ok(Xex2Header { module_flags, data_offset, security_offset, optional_header_count, optional_headers })
 	}
 
-	pub fn get_optional_header(&self, key: u32) -> Option<&OptionalHeaderValue> {
-		self.optional_headers.get(&key)
+	pub fn get_optional_header(&self, key: OptionalHeaderKey) -> Option<&OptionalHeaderValue> {
+		self.optional_headers.get(&(key as u32))
 	}
 
-	pub fn get_optional_data(&self, key: u32) -> Option<&[u8]> {
-		match self.optional_headers.get(&key)? {
+	pub fn get_optional_data(&self, key: OptionalHeaderKey) -> Option<&[u8]> {
+		match self.get_optional_header(key)? {
 			OptionalHeaderValue::Data(data) => Some(data),
 			OptionalHeaderValue::Inline(_) => None,
 		}
 	}
 
-	pub fn get_optional_inline(&self, key: u32) -> Option<u32> {
-		match self.optional_headers.get(&key)? {
+	pub fn get_optional_inline(&self, key: OptionalHeaderKey) -> Option<u32> {
+		match self.get_optional_header(key)? {
 			OptionalHeaderValue::Inline(v) => Some(*v),
 			OptionalHeaderValue::Data(_) => None,
 		}
 	}
 
 	pub fn entry_point(&self) -> Option<u32> {
-		self.get_optional_inline(optional_header_keys::ENTRY_POINT)
+		self.get_optional_inline(OptionalHeaderKey::EntryPoint)
 	}
 
 	pub fn original_base_address(&self) -> Option<u32> {
-		self.get_optional_inline(optional_header_keys::ORIGINAL_BASE_ADDRESS)
+		self.get_optional_inline(OptionalHeaderKey::OriginalBaseAddress)
 	}
 
 	pub fn default_stack_size(&self) -> Option<u32> {
-		self.get_optional_inline(optional_header_keys::DEFAULT_STACK_SIZE)
+		self.get_optional_inline(OptionalHeaderKey::DefaultStackSize)
 	}
 
 	pub fn execution_info(&self) -> Option<ExecutionInfo> {
-		let data = self.get_optional_data(optional_header_keys::EXECUTION_INFO)?;
+		let data = self.get_optional_data(OptionalHeaderKey::ExecutionInfo)?;
 		if data.len() < 24 {
 			return None;
 		}
@@ -289,16 +340,18 @@ impl Xex2Header {
 	}
 
 	pub fn file_format_info(&self, _data: &[u8]) -> Result<FileFormatInfo> {
-		let header_data = match self.get_optional_header(optional_header_keys::FILE_FORMAT_INFO) {
+		let header_data = match self.get_optional_header(OptionalHeaderKey::FileFormatInfo) {
 			Some(OptionalHeaderValue::Data(d)) => d.as_slice(),
 			Some(OptionalHeaderValue::Inline(_)) => {
 				return Err(Xex2Error::InvalidOptionalHeaderSize {
-					key: optional_header_keys::FILE_FORMAT_INFO,
+					key: OptionalHeaderKey::FileFormatInfo as u32,
 					size: 4,
 				}
 				.into_report());
 			}
-			None => return Err(Xex2Error::MissingOptionalHeader(optional_header_keys::FILE_FORMAT_INFO).into_report()),
+			None => {
+				return Err(Xex2Error::MissingOptionalHeader(OptionalHeaderKey::FileFormatInfo as u32).into_report());
+			}
 		};
 
 		let mut c = Cursor::new(header_data);

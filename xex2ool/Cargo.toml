@@ -12,4 +12,6 @@ path = "src/main.rs"
 xex2 = { version = "0.1", path = "../xex2" }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
+serde_json = "1.0"
+tabled = "0.20"
 rootcause = { version = "0.12", features = ["compat-anyhow1"] }

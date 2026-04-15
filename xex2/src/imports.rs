@@ -4,8 +4,8 @@ use serde::Serialize;
 use std::io::Cursor;
 use std::io::Read;
 
+use crate::header::OptionalHeaderKey;
 use crate::header::Xex2Header;
-use crate::header::optional_header_keys as keys;
 
 #[derive(Debug, Serialize)]
 pub struct ImportLibrary {
@@ -24,7 +24,7 @@ pub struct ImportTable {
 
 impl Xex2Header {
 	pub fn import_table(&self) -> Option<ImportTable> {
-		let data = self.get_optional_data(keys::IMPORT_LIBRARIES)?;
+		let data = self.get_optional_data(OptionalHeaderKey::ImportLibraries)?;
 		parse_import_table(data)
 	}
 }

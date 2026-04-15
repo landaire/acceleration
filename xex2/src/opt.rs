@@ -4,8 +4,8 @@ use serde::Serialize;
 use std::io::Cursor;
 use std::io::Read;
 
+use crate::header::OptionalHeaderKey;
 use crate::header::Xex2Header;
-use crate::header::optional_header_keys as keys;
 
 #[derive(Debug, Serialize)]
 pub struct TlsInfo {
@@ -106,7 +106,7 @@ pub struct PageHeapOptions {
 
 impl Xex2Header {
 	pub fn tls_info(&self) -> Option<TlsInfo> {
-		let data = self.get_optional_data(keys::TLS_INFO)?;
+		let data = self.get_optional_data(OptionalHeaderKey::TlsInfo)?;
 		if data.len() < 20 {
 			return None;
 		}
@@ -121,7 +121,7 @@ impl Xex2Header {
 	}
 
 	pub fn resource_info(&self) -> Option<ResourceInfo> {
-		let data = self.get_optional_data(keys::RESOURCE_INFO)?;
+		let data = self.get_optional_data(OptionalHeaderKey::ResourceInfo)?;
 		if data.len() < 4 {
 			return None;
 		}
@@ -143,7 +143,7 @@ impl Xex2Header {
 	}
 
 	pub fn game_ratings(&self) -> Option<GameRatings> {
-		let data = self.get_optional_data(keys::GAME_RATINGS)?;
+		let data = self.get_optional_data(OptionalHeaderKey::GameRatings)?;
 		if data.len() < 16 {
 			return None;
 		}
@@ -171,7 +171,7 @@ impl Xex2Header {
 	}
 
 	pub fn lan_key(&self) -> Option<[u8; 16]> {
-		let data = self.get_optional_data(keys::LAN_KEY)?;
+		let data = self.get_optional_data(OptionalHeaderKey::LanKey)?;
 		if data.len() < 16 {
 			return None;
 		}
@@ -181,7 +181,7 @@ impl Xex2Header {
 	}
 
 	pub fn xbox_360_logo(&self) -> Option<&[u8]> {
-		let data = self.get_optional_data(keys::XBOX_360_LOGO)?;
+		let data = self.get_optional_data(OptionalHeaderKey::Xbox360Logo)?;
 		if data.len() < 4 {
 			return None;
 		}
@@ -193,7 +193,7 @@ impl Xex2Header {
 	}
 
 	pub fn bounding_path(&self) -> Option<String> {
-		let data = self.get_optional_data(keys::BOUNDING_PATH)?;
+		let data = self.get_optional_data(OptionalHeaderKey::BoundingPath)?;
 		if data.len() < 4 {
 			return None;
 		}
@@ -205,7 +205,7 @@ impl Xex2Header {
 	}
 
 	pub fn device_id(&self) -> Option<[u8; 20]> {
-		let data = self.get_optional_data(keys::DEVICE_ID)?;
+		let data = self.get_optional_data(OptionalHeaderKey::DeviceId)?;
 		if data.len() < 20 {
 			return None;
 		}
@@ -215,7 +215,7 @@ impl Xex2Header {
 	}
 
 	pub fn default_fs_cache_size(&self) -> Option<u32> {
-		let data = self.get_optional_data(keys::DEFAULT_FS_CACHE_SIZE)?;
+		let data = self.get_optional_data(OptionalHeaderKey::DefaultFsCacheSize)?;
 		if data.len() < 8 {
 			return None;
 		}
@@ -225,11 +225,11 @@ impl Xex2Header {
 	}
 
 	pub fn default_heap_size(&self) -> Option<u32> {
-		self.get_optional_inline(keys::DEFAULT_HEAP_SIZE)
+		self.get_optional_inline(OptionalHeaderKey::DefaultHeapSize)
 	}
 
 	pub fn page_heap_options(&self) -> Option<PageHeapOptions> {
-		let data = self.get_optional_data(keys::PAGE_HEAP_SIZE_AND_FLAGS)?;
+		let data = self.get_optional_data(OptionalHeaderKey::PageHeapSizeAndFlags)?;
 		if data.len() < 8 {
 			return None;
 		}
@@ -238,15 +238,15 @@ impl Xex2Header {
 	}
 
 	pub fn title_workspace_size(&self) -> Option<u32> {
-		self.get_optional_inline(keys::TITLE_WORKSPACE_SIZE)
+		self.get_optional_inline(OptionalHeaderKey::TitleWorkspaceSize)
 	}
 
 	pub fn additional_title_memory(&self) -> Option<u32> {
-		self.get_optional_inline(keys::ADDITIONAL_TITLE_MEMORY)
+		self.get_optional_inline(OptionalHeaderKey::AdditionalTitleMemory)
 	}
 
 	pub fn multidisc_media_ids(&self) -> Option<Vec<[u8; 4]>> {
-		let data = self.get_optional_data(keys::MULTIDISC_MEDIA_IDS)?;
+		let data = self.get_optional_data(OptionalHeaderKey::MultidiscMediaIds)?;
 		if data.len() < 4 {
 			return None;
 		}
@@ -264,7 +264,7 @@ impl Xex2Header {
 	}
 
 	pub fn alternate_title_ids(&self) -> Option<Vec<u32>> {
-		let data = self.get_optional_data(keys::ALTERNATE_TITLE_IDS)?;
+		let data = self.get_optional_data(OptionalHeaderKey::AlternateTitleIds)?;
 		if data.len() < 4 {
 			return None;
 		}
