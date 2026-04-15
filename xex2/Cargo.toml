@@ -1,0 +1,18 @@
+[package]
+name = "xex2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+byteorder = { workspace = true }
+serde = { workspace = true }
+bitflags = { workspace = true }
+sha-1 = { workspace = true }
+num_enum = { workspace = true }
+aes = "0.8"
+cbc = "0.1"
+lzxd = { path = "/Users/lander/src/lzxd" }
+rootcause = "0.12"
+
+[dev-dependencies]
+insta = { workspace = true }

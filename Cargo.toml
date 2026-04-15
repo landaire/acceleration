@@ -1,5 +1,5 @@
 [workspace]
-members = ['cli', 'stfs', 'stfs_old', 'ui', "xcontent", "xecrypt"]
+members = ['cli', 'stfs', 'stfs_old', 'ui', "xcontent", "xecrypt", "xex2", "xex2ool"]
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
