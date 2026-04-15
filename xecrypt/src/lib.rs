@@ -10,6 +10,7 @@ use std::io::Read;
 
 mod error;
 mod keys;
+pub mod keyvault;
 pub mod symmetric;
 
 #[cfg(feature = "serde")]
