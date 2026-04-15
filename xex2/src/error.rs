@@ -61,7 +61,7 @@ impl std::error::Error for Xex2Error {
 pub type Report = rootcause::Report<Xex2Error>;
 pub type Result<T> = std::result::Result<T, Report>;
 
-pub trait IoResultExt<T> {
+pub(crate) trait IoResultExt<T> {
 	fn io(self) -> Result<T>;
 }
 

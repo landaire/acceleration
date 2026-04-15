@@ -109,7 +109,7 @@ impl HashTableMeta {
 		Ok(())
 	}
 
-	pub fn compute_backing_hash_block_number_for_level(
+	pub(crate) fn compute_backing_hash_block_number_for_level(
 		&self,
 		block: usize,
 		level: HashTableLevel,
@@ -122,7 +122,7 @@ impl HashTableMeta {
 		}
 	}
 
-	pub fn compute_first_level_backing_hash_block_number(&self, block: usize, sex: StfsPackageSex) -> usize {
+	pub(crate) fn compute_first_level_backing_hash_block_number(&self, block: usize, sex: StfsPackageSex) -> usize {
 		if block < HASHES_PER_HASH_TABLE {
 			return 0;
 		}
@@ -137,7 +137,7 @@ impl HashTableMeta {
 		}
 	}
 
-	pub fn compute_second_level_backing_hash_block_number(&self, block: usize, sex: StfsPackageSex) -> usize {
+	pub(crate) fn compute_second_level_backing_hash_block_number(&self, block: usize, sex: StfsPackageSex) -> usize {
 		if block < DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] {
 			self.block_step[0]
 		} else {
@@ -145,7 +145,7 @@ impl HashTableMeta {
 		}
 	}
 
-	pub fn compute_third_level_backing_hash_block_number(&self) -> usize {
+	pub(crate) fn compute_third_level_backing_hash_block_number(&self) -> usize {
 		self.block_step[1]
 	}
 
@@ -158,7 +158,7 @@ impl HashTableMeta {
 		(self.compute_data_block_num(block, sex) * BLOCK_SIZE) + self.first_table_address
 	}
 
-	pub fn compute_data_block_num(&self, block: usize, sex: StfsPackageSex) -> usize {
+	fn compute_data_block_num(&self, block: usize, sex: StfsPackageSex) -> usize {
 		let addr = (((block + HASHES_PER_HASH_TABLE) / HASHES_PER_HASH_TABLE) << (sex as usize)) + block;
 		if block < HASHES_PER_HASH_TABLE {
 			addr
@@ -171,7 +171,7 @@ impl HashTableMeta {
 		}
 	}
 
-	pub fn hash_table_skip_for_address(&self, table_address: usize, sex: StfsPackageSex) -> usize {
+	pub(crate) fn hash_table_skip_for_address(&self, table_address: usize, sex: StfsPackageSex) -> usize {
 		let mut block_number = (table_address - self.first_table_address) / BLOCK_SIZE;
 
 		if block_number == 0 {
@@ -215,7 +215,7 @@ impl HashTableMeta {
 		Ok(HashEntry { block_hash: Sha1Digest(hash_bytes), status, next_block })
 	}
 
-	pub fn block_hash_address<R: ReadAt>(
+	pub(crate) fn block_hash_address<R: ReadAt>(
 		&self,
 		block: usize,
 		sex: StfsPackageSex,
