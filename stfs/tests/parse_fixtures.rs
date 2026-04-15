@@ -1,10 +1,11 @@
 use serde::Serialize;
-use stfs::BytesStfsWrapper;
+use stfs::BytesStfsReader;
+use stfs::StfsPackageReader;
 
-fn open_fixture(name: &str) -> BytesStfsWrapper<Vec<u8>> {
+fn open_fixture(name: &str) -> BytesStfsReader<Vec<u8>> {
 	let path = format!("tests/fixtures/{}", name);
 	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
-	BytesStfsWrapper::open(data).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e))
+	BytesStfsReader::open(data).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e))
 }
 
 #[derive(Serialize)]
@@ -18,7 +19,7 @@ struct WalkSnapshot {
 	files: Vec<WalkSnapshotEntry>,
 }
 
-fn walk_snapshot(wrapper: &BytesStfsWrapper<Vec<u8>>) -> WalkSnapshot {
+fn walk_snapshot(wrapper: &BytesStfsReader<Vec<u8>>) -> WalkSnapshot {
 	let files = wrapper
 		.package()
 		.file_table

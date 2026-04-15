@@ -25,4 +25,5 @@ pub use io::ReadAt;
 pub use io::SliceReader;
 pub use package::StfsPackage;
 pub use types::*;
-pub use wrappers::bytes::BytesStfsWrapper;
+pub use wrappers::bytes::BytesStfsReader;
+pub use wrappers::StfsPackageReader;
