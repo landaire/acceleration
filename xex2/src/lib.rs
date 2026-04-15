@@ -2,6 +2,9 @@ pub mod basefile;
 pub mod crypto;
 pub mod error;
 pub mod header;
+pub mod imports;
+pub mod kernel_exports;
+pub mod opt;
 
 use crate::error::Result;
 use crate::header::SecurityInfo;

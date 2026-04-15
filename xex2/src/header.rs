@@ -147,7 +147,7 @@ pub mod optional_header_keys {
 	pub const DEFAULT_FS_CACHE_SIZE: u32 = 0x000102FF;
 	pub const DEFAULT_HEAP_SIZE: u32 = 0x00010301;
 	pub const PAGE_HEAP_SIZE_AND_FLAGS: u32 = 0x00010302;
-	pub const SYSTEM_FLAGS: u32 = 0x000103FF;
+	pub const IMPORT_LIBRARIES: u32 = 0x000103FF;
 	pub const EXECUTION_INFO: u32 = 0x00040006;
 	pub const SERVICE_ID_LIST: u32 = 0x000401FF;
 	pub const TITLE_WORKSPACE_SIZE: u32 = 0x00040201;
