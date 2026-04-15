@@ -5,8 +5,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use chrono::DateTime;
-use chrono::Utc;
+use jiff::Timestamp;
 use clap::Parser;
 use clap::Subcommand;
 use humansize::DECIMAL;
@@ -311,15 +310,17 @@ fn main() -> anyhow::Result<()> {
 				let file = file?;
 				let meta = file.metadata()?;
 				if file.as_str().chars().filter(|c| *c == '/').count() == 1 {
-					let created: DateTime<Utc> = meta.created.unwrap().into();
-					let accessed: DateTime<Utc> = meta.accessed.unwrap().into();
+					let created = Timestamp::try_from(meta.created.unwrap())
+						.expect("invalid timestamp");
+					let accessed = Timestamp::try_from(meta.accessed.unwrap())
+						.expect("invalid timestamp");
 
 					println!(
 						"{} {}b {} {} {}",
 						if file.is_file()? { "f" } else { "d" },
 						meta.len,
-						created.format("%Y/%m/%d"),
-						accessed.format("%Y/%m/%d"),
+						created.strftime("%Y/%m/%d"),
+						accessed.strftime("%Y/%m/%d"),
 						file.filename()
 					);
 				}
