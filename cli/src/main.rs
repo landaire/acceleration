@@ -12,7 +12,6 @@ use clap::Subcommand;
 use humansize::DECIMAL;
 use memmap2::MmapOptions;
 use serde_json::json;
-use vfs::FileSystem;
 use vfs::VfsPath;
 use xcontent::xecrypt::XContentKeyMaterial;
 

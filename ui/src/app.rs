@@ -1,5 +1,4 @@
 use std::io::Cursor;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::mpsc::Receiver;
@@ -16,7 +15,6 @@ use clipboard::ClipboardProvider;
 use egui::Label;
 use egui::Sense;
 use egui::Spinner;
-use egui::TextBuffer;
 use log::info;
 use rfd::AsyncFileDialog;
 #[cfg(not(target_arch = "wasm32"))]
@@ -207,13 +205,13 @@ fn create_zip(path: VfsPath, sender: Sender<BackgroundTaskMessage>) -> anyhow::R
 			}
 		}
 
-		sender.send(BackgroundTaskMessage::ZipFileUpdate(path_str));
+		let _ = sender.send(BackgroundTaskMessage::ZipFileUpdate(path_str));
 	}
 
 	zip.finish().expect("failed to finish zip");
 	drop(zip);
 
-	sender.send(BackgroundTaskMessage::ZipDone);
+	let _ = sender.send(BackgroundTaskMessage::ZipDone);
 
 	Ok(zip_contents)
 }
@@ -369,7 +367,7 @@ impl eframe::App for AccelerationApp {
 					if let Some(stfs_package) = stfs_package.as_ref() {
 						#[cfg(not(target_arch = "wasm32"))]
 						if ui.button("Extract All").clicked() {
-							extract_all(stfs_package.fs.clone());
+							let _ = extract_all(stfs_package.fs.clone());
 
 							ui.close_menu();
 						}
@@ -503,7 +501,7 @@ impl eframe::App for AccelerationApp {
 							body.row(18.0, |mut row| {
 								let do_extract = |ui: &mut Ui| {
 									if ui.button("Extract").clicked() {
-										save_file(file.file_ref.clone());
+										let _ = save_file(file.file_ref.clone());
 
 										ui.close_menu();
 									}

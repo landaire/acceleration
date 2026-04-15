@@ -73,6 +73,7 @@ fixture_tests!(live_120k_a, "live_120k_a.stfs");
 fixture_tests!(live_120k_b, "live_120k_b.stfs");
 
 mod hash_validation {
+	use stfs::hashing::HashVerifyContext;
 	use stfs::hashing::StfsHasher;
 	use stfs::io::SliceReader;
 	use stfs::types::HashTableLevel;
@@ -90,13 +91,15 @@ mod hash_validation {
 	fn verify_all_hash_chains(name: &str) {
 		let (data, package) = open_package(name);
 		let reader = SliceReader(&data);
-		let stfs_vol = package.header.volume_descriptor.stfs_ref();
+		let ctx = HashVerifyContext {
+			sex: package.sex,
+			hash_meta: &package.hash_table_meta,
+			stfs_vol: package.header.volume_descriptor.stfs_ref(),
+		};
 		let mut hasher = StfsHasher::new();
 
 		for w in package.file_table.walk_files() {
-			let reports = hasher
-				.verify_data_block(&reader, w.entry.starting_block_num, package.sex, &package.hash_table_meta, stfs_vol)
-				.unwrap();
+			let reports = hasher.verify_data_block(&reader, w.entry.starting_block_num, &ctx).unwrap();
 			for report in &reports {
 				assert!(
 					report.is_valid,
@@ -111,19 +114,20 @@ mod hash_validation {
 	fn verify_all_data_blocks(name: &str) {
 		let (data, package) = open_package(name);
 		let reader = SliceReader(&data);
-		let stfs_vol = package.header.volume_descriptor.stfs_ref();
+		let ctx = HashVerifyContext {
+			sex: package.sex,
+			hash_meta: &package.hash_table_meta,
+			stfs_vol: package.header.volume_descriptor.stfs_ref(),
+		};
 		let hasher = StfsHasher::new();
 
 		for w in package.file_table.walk_files() {
 			let mut block = w.entry.starting_block_num;
 			for _ in 0..w.entry.block_count {
-				let report = hasher
-					.verify_data_block_content(&reader, block, package.sex, &package.hash_table_meta, stfs_vol)
-					.unwrap();
+				let report = hasher.verify_data_block_content(&reader, block, &ctx).unwrap();
 				assert!(report.is_valid, "{}: data block {:?} hash mismatch", name, block);
 
-				let hash_entry =
-					package.hash_table_meta.read_block_hash_entry(&reader, block, package.sex, stfs_vol).unwrap();
+				let hash_entry = ctx.hash_meta.read_block_hash_entry(&reader, block, ctx.sex, ctx.stfs_vol).unwrap();
 				block = hash_entry.next_block;
 			}
 		}
@@ -173,16 +177,18 @@ mod hash_validation {
 	fn cache_deduplicates_hash_table_lookups() {
 		let (data, package) = open_package("live_532k.stfs");
 		let reader = SliceReader(&data);
-		let stfs_vol = package.header.volume_descriptor.stfs_ref();
+		let ctx = HashVerifyContext {
+			sex: package.sex,
+			hash_meta: &package.hash_table_meta,
+			stfs_vol: package.header.volume_descriptor.stfs_ref(),
+		};
 		let mut hasher = StfsHasher::new();
 
 		let files = package.file_table.walk_files();
 		assert!(files.len() > 1, "need multiple files to test caching");
 
 		for w in &files {
-			hasher
-				.verify_data_block(&reader, w.entry.starting_block_num, package.sex, &package.hash_table_meta, stfs_vol)
-				.unwrap();
+			hasher.verify_data_block(&reader, w.entry.starting_block_num, &ctx).unwrap();
 		}
 
 		// All files in a small package share the same level-0 hash table,
