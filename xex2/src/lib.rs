@@ -6,6 +6,7 @@ pub mod idc;
 pub mod imports;
 pub mod kernel_exports;
 pub mod opt;
+pub mod writer;
 pub mod xml;
 
 use crate::error::Result;

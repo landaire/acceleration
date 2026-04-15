@@ -138,6 +138,9 @@ pub mod optional_header_keys {
 	pub const FILE_FORMAT_INFO: u32 = 0x000003FF;
 	pub const BASE_REFERENCE: u32 = 0x00000405;
 	pub const DELTA_PATCH_DESCRIPTOR: u32 = 0x000005FF;
+	pub const BASE_FILE_FORMAT: u32 = 0x000003FF;
+	pub const BASE_FILE_TIMESTAMP: u32 = 0x00000405;
+	pub const ORIGINAL_PE_NAME: u32 = 0x000183FF;
 	pub const BOUNDING_PATH: u32 = 0x000080FF;
 	pub const DEVICE_ID: u32 = 0x00008105;
 	pub const ORIGINAL_BASE_ADDRESS: u32 = 0x00010001;

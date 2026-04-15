@@ -60,6 +60,35 @@ enum Commands {
 		/// Path to the XEX file
 		file: PathBuf,
 	},
+	/// Remove XEX restrictions (modifies in-place unless -o given)
+	Patch {
+		/// Path to the XEX file
+		file: PathBuf,
+
+		/// Output path (modifies original if not given)
+		#[arg(short, long)]
+		output: Option<PathBuf>,
+
+		/// Remove all limits
+		#[arg(short = 'a', long)]
+		remove_all: bool,
+
+		/// Remove media limits
+		#[arg(short = 'm', long)]
+		remove_media: bool,
+
+		/// Remove region limits
+		#[arg(short = 'r', long)]
+		remove_region: bool,
+
+		/// Remove bounding path
+		#[arg(short = 'b', long)]
+		remove_bounding_path: bool,
+
+		/// Zero the media ID
+		#[arg(short = 'z', long)]
+		zero_media_id: bool,
+	},
 }
 
 fn main() -> anyhow::Result<()> {
@@ -72,6 +101,15 @@ fn main() -> anyhow::Result<()> {
 		Commands::Imports { file } => cmd_imports(&file),
 		Commands::Idc { file, output } => cmd_idc(&file, output),
 		Commands::Xml { file } => cmd_xml(&file),
+		Commands::Patch {
+			file,
+			output,
+			remove_all,
+			remove_media,
+			remove_region,
+			remove_bounding_path,
+			zero_media_id,
+		} => cmd_patch(&file, output, remove_all, remove_media, remove_region, remove_bounding_path, zero_media_id),
 	}
 }
 
@@ -278,6 +316,43 @@ fn cmd_imports(path: &PathBuf) -> anyhow::Result<()> {
 		}
 		println!();
 	}
+
+	Ok(())
+}
+
+fn cmd_patch(
+	path: &PathBuf,
+	output: Option<PathBuf>,
+	remove_all: bool,
+	remove_media: bool,
+	remove_region: bool,
+	remove_bounding_path: bool,
+	zero_media_id: bool,
+) -> anyhow::Result<()> {
+	let data = fs::read(path)?;
+	let xex = Xex2::parse(data)?;
+
+	let mut limits = xex2::writer::RemoveLimits::default();
+	if remove_all {
+		limits = xex2::writer::RemoveLimits::all();
+	} else {
+		limits.media = remove_media;
+		limits.region = remove_region;
+		limits.bounding_path = remove_bounding_path;
+		limits.zero_media_id = zero_media_id;
+	}
+
+	let patched = xex2::writer::modify_xex(
+		&xex,
+		xex2::writer::TargetEncryption::Unchanged,
+		xex2::writer::TargetCompression::Unchanged,
+		xex2::writer::TargetMachine::Unchanged,
+		&limits,
+	)?;
+
+	let out_path = output.unwrap_or_else(|| path.clone());
+	fs::write(&out_path, &patched)?;
+	println!("Wrote patched XEX to {}", out_path.display());
 
 	Ok(())
 }
