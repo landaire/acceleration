@@ -5,10 +5,10 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use jiff::Timestamp;
 use clap::Parser;
 use clap::Subcommand;
 use humansize::DECIMAL;
+use jiff::Timestamp;
 use memmap2::MmapOptions;
 use serde_json::json;
 use vfs::VfsPath;
@@ -310,10 +310,8 @@ fn main() -> anyhow::Result<()> {
 				let file = file?;
 				let meta = file.metadata()?;
 				if file.as_str().chars().filter(|c| *c == '/').count() == 1 {
-					let created = Timestamp::try_from(meta.created.unwrap())
-						.expect("invalid timestamp");
-					let accessed = Timestamp::try_from(meta.accessed.unwrap())
-						.expect("invalid timestamp");
+					let created = Timestamp::try_from(meta.created.unwrap()).expect("invalid timestamp");
+					let accessed = Timestamp::try_from(meta.accessed.unwrap()).expect("invalid timestamp");
 
 					println!(
 						"{} {}b {} {} {}",
