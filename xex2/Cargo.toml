@@ -19,6 +19,7 @@ num_enum = { workspace = true }
 lzxd = "0.2"
 rootcause = "0.12"
 xecrypt = { version = "0.1", path = "../xecrypt" }
+xenon_types = { version = "0.1", path = "../xenon_types" }
 
 [dev-dependencies]
 insta = { workspace = true }

@@ -15,10 +15,8 @@ pub struct DecryptedKeys {
 	pub devkit: AesKey,
 }
 
-impl AesKey {
-	pub fn decrypt_as_file_key(&self) -> DecryptedKeys {
-		DecryptedKeys { retail: decrypt_key_with(self, &RETAIL_KEY), devkit: decrypt_key_with(self, &DEVKIT_KEY) }
-	}
+pub fn decrypt_file_key(file_key: &AesKey) -> DecryptedKeys {
+	DecryptedKeys { retail: decrypt_key_with(file_key, &RETAIL_KEY), devkit: decrypt_key_with(file_key, &DEVKIT_KEY) }
 }
 
 fn decrypt_key_with(file_key: &AesKey, key: &AesKey) -> AesKey {

@@ -137,22 +137,22 @@ pub struct XContentMetadata {
 	pub content_type: ContentType,
 	pub metadata_version: u32,
 	pub content_size: u64,
-	pub media_id: u32,
+	pub media_id: xenon_types::MediaId,
 	pub version: u32,
 	pub base_version: u32,
-	pub title_id: u32,
+	pub title_id: xenon_types::TitleId,
 	pub platform: u8,
 	pub executable_type: u8,
 	pub disc_number: u8,
 	pub disc_in_set: u8,
-	pub savegame_id: u32,
-	pub console_id: [u8; 5],
+	pub savegame_id: xenon_types::SavegameId,
+	pub console_id: xenon_types::ConsoleId,
 	pub creator_xuid: u64,
 	pub volume_kind: FileSystemKind,
 	pub volume_descriptor: FileSystem,
 	pub data_file_count: u32,
 	pub data_file_combined_size: u64,
-	pub device_id: [u8; 0x14],
+	pub device_id: xenon_types::DeviceId,
 	pub display_name: [FixedLengthNullWideString; 12],
 	pub display_description: [FixedLengthNullWideString; 12],
 	pub publisher_name: String,
@@ -171,17 +171,20 @@ impl XContentMetadata {
 			ContentType::try_from(cursor.read_u32::<BigEndian>()?).map_err(|_| XContentError::InvalidHeader)?;
 		let metadata_version = cursor.read_u32::<BigEndian>()?;
 		let content_size = cursor.read_u64::<BigEndian>()?;
-		let media_id = cursor.read_u32::<BigEndian>()?;
+		let media_id = xenon_types::MediaId(cursor.read_u32::<BigEndian>()?);
 		let version = cursor.read_u32::<BigEndian>()?;
 		let base_version = cursor.read_u32::<BigEndian>()?;
-		let title_id = cursor.read_u32::<BigEndian>()?;
+		let title_id = xenon_types::TitleId(cursor.read_u32::<BigEndian>()?);
 		let platform = cursor.read_u8()?;
 		let executable_type = cursor.read_u8()?;
 		let disc_number = cursor.read_u8()?;
 		let disc_in_set = cursor.read_u8()?;
-		let savegame_id = cursor.read_u32::<BigEndian>()?;
-		let mut console_id = [0u8; 5];
-		cursor.read_exact(&mut console_id)?;
+		let savegame_id = xenon_types::SavegameId(cursor.read_u32::<BigEndian>()?);
+		let console_id = xenon_types::ConsoleId({
+			let mut buf = [0u8; 5];
+			cursor.read_exact(&mut buf)?;
+			buf
+		});
 		let creator_xuid = cursor.read_u64::<BigEndian>()?;
 
 		cursor.set_position(0x3a9);
@@ -201,8 +204,11 @@ impl XContentMetadata {
 		let data_file_combined_size = cursor.read_u64::<BigEndian>()?;
 
 		cursor.set_position(0x3fd);
-		let mut device_id = [0u8; 0x14];
-		cursor.read_exact(&mut device_id)?;
+		let device_id = xenon_types::DeviceId({
+			let mut buf = [0u8; 0x14];
+			cursor.read_exact(&mut buf)?;
+			buf
+		});
 
 		let mut display_name: [FixedLengthNullWideString; 12] =
 			std::array::from_fn(|_| FixedLengthNullWideString(String::new()));

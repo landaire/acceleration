@@ -150,7 +150,7 @@ fn main() -> anyhow::Result<()> {
 		println!("{: <padding$} {}", "Disc Number:", metadata.disc_number, padding = GENERAL_PADDING);
 		println!("{: <padding$} {}", "Disc in Set:", metadata.disc_in_set, padding = GENERAL_PADDING);
 		println!("{: <padding$} 0x{:08X}", "Savegame ID:", metadata.savegame_id, padding = GENERAL_PADDING);
-		println!("{: <padding$} {}", "Console ID:", hex::encode(metadata.console_id), padding = GENERAL_PADDING);
+		println!("{: <padding$} {}", "Console ID:", metadata.console_id, padding = GENERAL_PADDING);
 		println!("{: <padding$} {:016X}", "Creator XUID:", metadata.creator_xuid, padding = GENERAL_PADDING);
 
 		println!();

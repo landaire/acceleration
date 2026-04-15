@@ -18,7 +18,7 @@ pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &Securi
 	let file_format = header.file_format_info(data)?;
 	let encrypted_data = &data[header.data_offset as usize..];
 
-	let keys = security_info.image_info.file_key.decrypt_as_file_key();
+	let keys = crypto::decrypt_file_key(&security_info.image_info.file_key);
 
 	let decrypted = match file_format.encryption_type {
 		EncryptionType::None => encrypted_data.to_vec(),

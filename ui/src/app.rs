@@ -446,10 +446,7 @@ impl eframe::App for AccelerationApp {
 
 				ui.horizontal(|ui| {
 					ui.label("Console ID:");
-					let console_id = metadata
-						.console_id
-						.iter()
-						.fold(String::new(), |display_str, b| display_str + &format!("{:02x}", *b));
+					let console_id = metadata.console_id.to_string();
 					if ui.add(Label::new(&console_id).sense(Sense::click())).double_clicked() {
 						let _ = clipboard.set_contents(console_id);
 					}

@@ -4,6 +4,13 @@ use serde::Serialize;
 
 use crate::error::StfsError;
 
+pub use xenon_types::ConsoleId;
+pub use xenon_types::DeviceId;
+pub use xenon_types::MediaId;
+pub use xenon_types::ProfileId;
+pub use xenon_types::SavegameId;
+pub use xenon_types::TitleId;
+
 #[derive(Default, Debug, Serialize, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockNumber(pub usize);
 
@@ -27,77 +34,6 @@ impl From<[u8; 20]> for Sha1Digest {
 		Sha1Digest(v)
 	}
 }
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct ConsoleId(#[serde(with = "crate::serde_hex::fixed")] pub [u8; 5]);
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct ProfileId(#[serde(with = "crate::serde_hex::fixed")] pub [u8; 8]);
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct DeviceId(#[serde(with = "crate::serde_hex::fixed")] pub [u8; 0x14]);
-
-impl std::fmt::Display for ConsoleId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		for b in &self.0 {
-			write!(f, "{:02x}", b)?;
-		}
-		Ok(())
-	}
-}
-
-impl std::fmt::Display for ProfileId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		for b in &self.0 {
-			write!(f, "{:02x}", b)?;
-		}
-		Ok(())
-	}
-}
-
-impl std::fmt::Display for DeviceId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		for b in &self.0 {
-			write!(f, "{:02x}", b)?;
-		}
-		Ok(())
-	}
-}
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct TitleId(pub u32);
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct MediaId(pub u32);
-
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize)]
-pub struct SavegameId(pub u32);
-
-macro_rules! impl_id_hex_display {
-	($ty:ty) => {
-		impl std::fmt::Display for $ty {
-			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-				write!(f, "{:08X}", self.0)
-			}
-		}
-
-		impl std::fmt::LowerHex for $ty {
-			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-				write!(f, "{:08x}", self.0)
-			}
-		}
-
-		impl std::fmt::UpperHex for $ty {
-			fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-				write!(f, "{:08X}", self.0)
-			}
-		}
-	};
-}
-
-impl_id_hex_display!(TitleId);
-impl_id_hex_display!(MediaId);
-impl_id_hex_display!(SavegameId);
 
 impl BlockNumber {
 	pub fn as_usize(self) -> usize {

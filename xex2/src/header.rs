@@ -11,55 +11,12 @@ use crate::error::Result;
 use crate::error::Xex2Error;
 use rootcause::IntoReport;
 
+pub use xenon_types::AesKey;
+pub use xenon_types::MediaId;
+pub use xenon_types::TitleId;
+pub use xenon_types::VirtualAddress;
+
 pub const XEX2_MAGIC: [u8; 4] = *b"XEX2";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct VirtualAddress(pub u32);
-
-impl std::fmt::LowerHex for VirtualAddress {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:08x}", self.0)
-	}
-}
-
-impl std::fmt::UpperHex for VirtualAddress {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:08X}", self.0)
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct TitleId(pub u32);
-
-impl std::fmt::Display for TitleId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:08X}", self.0)
-	}
-}
-
-impl std::fmt::UpperHex for TitleId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:08X}", self.0)
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct MediaId(pub u32);
-
-impl std::fmt::Display for MediaId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:08X}", self.0)
-	}
-}
-
-impl std::fmt::UpperHex for MediaId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:08X}", self.0)
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct AesKey(pub [u8; 16]);
 
 #[derive(Debug, Serialize)]
 pub struct Xex2Header {
