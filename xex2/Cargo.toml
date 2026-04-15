@@ -2,6 +2,13 @@
 name = "xex2"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/landaire/acceleration"
+authors = ["Lander Brandt <landerbrandt@gmail.com>"]
+readme = "README.md"
+description = "Parser and extractor for Xbox 360 XEX2 executables"
+keywords = ["xbox360", "xex", "xbox", "parser"]
+categories = ["parser-implementations"]
 
 [dependencies]
 byteorder = { workspace = true }
@@ -11,7 +18,7 @@ sha-1 = { workspace = true }
 num_enum = { workspace = true }
 lzxd = "0.2"
 rootcause = "0.12"
-xecrypt = { path = "../xecrypt" }
+xecrypt = { version = "0.1", path = "../xecrypt" }
 
 [dev-dependencies]
 insta = { workspace = true }

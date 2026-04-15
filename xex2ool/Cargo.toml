@@ -2,13 +2,14 @@
 name = "xex2ool"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [[bin]]
 name = "xex2ool"
 path = "src/main.rs"
 
 [dependencies]
-xex2 = { path = "../xex2" }
+xex2 = { version = "0.1", path = "../xex2" }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 rootcause = { version = "0.12", features = ["compat-anyhow1"] }

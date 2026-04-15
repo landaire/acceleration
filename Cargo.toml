@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = ['cli', 'stfs', 'stfs_old', 'ui', "xcontent", "xecrypt", "xex2", "xex2ool"]
 
 [workspace.dependencies]
@@ -14,4 +15,4 @@ futures = "0.3"
 async-trait = "0.1"
 base64 = "0.22"
 insta = { version = "1", features = ["toml"] }
-fskit = { version = "0.2", path = "../fskit", features = ["vfs"] }
+fskit = { version = "0.2", features = ["vfs"] }

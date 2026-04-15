@@ -2,6 +2,7 @@
 name = "acceleration_cli"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [[bin]]
 name = "acceleration"
@@ -12,8 +13,8 @@ memmap2 = "0.9"
 clap = { version = "4.5.4", features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
-stfs = { path = "../stfs" }
-xcontent = { path = "../xcontent" }
+stfs = { version = "0.1", path = "../stfs" }
+xcontent = { version = "0.1", path = "../xcontent" }
 chrono = "0.4.38"
 hex = "0.4.3"
 humansize = "2.1.3"

@@ -2,6 +2,13 @@
 name = "xcontent"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/landaire/acceleration"
+authors = ["Lander Brandt <landerbrandt@gmail.com>"]
+readme = "README.md"
+description = "Parser for Xbox 360 XContent packages (CON, LIVE, PIRS)"
+keywords = ["xbox360", "xcontent", "xbox", "parser"]
+categories = ["parser-implementations"]
 
 [dependencies]
 sha-1 = { workspace = true }
@@ -10,5 +17,5 @@ thiserror = { workspace = true }
 byteorder = { workspace = true }
 num_enum = { workspace = true }
 serde = { workspace = true }
-stfs = { path = "../stfs", features = ["vfs"] }
-xecrypt = { path = "../xecrypt", features = ["serde"] }
+stfs = { version = "0.1", path = "../stfs", features = ["vfs"] }
+xecrypt = { version = "0.1", path = "../xecrypt", features = ["serde"] }

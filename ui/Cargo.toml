@@ -3,6 +3,7 @@ name = "acceleration_ui"
 version = "0.1.0"
 authors = ["Lander Brandt <landerbrandt@gmail.com>"]
 edition = "2021"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -11,8 +12,8 @@ crate-type = ["cdylib", "rlib"]
 egui = "0.27"
 eframe = { version = "0.27", features = ["persistence"] }
 serde = { workspace = true }
-stfs = { path = "../stfs" }
-xcontent = { path = "../xcontent" }
+stfs = { version = "0.1", path = "../stfs" }
+xcontent = { version = "0.1", path = "../xcontent" }
 rfd = "0.14"
 image = { version = "0.25", features = ["jpeg", "png"], default-features = false }
 egui_extras = { version = "0.27", features = ["image"] }

@@ -2,6 +2,13 @@
 name = "stfs"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/landaire/acceleration"
+authors = ["Lander Brandt <landerbrandt@gmail.com>"]
+readme = "README.md"
+description = "Parser for Xbox 360 STFS (Secure Transacted File System) packages"
+keywords = ["xbox360", "stfs", "xbox", "parser"]
+categories = ["parser-implementations", "no-std"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
