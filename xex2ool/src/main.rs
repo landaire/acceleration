@@ -45,10 +45,20 @@ enum Commands {
 	Imports {
 		/// Path to the XEX file
 		file: PathBuf,
+	},
+	/// Generate IDA Pro IDC script
+	Idc {
+		/// Path to the XEX file
+		file: PathBuf,
 
-		/// Resolve kernel ordinals to function names
+		/// Output path (defaults to <input>.idc)
 		#[arg(short, long)]
-		resolve: bool,
+		output: Option<PathBuf>,
+	},
+	/// Output metadata as XML
+	Xml {
+		/// Path to the XEX file
+		file: PathBuf,
 	},
 }
 
@@ -59,7 +69,9 @@ fn main() -> anyhow::Result<()> {
 		Commands::Info { extended, file } => cmd_info(&file, extended),
 		Commands::Basefile { file, output } => cmd_basefile(&file, output),
 		Commands::Resources { file, output_dir } => cmd_resources(&file, &output_dir),
-		Commands::Imports { file, resolve } => cmd_imports(&file, resolve),
+		Commands::Imports { file } => cmd_imports(&file),
+		Commands::Idc { file, output } => cmd_idc(&file, output),
+		Commands::Xml { file } => cmd_xml(&file),
 	}
 }
 
@@ -238,7 +250,7 @@ fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
 	Ok(())
 }
 
-fn cmd_imports(path: &PathBuf, _resolve: bool) -> anyhow::Result<()> {
+fn cmd_imports(path: &PathBuf) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(data)?;
 
@@ -267,6 +279,32 @@ fn cmd_imports(path: &PathBuf, _resolve: bool) -> anyhow::Result<()> {
 		println!();
 	}
 
+	Ok(())
+}
+
+fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
+	let data = fs::read(path)?;
+	let xex = Xex2::parse(data)?;
+
+	let idc =
+		xex2::idc::generate_idc(&xex.header, xex.security_info.image_info.load_address, xex.security_info.image_size);
+
+	let out_path = output.unwrap_or_else(|| {
+		let mut p = path.clone();
+		p.set_extension("idc");
+		p
+	});
+
+	fs::write(&out_path, &idc)?;
+	println!("Wrote IDC to {}", out_path.display());
+
+	Ok(())
+}
+
+fn cmd_xml(path: &PathBuf) -> anyhow::Result<()> {
+	let data = fs::read(path)?;
+	let xex = Xex2::parse(data)?;
+	print!("{}", xex2::xml::generate_xml(&xex));
 	Ok(())
 }
 
