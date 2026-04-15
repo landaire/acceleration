@@ -85,7 +85,7 @@ fn decompress_basic(data: &[u8], format: &FileFormatInfo) -> Result<Vec<u8>> {
 
 fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> Result<Vec<u8>> {
 	let mut output = Vec::new();
-	let window_size = window_size_from_format(format);
+	let window_size = window_size_from_format(format)?;
 	let first_chunk_size =
 		format.first_block_size.ok_or_else(|| Xex2Error::DecompressionFailed.into_report())? as usize;
 
@@ -146,16 +146,17 @@ fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> R
 	Ok(output)
 }
 
-fn window_size_from_format(format: &FileFormatInfo) -> lzxd::WindowSize {
-	match format.window_size.unwrap_or(0x20000) {
-		0x8000 => lzxd::WindowSize::KB32,
-		0x10000 => lzxd::WindowSize::KB64,
-		0x20000 => lzxd::WindowSize::KB128,
-		0x40000 => lzxd::WindowSize::KB256,
-		0x80000 => lzxd::WindowSize::KB512,
-		0x100000 => lzxd::WindowSize::MB1,
-		0x200000 => lzxd::WindowSize::MB2,
-		_ => lzxd::WindowSize::KB64,
+fn window_size_from_format(format: &FileFormatInfo) -> Result<lzxd::WindowSize> {
+	let raw = format.window_size.ok_or_else(|| Xex2Error::DecompressionFailed.into_report())?;
+	match raw {
+		0x8000 => Ok(lzxd::WindowSize::KB32),
+		0x10000 => Ok(lzxd::WindowSize::KB64),
+		0x20000 => Ok(lzxd::WindowSize::KB128),
+		0x40000 => Ok(lzxd::WindowSize::KB256),
+		0x80000 => Ok(lzxd::WindowSize::KB512),
+		0x100000 => Ok(lzxd::WindowSize::MB1),
+		0x200000 => Ok(lzxd::WindowSize::MB2),
+		_ => Err(Xex2Error::DecompressionFailed.into_report()),
 	}
 }
 

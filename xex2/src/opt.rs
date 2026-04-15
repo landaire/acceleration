@@ -132,8 +132,9 @@ impl Xex2Header {
 		for _ in 0..entry_count {
 			let mut name_buf = [0u8; 8];
 			c.read_exact(&mut name_buf).ok()?;
-			let name =
-				String::from_utf8_lossy(&name_buf[..name_buf.iter().position(|b| *b == 0).unwrap_or(8)]).into_owned();
+			// Resource names are fixed 8-byte fields; if no null terminator, use full width
+			let name_end = name_buf.iter().position(|b| *b == 0).unwrap_or(8);
+			let name = String::from_utf8_lossy(&name_buf[..name_end]).into_owned();
 			let address = c.read_u32::<BigEndian>().ok()?;
 			let size = c.read_u32::<BigEndian>().ok()?;
 			resources.push(ResourceEntry { name, address, size });
@@ -198,6 +199,7 @@ impl Xex2Header {
 		}
 		let size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
 		let str_data = &data[4..std::cmp::min(size, data.len())];
+		// Bounding path may fill the entire buffer without null terminator
 		let end = str_data.iter().position(|b| *b == 0).unwrap_or(str_data.len());
 		Some(String::from_utf8_lossy(&str_data[..end]).into_owned())
 	}
