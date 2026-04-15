@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 rsa = { version = "0.9.6", features = ["sha1"] }
 sha1 = { version = "0.10.6", features = ["oid"] }
+aes = "0.8"
+cbc = "0.1"
 serde = { workspace = true, optional = true }
 byteorder = { workspace = true }
 thiserror = { workspace = true }

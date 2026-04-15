@@ -220,7 +220,7 @@ fn cmd_info(path: &PathBuf, extended: bool) -> anyhow::Result<()> {
 		println!("  Header Size:     {:#010x}", security.header_size);
 		println!("  Image Flags:     {:#010x}", security.image_info.image_flags);
 		println!("  Page Desc Count: {}", security.page_descriptor_count);
-		println!("  File Key:        {}", hex_str(&security.image_info.file_key));
+		println!("  File Key:        {}", hex_str(&security.image_info.file_key.0));
 		println!("  Image Hash:      {}", hex_str(&security.image_info.image_hash));
 		println!("  Header Hash:     {}", hex_str(&security.image_info.header_hash));
 		println!("  Import Count:    {}", security.image_info.import_table_count);
@@ -273,7 +273,7 @@ fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
 	fs::create_dir_all(output_dir)?;
 
 	for res in &resources.resources {
-		let offset = (res.address - base_addr) as usize;
+		let offset = (res.address - base_addr.0) as usize;
 		if offset + res.size as usize > basefile.len() {
 			eprintln!("Resource {} extends past basefile (addr={:#x} size={:#x})", res.name, res.address, res.size);
 			continue;
@@ -342,13 +342,7 @@ fn cmd_patch(
 		limits.zero_media_id = zero_media_id;
 	}
 
-	let patched = xex2::writer::modify_xex(
-		&xex,
-		xex2::writer::TargetEncryption::Unchanged,
-		xex2::writer::TargetCompression::Unchanged,
-		xex2::writer::TargetMachine::Unchanged,
-		&limits,
-	)?;
+	let patched = xex.modify(&limits)?;
 
 	let out_path = output.unwrap_or_else(|| path.clone());
 	fs::write(&out_path, &patched)?;
@@ -361,8 +355,7 @@ fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(data)?;
 
-	let idc =
-		xex2::idc::generate_idc(&xex.header, xex.security_info.image_info.load_address, xex.security_info.image_size);
+	let idc = xex.generate_idc();
 
 	let out_path = output.unwrap_or_else(|| {
 		let mut p = path.clone();
@@ -379,7 +372,7 @@ fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 fn cmd_xml(path: &PathBuf) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(data)?;
-	print!("{}", xex2::xml::generate_xml(&xex));
+	print!("{}", xex.to_xml());
 	Ok(())
 }
 

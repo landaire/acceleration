@@ -6,6 +6,7 @@ use crate::crypto;
 use crate::error::IoResultExt;
 use crate::error::Result;
 use crate::error::Xex2Error;
+use crate::header::AesKey;
 use crate::header::CompressionType;
 use crate::header::EncryptionType;
 use crate::header::FileFormatInfo;
@@ -17,13 +18,16 @@ pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &Securi
 	let file_format = header.file_format_info(data)?;
 	let encrypted_data = &data[header.data_offset as usize..];
 
-	let (retail_key, devkit_key) = crypto::decrypt_file_key(&security_info.image_info.file_key);
+	let keys = security_info.image_info.file_key.decrypt_as_file_key();
 
 	let decrypted = match file_format.encryption_type {
 		EncryptionType::None => encrypted_data.to_vec(),
 		EncryptionType::Normal => {
-			let key =
-				if try_decrypt_with_key(encrypted_data, &retail_key, &file_format) { retail_key } else { devkit_key };
+			let key = if try_decrypt_with_key(encrypted_data, &keys.retail, &file_format) {
+				keys.retail
+			} else {
+				keys.devkit
+			};
 			crypto::decrypt_data(encrypted_data, &key)
 		}
 	};
@@ -36,7 +40,7 @@ pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &Securi
 	}
 }
 
-fn try_decrypt_with_key(data: &[u8], key: &[u8; 16], format: &FileFormatInfo) -> bool {
+fn try_decrypt_with_key(data: &[u8], key: &AesKey, format: &FileFormatInfo) -> bool {
 	if data.len() < 32 {
 		return false;
 	}

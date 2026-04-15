@@ -11,6 +11,7 @@ use std::io::Read;
 
 mod error;
 mod keys;
+pub mod symmetric;
 
 #[cfg(feature = "serde")]
 use serde::Serialize;

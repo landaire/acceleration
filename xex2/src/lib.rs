@@ -33,4 +33,22 @@ impl Xex2 {
 	pub fn extract_basefile(&self) -> Result<Vec<u8>> {
 		basefile::extract_basefile(&self.raw, &self.header, &self.security_info)
 	}
+
+	pub fn generate_idc(&self) -> String {
+		idc::generate_idc(&self.header, self.security_info.image_info.load_address.0, self.security_info.image_size)
+	}
+
+	pub fn to_xml(&self) -> String {
+		xml::generate_xml(self)
+	}
+
+	pub fn modify(&self, limits: &writer::RemoveLimits) -> Result<Vec<u8>> {
+		writer::modify_xex(
+			self,
+			writer::TargetEncryption::Unchanged,
+			writer::TargetCompression::Unchanged,
+			writer::TargetMachine::Unchanged,
+			limits,
+		)
+	}
 }

@@ -13,6 +13,54 @@ use rootcause::IntoReport;
 
 pub const XEX2_MAGIC: [u8; 4] = *b"XEX2";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct VirtualAddress(pub u32);
+
+impl std::fmt::LowerHex for VirtualAddress {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:08x}", self.0)
+	}
+}
+
+impl std::fmt::UpperHex for VirtualAddress {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:08X}", self.0)
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TitleId(pub u32);
+
+impl std::fmt::Display for TitleId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:08X}", self.0)
+	}
+}
+
+impl std::fmt::UpperHex for TitleId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:08X}", self.0)
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MediaId(pub u32);
+
+impl std::fmt::Display for MediaId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:08X}", self.0)
+	}
+}
+
+impl std::fmt::UpperHex for MediaId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:08X}", self.0)
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct AesKey(pub [u8; 16]);
+
 #[derive(Debug, Serialize)]
 pub struct Xex2Header {
 	pub module_flags: ModuleFlags,
@@ -122,12 +170,12 @@ pub struct SecurityInfo {
 pub struct ImageInfo {
 	pub info_size: u32,
 	pub image_flags: u32,
-	pub load_address: u32,
+	pub load_address: VirtualAddress,
 	pub image_hash: [u8; 20],
 	pub import_table_count: u32,
 	pub import_table_hash: [u8; 20],
 	pub media_id: [u8; 16],
-	pub file_key: [u8; 16],
+	pub file_key: AesKey,
 	pub header_hash: [u8; 20],
 	pub game_regions: u32,
 	pub allowed_media_types: u32,
@@ -165,10 +213,10 @@ pub mod optional_header_keys {
 
 #[derive(Debug, Serialize)]
 pub struct ExecutionInfo {
-	pub media_id: u32,
+	pub media_id: MediaId,
 	pub version: u32,
 	pub base_version: u32,
-	pub title_id: u32,
+	pub title_id: TitleId,
 	pub platform: u8,
 	pub executable_table: u8,
 	pub disc_number: u8,
@@ -271,10 +319,10 @@ impl Xex2Header {
 		}
 		let mut c = Cursor::new(data);
 		Some(ExecutionInfo {
-			media_id: c.read_u32::<BigEndian>().ok()?,
+			media_id: MediaId(c.read_u32::<BigEndian>().ok()?),
 			version: c.read_u32::<BigEndian>().ok()?,
 			base_version: c.read_u32::<BigEndian>().ok()?,
-			title_id: c.read_u32::<BigEndian>().ok()?,
+			title_id: TitleId(c.read_u32::<BigEndian>().ok()?),
 			platform: c.read_u8().ok()?,
 			executable_table: c.read_u8().ok()?,
 			disc_number: c.read_u8().ok()?,
@@ -343,7 +391,7 @@ impl SecurityInfo {
 		let image_info = ImageInfo {
 			info_size: _info_size,
 			image_flags: c.read_u32::<BigEndian>().io()?,
-			load_address: c.read_u32::<BigEndian>().io()?,
+			load_address: VirtualAddress(c.read_u32::<BigEndian>().io()?),
 			image_hash: {
 				let mut h = [0u8; 20];
 				c.read_exact(&mut h).io()?;
@@ -360,11 +408,11 @@ impl SecurityInfo {
 				c.read_exact(&mut m).io()?;
 				m
 			},
-			file_key: {
+			file_key: AesKey({
 				let mut k = [0u8; 16];
 				c.read_exact(&mut k).io()?;
 				k
-			},
+			}),
 			header_hash: {
 				let mut h = [0u8; 20];
 				c.read_exact(&mut h).io()?;

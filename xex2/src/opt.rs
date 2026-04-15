@@ -45,22 +45,6 @@ pub struct GameRatings {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ImportLibrary {
-	pub name: String,
-	pub version_min: u32,
-	pub version: u32,
-	pub digest: [u8; 20],
-	pub import_id: u32,
-	pub records: Vec<ImportRecord>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ImportRecord {
-	pub address: u32,
-	pub ordinal: u32,
-}
-
-#[derive(Debug, Serialize)]
 pub struct SystemFlags(pub u32);
 
 impl SystemFlags {

@@ -11,7 +11,7 @@ fn load_xex(name: &str) -> Xex2 {
 fn parse_devkit_basic() {
 	let xex = load_xex("afplayer.xex");
 	assert_eq!(xex.header.module_flags.0, 0x09);
-	assert_eq!(xex.security_info.image_info.load_address, 0x9ef30000);
+	assert_eq!(xex.security_info.image_info.load_address, xex2::header::VirtualAddress(0x9ef30000));
 	assert!(xex.header.entry_point().is_some());
 
 	let fmt = xex.header.file_format_info(xex.raw()).unwrap();
@@ -64,7 +64,7 @@ fn execution_info_parsed() {
 #[test]
 fn security_info_file_key_not_all_zeros_for_encrypted() {
 	let xex = load_xex("AntiPiracyUI.xex");
-	assert_ne!(xex.security_info.image_info.file_key, [0u8; 16]);
+	assert_ne!(xex.security_info.image_info.file_key, xex2::header::AesKey([0u8; 16]));
 }
 
 #[test]
