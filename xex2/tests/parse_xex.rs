@@ -1,5 +1,5 @@
-use xex2::header::CompressionType;
 use xex2::Xex2;
+use xex2::header::CompressionType;
 
 fn load_xex(name: &str) -> Xex2 {
 	let path = format!("../xex_files/{}", name);

@@ -150,11 +150,7 @@ impl<'a> TryFrom<&XContentHeader<'a>> for StfsPackageSex {
 
 	fn try_from(header: &XContentHeader) -> Result<Self, Self::Error> {
 		if let FileSystem::STFS(stfs) = &header.volume_descriptor {
-			if (!stfs.block_separation) & 1 == 0 {
-				Ok(StfsPackageSex::Female)
-			} else {
-				Ok(StfsPackageSex::Male)
-			}
+			if (!stfs.block_separation) & 1 == 0 { Ok(StfsPackageSex::Female) } else { Ok(StfsPackageSex::Male) }
 		} else {
 			Err(StfsError::InvalidPackageType)
 		}
@@ -263,11 +259,7 @@ impl<'a> HashTableMeta<'a> {
 		let mut block_number = (block / HASHES_PER_HASH_TABLE) * self.block_step[0];
 		block_number += ((block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) + 1) << (sex as u8);
 
-		if block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] == 0 {
-			block_number
-		} else {
-			block_number + (1 << (sex as u8))
-		}
+		if block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] == 0 { block_number } else { block_number + (1 << (sex as u8)) }
 	}
 
 	pub fn compute_second_level_backing_hash_block_number(&self, block: usize, sex: StfsPackageSex) -> usize {
@@ -997,9 +989,11 @@ enum ConsoleType {
 	Retail = 2,
 }
 
+#[derive(Debug, Serialize)]
+struct ConsoleTypeFlags(u32);
+
 bitflags! {
-	#[derive(Serialize)]
-	struct ConsoleTypeFlags: u32 {
+	impl ConsoleTypeFlags: u32 {
 		const TESTKIT = 0x40000000;
 		const RECOVERY_GENERATED = 0x80000000;
 	}

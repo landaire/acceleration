@@ -1,7 +1,7 @@
 pub mod fixed {
-	use serde::de;
 	use serde::Deserializer;
 	use serde::Serializer;
+	use serde::de;
 
 	pub fn serialize<const N: usize, S: Serializer>(bytes: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
 		let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();

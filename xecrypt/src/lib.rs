@@ -5,7 +5,6 @@ use rsa::BigUint;
 use rsa::Pkcs1v15Sign;
 use rsa::RsaPrivateKey;
 use rsa::RsaPublicKey;
-use sha1::Sha1;
 use std::io::Cursor;
 use std::io::Read;
 
@@ -225,14 +224,14 @@ impl RsaKeyKind {
 
 	pub fn verify_signature(&self, console_kind: ConsoleKind, sig: &[u8], hash: &[u8]) -> Result<(), crate::Error> {
 		let key = self.public_key(console_kind)?;
-		let scheme = Pkcs1v15Sign::new::<Sha1>();
+		let scheme = pkcs1v15_sha1_scheme();
 		let standard_signature = raw_signature_to_standard(sig);
 		Ok(key.verify(scheme, hash, &standard_signature)?)
 	}
 
 	pub fn sign(&self, console_kind: ConsoleKind, digest: &[u8]) -> Result<Vec<u8>, crate::Error> {
 		let key = self.private_key(console_kind)?;
-		let scheme = Pkcs1v15Sign::new::<Sha1>();
+		let scheme = pkcs1v15_sha1_scheme();
 		let signature = key.sign(scheme, digest)?;
 		Ok(standard_signature_to_raw(signature.as_slice()))
 	}
@@ -286,6 +285,13 @@ pub fn verify_xcontent_signature(
 		panic!("Key material variant cannot satisfy signature kind {:?}", signature_kind);
 	}
 	Err(rsa::Error::Verification.into())
+}
+
+fn pkcs1v15_sha1_scheme() -> Pkcs1v15Sign {
+	// SHA-1 AlgorithmIdentifier DER prefix for PKCS#1 v1.5 signatures
+	const SHA1_DER_PREFIX: &[u8] =
+		&[0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14];
+	Pkcs1v15Sign { hash_len: Some(20), prefix: SHA1_DER_PREFIX.into() }
 }
 
 fn standard_signature_to_raw(sig: &[u8]) -> Vec<u8> {

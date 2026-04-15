@@ -115,19 +115,11 @@ pub enum FileSystem {
 
 impl FileSystem {
 	pub fn stfs_ref(&self) -> &StfsVolumeDescriptor {
-		if let Self::STFS(vd) = self {
-			vd
-		} else {
-			panic!("FileSystem is not an StfsVolumeDescriptor")
-		}
+		if let Self::STFS(vd) = self { vd } else { panic!("FileSystem is not an StfsVolumeDescriptor") }
 	}
 
 	pub fn svod_ref(&self) -> &SvodVolumeDescriptor {
-		if let Self::SVOD(vd) = self {
-			vd
-		} else {
-			panic!("FileSystem is not an SvodVolumeDescriptor")
-		}
+		if let Self::SVOD(vd) = self { vd } else { panic!("FileSystem is not an SvodVolumeDescriptor") }
 	}
 }
 

@@ -4,8 +4,8 @@ use serde::Serialize;
 use std::io::Cursor;
 use std::io::Read;
 
-use crate::header::optional_header_keys as keys;
 use crate::header::Xex2Header;
+use crate::header::optional_header_keys as keys;
 
 #[derive(Debug, Serialize)]
 pub struct ImportLibrary {

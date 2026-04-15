@@ -124,11 +124,7 @@ impl StfsPackage {
 impl StfsPackageSex {
 	pub fn from_header(header: &XContentHeader) -> Result<Self, StfsError> {
 		if let FileSystem::STFS(stfs) = &header.volume_descriptor {
-			if (!stfs.block_separation) & 1 == 0 {
-				Ok(StfsPackageSex::Female)
-			} else {
-				Ok(StfsPackageSex::Male)
-			}
+			if (!stfs.block_separation) & 1 == 0 { Ok(StfsPackageSex::Female) } else { Ok(StfsPackageSex::Male) }
 		} else {
 			Err(StfsError::InvalidPackageType)
 		}

@@ -1,6 +1,6 @@
-use serde::de;
 use serde::Deserializer;
 use serde::Serializer;
+use serde::de;
 
 fn serialize_hex<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
 	let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();

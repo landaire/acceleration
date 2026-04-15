@@ -1,6 +1,7 @@
-use aes::cipher::BlockDecryptMut;
-use aes::cipher::BlockEncryptMut;
+use aes::cipher::BlockModeDecrypt;
+use aes::cipher::BlockModeEncrypt;
 use aes::cipher::KeyIvInit;
+use aes::cipher::block_padding::NoPadding;
 use sha1::Digest;
 use sha1::Sha1;
 
@@ -18,8 +19,8 @@ pub fn xe_crypt_aes_cbc_decrypt(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) 
 	if aligned_len == 0 {
 		return;
 	}
-	let dec = Aes128CbcDec::new(key.into(), iv.into());
-	dec.decrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut data[..aligned_len])
+	Aes128CbcDec::new(key.into(), iv.into())
+		.decrypt_padded::<NoPadding>(&mut data[..aligned_len])
 		.expect("AES-128-CBC decrypt should not fail on aligned data");
 }
 
@@ -28,8 +29,8 @@ pub fn xe_crypt_aes_cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) 
 	if aligned_len == 0 {
 		return;
 	}
-	let enc = Aes128CbcEnc::new(key.into(), iv.into());
-	enc.encrypt_padded_mut::<aes::cipher::block_padding::NoPadding>(&mut data[..aligned_len], aligned_len)
+	Aes128CbcEnc::new(key.into(), iv.into())
+		.encrypt_padded::<NoPadding>(&mut data[..aligned_len], aligned_len)
 		.expect("AES-128-CBC encrypt should not fail on aligned data");
 }
 

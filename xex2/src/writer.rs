@@ -1,5 +1,5 @@
-use crate::error::Result;
 use crate::Xex2;
+use crate::error::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetEncryption {

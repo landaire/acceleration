@@ -1,7 +1,7 @@
 use std::fmt::Write;
 
-use crate::header::EncryptionType;
 use crate::Xex2;
+use crate::header::EncryptionType;
 
 pub fn generate_xml(xex: &Xex2) -> String {
 	let mut out = String::new();

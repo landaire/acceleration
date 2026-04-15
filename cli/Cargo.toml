@@ -1,7 +1,7 @@
 [package]
 name = "acceleration_cli"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 publish = false
 
 [[bin]]
@@ -10,12 +10,12 @@ path = "src/main.rs"
 
 [dependencies]
 memmap2 = "0.9"
-clap = { version = "4.5.4", features = ["derive"] }
+clap = { version = "4.6.0", features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
 stfs = { version = "0.1", path = "../stfs" }
 xcontent = { version = "0.1", path = "../xcontent" }
-chrono = "0.4.38"
+chrono = "0.4.44"
 hex = "0.4.3"
 humansize = "2.1.3"
 serde_json = "1.0"

@@ -1,12 +1,12 @@
 pub mod fixed {
-	use serde::de;
 	use serde::Deserializer;
 	use serde::Serializer;
+	use serde::de;
 
 	#[cfg(feature = "base64-serde")]
-	use base64::engine::general_purpose::STANDARD;
-	#[cfg(feature = "base64-serde")]
 	use base64::Engine;
+	#[cfg(feature = "base64-serde")]
+	use base64::engine::general_purpose::STANDARD;
 
 	#[cfg(feature = "base64-serde")]
 	pub fn serialize<const N: usize, S: Serializer>(bytes: &[u8; N], s: S) -> Result<S::Ok, S::Error> {
@@ -56,10 +56,10 @@ pub mod fixed {
 }
 
 pub mod fixed_opt {
-	use serde::de;
 	use serde::Deserialize;
 	use serde::Deserializer;
 	use serde::Serializer;
+	use serde::de;
 
 	pub fn serialize<const N: usize, S: Serializer>(bytes: &Option<[u8; N]>, s: S) -> Result<S::Ok, S::Error> {
 		match bytes {
@@ -83,14 +83,14 @@ pub mod fixed_opt {
 }
 
 pub mod vec {
-	use serde::de;
 	use serde::Deserializer;
 	use serde::Serializer;
+	use serde::de;
 
 	#[cfg(feature = "base64-serde")]
-	use base64::engine::general_purpose::STANDARD;
-	#[cfg(feature = "base64-serde")]
 	use base64::Engine;
+	#[cfg(feature = "base64-serde")]
+	use base64::engine::general_purpose::STANDARD;
 
 	#[cfg(feature = "base64-serde")]
 	pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {

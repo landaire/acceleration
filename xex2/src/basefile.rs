@@ -49,11 +49,7 @@ fn try_decrypt_with_key(data: &[u8], key: &AesKey, format: &FileFormatInfo) -> b
 		CompressionType::Normal => {
 			let first_block = crypto::decrypt_data(&data[..32], key);
 			let mut c = Cursor::new(&first_block);
-			if let Ok(block_size) = c.read_u32::<BigEndian>() {
-				block_size > 0 && block_size < 0x100000
-			} else {
-				false
-			}
+			if let Ok(block_size) = c.read_u32::<BigEndian>() { block_size > 0 && block_size < 0x100000 } else { false }
 		}
 		CompressionType::Basic | CompressionType::None => {
 			let first_block = crypto::decrypt_data(&data[..16], key);

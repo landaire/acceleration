@@ -296,7 +296,7 @@ impl Xex2Header {
 					key: optional_header_keys::FILE_FORMAT_INFO,
 					size: 4,
 				}
-				.into_report())
+				.into_report());
 			}
 			None => return Err(Xex2Error::MissingOptionalHeader(optional_header_keys::FILE_FORMAT_INFO).into_report()),
 		};

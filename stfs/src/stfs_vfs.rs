@@ -4,9 +4,9 @@ use std::io::Cursor;
 use fskit::Metadata;
 use fskit::VfsEntry;
 use fskit::VfsTree;
-use vfs::error::VfsErrorKind;
 use vfs::FileSystem;
 use vfs::VfsMetadata;
+use vfs::error::VfsErrorKind;
 
 use crate::file_table::StfsFileEntry;
 use crate::file_table::StfsFileTable;

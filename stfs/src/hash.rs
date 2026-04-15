@@ -130,11 +130,7 @@ impl HashTableMeta {
 		let mut block_number = (block / HASHES_PER_HASH_TABLE) * self.block_step[0];
 		block_number += ((block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) + 1) << (sex as u8);
 
-		if block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] == 0 {
-			block_number
-		} else {
-			block_number + (1 << (sex as u8))
-		}
+		if block / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2] == 0 { block_number } else { block_number + (1 << (sex as u8)) }
 	}
 
 	pub(crate) fn compute_second_level_backing_hash_block_number(&self, block: usize, sex: StfsPackageSex) -> usize {

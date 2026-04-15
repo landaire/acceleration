@@ -74,12 +74,12 @@ fixture_tests!(live_120k_a, "live_120k_a.stfs");
 fixture_tests!(live_120k_b, "live_120k_b.stfs");
 
 mod hash_validation {
+	use stfs::StfsPackage;
 	use stfs::hashing::HashVerifyContext;
 	use stfs::hashing::StfsHasher;
 	use stfs::io::SliceReader;
 	use stfs::types::HashTableLevel;
 	use stfs::types::Sha1Digest;
-	use stfs::StfsPackage;
 
 	fn open_package(name: &str) -> (Vec<u8>, StfsPackage) {
 		let path = format!("tests/fixtures/{}", name);
@@ -224,9 +224,9 @@ mod hash_validation {
 
 #[cfg(feature = "vfs")]
 mod vfs_tests {
+	use stfs::StfsPackage;
 	use stfs::io::SliceReader;
 	use stfs::stfs_vfs::StfsVfs;
-	use stfs::StfsPackage;
 	use vfs::FileSystem;
 
 	fn open_vfs_fixture(name: &str) -> impl FileSystem {

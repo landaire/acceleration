@@ -1,9 +1,9 @@
 use std::io::Cursor;
 use std::path::PathBuf;
-use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::mpsc::channel;
 
 use egui::Image;
 use egui::ImageSource;
