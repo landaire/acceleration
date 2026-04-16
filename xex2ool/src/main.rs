@@ -221,12 +221,13 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 
 	let mut table = b.build();
 	table.with(Style::rounded());
+	println!("Module Info");
 	println!("{}", table);
 
 	if let Some(res) = header.resource_info()
 		&& !res.resources.is_empty()
 	{
-		println!();
+		println!("\nResources");
 		#[derive(Tabled)]
 		struct ResourceRow {
 			name: String,
@@ -249,7 +250,7 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 	}
 
 	if let Some(imports) = header.import_table() {
-		println!();
+		println!("\nImport Libraries");
 		#[derive(Tabled)]
 		struct LibRow {
 			library: String,
@@ -272,7 +273,7 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 	}
 
 	if extended {
-		println!();
+		println!("\nOptional Headers");
 		#[derive(Tabled)]
 		struct HeaderRow {
 			key: String,
@@ -288,6 +289,7 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 				name: optional_header_name(*key).to_string(),
 				value: match value {
 					xex2::header::OptionalHeaderValue::Inline(v) => format!("{:#010x}", v),
+					xex2::header::OptionalHeaderValue::Data(data) if data.len() <= 16 => hex_str(data),
 					xex2::header::OptionalHeaderValue::Data(data) => format!("[{} bytes]", data.len()),
 				},
 			})
@@ -296,7 +298,7 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 		t.with(Style::rounded());
 		println!("{}", t);
 
-		println!();
+		println!("\nSecurity Info");
 		let mut sb = Builder::default();
 		sb.push_record(["Header Size", &format!("{:#010x}", security.header_size)]);
 		sb.push_record(["Image Flags", &format!("{:#010x}", security.image_info.image_flags)]);
