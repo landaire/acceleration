@@ -30,7 +30,9 @@
 //!   date range, etc.)
 //! - [`imports`] -- import library parsing
 //! - [`basefile`] -- decryption and decompression of the inner PE image
-//! - [`writer`] -- modifying an XEX (removing restrictions, re-signing)
+//! - [`patch`] -- describing modifications as byte-level edits
+//! - [`writer`] -- planning length-preserving edits + re-signing (small-edit path)
+//! - [`rebuild`] -- streaming rebuilds (transformative-edit path)
 //!
 //! # Features
 //!
@@ -42,6 +44,8 @@ pub mod error;
 pub mod header;
 pub mod imports;
 pub mod opt;
+pub mod patch;
+pub mod rebuild;
 pub mod writer;
 
 use crate::error::Result;
@@ -99,23 +103,27 @@ impl Xex2 {
 		basefile::extract_basefile(data.as_ref(), &self.header, &self.security_info)
 	}
 
+	/// Start a streaming rebuild of this XEX.
+	///
+	/// The returned [`rebuild::Rebuilder`] holds borrowed references to this
+	/// XEX and the source bytes; configure transforms on it and call
+	/// [`write_to`][rebuild::Rebuilder::write_to] to stream the result, or
+	/// [`as_patch`][rebuild::Rebuilder::as_patch] to get a [`patch::Patch`]
+	/// when the rebuild is length-preserving.
+	pub fn rebuild<'a>(&'a self, data: &'a [u8]) -> rebuild::Rebuilder<'a> {
+		rebuild::Rebuilder::new(self, data)
+	}
+
 	/// Apply restriction removals and produce a re-signed XEX.
 	///
-	/// Modifies the specified fields in ImageInfo, recomputes the RotSumSha
-	/// hash, and signs it with the devkit PIRS private key. The result is a
-	/// valid devkit-signed XEX (retail consoles won't load it without further
-	/// patching, but devkit/JTAG/RGH consoles will).
-	///
-	/// Use [`writer::RemoveLimits::all`] to enable every restriction removal,
-	/// or set specific fields manually.
+	/// Convenience wrapper: plans the edits as a [`patch::Patch`] and applies
+	/// them to an owned buffer. For streaming output (avoid buffering the full
+	/// XEX), use [`rebuild`][Self::rebuild] + `write_to` instead.
 	pub fn modify(&self, data: impl AsRef<[u8]>, limits: &writer::RemoveLimits) -> Result<Vec<u8>> {
-		writer::modify_xex(
-			self,
-			data.as_ref(),
-			writer::TargetEncryption::Unchanged,
-			writer::TargetCompression::Unchanged,
-			writer::TargetMachine::Unchanged,
-			limits,
-		)
+		let data = data.as_ref();
+		let patch = writer::plan_edits(self, data, limits)?;
+		let mut out = data.to_vec();
+		patch.apply_to_vec(&mut out)?;
+		Ok(out)
 	}
 }

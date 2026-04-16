@@ -173,3 +173,31 @@ fn patch_resign_verifies_with_devkit_key() {
 	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x174..sec_off + 0x178].try_into().unwrap()), 0xFFFFFFFF,);
 	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x178..sec_off + 0x17C].try_into().unwrap()), 0xFFFFFFFF,);
 }
+
+#[test]
+fn rebuild_fast_path_matches_modify() {
+	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let mut limits = xex2::writer::RemoveLimits::default();
+	limits.region = true;
+	limits.media = true;
+	limits.zero_media_id = true;
+
+	let via_modify = xex.modify(&data, &limits).unwrap();
+
+	let mut via_stream = Vec::new();
+	xex.rebuild(&data).remove_limits(limits.clone()).write_to(&mut via_stream).unwrap();
+
+	assert_eq!(via_modify.len(), via_stream.len());
+	assert_eq!(via_modify, via_stream);
+}
+
+#[test]
+fn rebuild_transform_not_implemented() {
+	let (data, xex) = load_xex("afplayer.xex");
+	let mut sink = Vec::new();
+	let result = xex
+		.rebuild(&data)
+		.target_compression(xex2::writer::TargetCompression::Uncompressed)
+		.write_to(&mut sink);
+	assert!(result.is_err(), "rebuild with non-Unchanged compression should error");
+}

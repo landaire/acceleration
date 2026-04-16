@@ -1,14 +1,12 @@
-//! Modify a XEX file: remove restrictions, convert format, re-sign.
+//! Plan in-place modifications to an XEX file as a [`Patch`].
 //!
-//! All modifications happen on a copy of the raw XEX bytes; the original
-//! [`Xex2`] value is left unchanged.
+//! This module handles the small-edit branch of the modification story:
+//! flipping ImageInfo bits, zeroing media_id, and re-signing. The edits are
+//! length-preserving and local to SecurityInfo, so they're expressed as a
+//! [`Patch`] of [`PatchOp::Write`][crate::patch::PatchOp::Write] ops.
 //!
-//! Modifying any ImageInfo field (media, region, media_id) invalidates the
-//! kernel's RSA signature over the security info. After modifying, this
-//! module recomputes the `XeCryptRotSumSha` hash and re-signs with the
-//! devkit PIRS private key. Retail consoles will still reject the modified
-//! XEX (since we don't have the retail PIRS private key), but devkit
-//! consoles and JTAG/RGH-modded retail consoles will accept it.
+//! For full rebuilds (recompression, re-encryption, replacing the inner PE),
+//! see [`crate::rebuild::Rebuilder`].
 //!
 //! # Example
 //!
@@ -19,7 +17,6 @@
 //! let data = std::fs::read("game.xex").unwrap();
 //! let xex = Xex2::parse(&data).unwrap();
 //!
-//! // Remove all region and media restrictions
 //! let mut limits = RemoveLimits::default();
 //! limits.region = true;
 //! limits.media = true;
@@ -35,6 +32,7 @@ use rootcause::IntoReport;
 use crate::Xex2;
 use crate::error::Result;
 use crate::error::Xex2Error;
+use crate::patch::Patch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetEncryption {
@@ -58,7 +56,7 @@ pub enum TargetMachine {
 	Retail,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct RemoveLimits {
 	pub media: bool,
 	pub region: bool,
@@ -126,10 +124,6 @@ impl RemoveLimits {
 //   +0x160: header_hash        ([u8; 20])
 //   +0x174: game_regions       (u32)
 //   +0x178: allowed_media      (u32)
-//
-// The kernel hashes ImageInfo with XeCryptRotSumSha and verifies the RSA-PKCS#1
-// signature over that hash via XeKeysVerifyPIRSSignature. After modifying any
-// ImageInfo field, the hash and signature must be recomputed.
 
 const RSA_SIG: usize = 0x008;
 const RSA_SIG_LEN: usize = 0x100;
@@ -139,72 +133,75 @@ const IMAGE_INFO_MEDIA_ID: usize = IMAGE_INFO + 0x38;
 const IMAGE_INFO_GAME_REGIONS: usize = IMAGE_INFO + 0x6C;
 const IMAGE_INFO_ALLOWED_MEDIA: usize = IMAGE_INFO + 0x70;
 
-pub fn modify_xex(
-	xex: &Xex2,
-	input: &[u8],
-	_encryption: TargetEncryption,
-	_compression: TargetCompression,
-	_machine: TargetMachine,
-	limits: &RemoveLimits,
-) -> Result<Vec<u8>> {
-	let mut data = input.to_vec();
+/// Build a [`Patch`] describing the ImageInfo edits + a re-signature.
+///
+/// Pure function -- takes the source bytes read-only, computes the target
+/// ImageInfo image, signs it, emits Write ops for each changed field plus
+/// the RSA signature.
+pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Patch> {
+	let mut patch = Patch::new();
 	let sec = xex.header.security_offset as usize;
 
-	let mut modified = false;
-
-	if limits.region {
-		let off = sec + IMAGE_INFO_GAME_REGIONS;
-		if off + 4 <= data.len() {
-			data[off..off + 4].copy_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-			modified = true;
-		}
-	}
-
-	if limits.media {
-		let off = sec + IMAGE_INFO_ALLOWED_MEDIA;
-		if off + 4 <= data.len() {
-			data[off..off + 4].copy_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-			modified = true;
-		}
-	}
-
-	if limits.zero_media_id {
-		let off = sec + IMAGE_INFO_MEDIA_ID;
-		if off + 16 <= data.len() {
-			data[off..off + 16].fill(0);
-			modified = true;
-		}
-	}
-
-	if modified {
-		resign_security_info(&mut data, sec)?;
-	}
-
-	Ok(data)
-}
-
-fn resign_security_info(data: &mut [u8], sec: usize) -> Result<()> {
-	let info_size = BigEndian::read_u32(&data[sec + IMAGE_INFO_INFO_SIZE..]) as usize;
+	let info_size = BigEndian::read_u32(&source[sec + IMAGE_INFO_INFO_SIZE..]) as usize;
 	let image_info_len = info_size.saturating_sub(RSA_SIG_LEN);
 	if image_info_len == 0 {
-		return Ok(());
+		return Ok(patch);
 	}
 
 	let image_info_start = sec + IMAGE_INFO;
 	let image_info_end = image_info_start + image_info_len;
-	if image_info_end > data.len() {
-		return Ok(());
+	if image_info_end > source.len() {
+		return Ok(patch);
 	}
 
-	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(&data[image_info_start..image_info_end], &[]);
+	// Build the post-edit ImageInfo by copying the source region and applying
+	// each field change. This doubles as the bytes we hash + sign.
+	let mut image_info = source[image_info_start..image_info_end].to_vec();
+	let mut changed = false;
 
+	if limits.region {
+		let local = IMAGE_INFO_GAME_REGIONS - IMAGE_INFO;
+		if local + 4 <= image_info.len() {
+			image_info[local..local + 4].copy_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+			patch.write(
+				(sec + IMAGE_INFO_GAME_REGIONS) as u64,
+				0xFFFFFFFFu32.to_be_bytes().to_vec(),
+			);
+			changed = true;
+		}
+	}
+
+	if limits.media {
+		let local = IMAGE_INFO_ALLOWED_MEDIA - IMAGE_INFO;
+		if local + 4 <= image_info.len() {
+			image_info[local..local + 4].copy_from_slice(&0xFFFFFFFFu32.to_be_bytes());
+			patch.write(
+				(sec + IMAGE_INFO_ALLOWED_MEDIA) as u64,
+				0xFFFFFFFFu32.to_be_bytes().to_vec(),
+			);
+			changed = true;
+		}
+	}
+
+	if limits.zero_media_id {
+		let local = IMAGE_INFO_MEDIA_ID - IMAGE_INFO;
+		if local + 16 <= image_info.len() {
+			image_info[local..local + 16].fill(0);
+			patch.write((sec + IMAGE_INFO_MEDIA_ID) as u64, vec![0u8; 16]);
+			changed = true;
+		}
+	}
+
+	if !changed {
+		return Ok(patch);
+	}
+
+	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(&image_info, &[]);
 	let sig = xecrypt::RsaKeyKind::Pirs
 		.sign(xecrypt::ConsoleKind::Devkit, &digest)
 		.map_err(|_| Xex2Error::SigningFailed.into_report())?;
 
-	let sig_start = sec + RSA_SIG;
-	let sig_end = sig_start + RSA_SIG_LEN;
-	data[sig_start..sig_end].copy_from_slice(&sig);
+	patch.write((sec + RSA_SIG) as u64, sig.to_vec());
 
-	Ok(())
+	Ok(patch)
 }

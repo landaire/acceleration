@@ -692,10 +692,14 @@ fn cmd_patch(
 	let xex = Xex2::parse(&data)?;
 
 	let limits = xex2::writer::RemoveLimits::from(limits);
-	let patched = xex2::writer::modify_xex(&xex, &data, encryption, compression, machine, &limits)?;
-
 	let out_path = output.unwrap_or_else(|| path.clone());
-	fs::write(&out_path, &patched)?;
+	let mut out_file = std::fs::File::create(&out_path)?;
+	xex.rebuild(&data)
+		.target_encryption(encryption)
+		.target_compression(compression)
+		.target_machine(machine)
+		.remove_limits(limits)
+		.write_to(&mut out_file)?;
 	println!("Wrote patched XEX to {}", out_path.display());
 
 	Ok(())
