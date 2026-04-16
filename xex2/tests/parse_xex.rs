@@ -302,28 +302,98 @@ fn image_flag_limits_re_sign() {
 }
 
 #[test]
-fn unimplemented_limits_error() {
+fn revocation_check_still_errors() {
 	let (data, xex) = load_xex("afplayer.xex");
-
-	let mut l = xex2::writer::RemoveLimits::default();
-	l.dates = true;
-	let err = xex.modify(&data, &l).unwrap_err();
-	assert!(format!("{}", err).contains("dates"));
-
-	let mut l = xex2::writer::RemoveLimits::default();
-	l.console_id = true;
-	let err = xex.modify(&data, &l).unwrap_err();
-	assert!(format!("{}", err).contains("console_id"));
-
-	let mut l = xex2::writer::RemoveLimits::default();
-	l.library_versions = true;
-	let err = xex.modify(&data, &l).unwrap_err();
-	assert!(format!("{}", err).contains("library_versions"));
-
 	let mut l = xex2::writer::RemoveLimits::default();
 	l.revocation_check = true;
 	let err = xex.modify(&data, &l).unwrap_err();
 	assert!(format!("{}", err).contains("revocation_check"));
+}
+
+fn verify_devkit_signature(patched: &[u8]) {
+	let sec_off = u32::from_be_bytes(patched[0x10..0x14].try_into().unwrap()) as usize;
+	let info_size_off = sec_off + 0x108;
+	let info_size = u32::from_be_bytes(patched[info_size_off..info_size_off + 4].try_into().unwrap()) as usize;
+	let image_info_len = info_size - 0x100;
+	let image_info = &patched[info_size_off..info_size_off + image_info_len];
+	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
+	let sig = &patched[sec_off + 0x08..sec_off + 0x108];
+	xecrypt::RsaKeyKind::Pirs
+		.verify_signature(xecrypt::ConsoleKind::Devkit, sig, &digest)
+		.expect("devkit PIRS signature should verify");
+}
+
+fn verify_header_hash(patched: &[u8]) {
+	use xex2::Xex2;
+	let xex = Xex2::parse(patched).unwrap();
+	let computed = xex2::hashes::compute_header_hash(patched, &xex.header, &xex.security_info);
+	assert_eq!(computed, xex.security_info.image_info.header_hash, "header_hash mismatch after patching");
+}
+
+#[test]
+fn console_id_zeroes_serial_list_and_reverifies() {
+	// Find any fixture with a ConsoleSerialList to exercise this path.
+	for name in &["haloreach-powerhouse.xex", "afplayer.xex", "Portal 2.xex", "Deus Ex.xex"] {
+		let (data, xex) = load_xex(name);
+		if xex
+			.header
+			.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::ConsoleSerialList)
+			.is_none()
+		{
+			continue;
+		}
+		let mut limits = xex2::writer::RemoveLimits::default();
+		limits.console_id = true;
+		let patched = xex.modify(&data, &limits).unwrap();
+		verify_devkit_signature(&patched);
+		verify_header_hash(&patched);
+		return;
+	}
+	eprintln!("no fixture with ConsoleSerialList -- edit path not exercised");
+}
+
+#[test]
+fn dates_limit_sets_max_filetime_and_reverifies() {
+	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let range = xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange);
+	if range.is_none() {
+		eprintln!("skipping: no DateRange in fixture");
+		return;
+	}
+	let (off, len) = range.unwrap();
+
+	let mut limits = xex2::writer::RemoveLimits::default();
+	limits.dates = true;
+	let patched = xex.modify(&data, &limits).unwrap();
+
+	assert_eq!(&patched[off..off + 8], &[0u8; 8], "not_before should be 0");
+	assert_eq!(&patched[off + 8..off + 16], &u64::MAX.to_be_bytes(), "not_after should be max");
+	assert!(len >= 16);
+
+	verify_devkit_signature(&patched);
+	verify_header_hash(&patched);
+}
+
+#[test]
+fn library_versions_zeroes_version_min_and_reverifies() {
+	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let mut limits = xex2::writer::RemoveLimits::default();
+	limits.library_versions = true;
+	let patched = xex.modify(&data, &limits).unwrap();
+
+	// Re-parse and confirm every library's version_min is 0.
+	let patched_xex = xex2::Xex2::parse(&patched).unwrap();
+	let table = patched_xex.header.import_table().expect("import table");
+	for lib in &table.libraries {
+		assert_eq!(lib.version_min, 0, "library {} version_min not zeroed", lib.name);
+	}
+
+	verify_devkit_signature(&patched);
+	verify_header_hash(&patched);
+
+	// Also: new import_table_hash must match.
+	let new_table_hash = xex2::hashes::compute_import_table_hash(&patched_xex.header).unwrap();
+	assert_eq!(new_table_hash, patched_xex.security_info.image_info.import_table_hash);
 }
 
 #[test]

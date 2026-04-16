@@ -340,6 +340,47 @@ impl Xex2Header {
 		}
 	}
 
+	/// Find the source-file offset and length of a variable-length optional
+	/// header data blob. Returns the offset/length of the blob *body* (not
+	/// including the `size` u32 prefix that itself lives at `offset - 4`).
+	///
+	/// Returns `None` if the key isn't present, is inline, or the XEX header
+	/// data is malformed.
+	pub fn optional_header_source_range(&self, source: &[u8], key: OptionalHeaderKey) -> Option<(usize, usize)> {
+		let mut c = Cursor::new(source);
+		c.set_position(0x18);
+		let target = key as u32;
+		for _ in 0..self.optional_header_count {
+			let k = c.read_u32::<BigEndian>().ok()?;
+			let v = c.read_u32::<BigEndian>().ok()?;
+			if k == target {
+				let size_class = k & 0xFF;
+				if size_class == 0xFF {
+					// Variable-length: `v` is a file offset pointing at a u32 size + body.
+					let off = v as usize;
+					if off + 4 > source.len() {
+						return None;
+					}
+					let size = u32::from_be_bytes(source[off..off + 4].try_into().ok()?) as usize;
+					if off + size > source.len() {
+						return None;
+					}
+					return Some((off, size));
+				} else if size_class != 0x00 && size_class != 0x01 {
+					// Fixed-length (size_class bytes * 4): `v` is a file offset.
+					let bytes = (size_class as usize) * 4;
+					let off = v as usize;
+					if off + bytes > source.len() {
+						return None;
+					}
+					return Some((off, bytes));
+				}
+				return None;
+			}
+		}
+		None
+	}
+
 	pub fn entry_point(&self) -> Option<u32> {
 		self.get_optional_inline(OptionalHeaderKey::EntryPoint)
 	}

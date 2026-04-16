@@ -32,6 +32,8 @@ use rootcause::IntoReport;
 use crate::Xex2;
 use crate::error::Result;
 use crate::error::Xex2Error;
+use crate::hashes;
+use crate::header::OptionalHeaderKey;
 use crate::patch::Patch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +133,7 @@ const RSA_SIG_LEN: usize = 0x100;
 pub(crate) const IMAGE_INFO: usize = 0x108;
 pub(crate) const IMAGE_INFO_INFO_SIZE: usize = IMAGE_INFO;
 pub(crate) const IMAGE_INFO_IMAGE_FLAGS: usize = IMAGE_INFO + 0x04;
+pub(crate) const IMAGE_INFO_IMPORT_TABLE_HASH: usize = IMAGE_INFO + 0x24;
 pub(crate) const IMAGE_INFO_MEDIA_ID: usize = IMAGE_INFO + 0x38;
 pub(crate) const IMAGE_INFO_HEADER_HASH: usize = IMAGE_INFO + 0x5C;
 pub(crate) const IMAGE_INFO_GAME_REGIONS: usize = IMAGE_INFO + 0x70;
@@ -158,33 +161,47 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 	let mut patch = Patch::new();
 	let sec = xex.header.security_offset as usize;
 
-	if limits.dates {
-		return Err(Xex2Error::LimitRemovalNotImplemented {
-			limit: "dates",
-			reason: "requires header_hash recomputation over the optional-header region, not yet reverse-engineered",
-		}
-		.into_report());
-	}
-	if limits.console_id {
-		return Err(Xex2Error::LimitRemovalNotImplemented {
-			limit: "console_id",
-			reason: "requires header_hash recomputation over the optional-header region, not yet reverse-engineered",
-		}
-		.into_report());
-	}
-	if limits.library_versions {
-		return Err(Xex2Error::LimitRemovalNotImplemented {
-			limit: "library_versions",
-			reason: "requires recomputing both header_hash and import_table_hash, not yet reverse-engineered",
-		}
-		.into_report());
-	}
 	if limits.revocation_check {
 		return Err(Xex2Error::LimitRemovalNotImplemented {
 			limit: "revocation_check",
 			reason: "flag location in the XEX header is not currently known",
 		}
 		.into_report());
+	}
+
+	// Blob edits (optional-header data region, covered by header_hash).
+	// Tracked as `(file_offset, new_bytes)` so we can both emit Write ops and
+	// apply the edits to a working copy of source for hash recomputation.
+	let mut blob_edits: Vec<(usize, Vec<u8>)> = Vec::new();
+
+	if limits.dates {
+		if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::DateRange) {
+			if len >= 16 {
+				// not_before=0, not_after=MAX_FILETIME -> effectively always valid.
+				let mut blob = vec![0u8; len];
+				blob[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
+				blob_edits.push((off, blob));
+			}
+		}
+	}
+	if limits.console_id {
+		if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ConsoleSerialList) {
+			// Zero the entire serial list body -> empty whitelist. Kernel
+			// treats an empty list as "no restriction."
+			blob_edits.push((off, vec![0u8; len]));
+		}
+	}
+	if limits.library_versions {
+		if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries) {
+			let mut blob = source[off..off + len].to_vec();
+			let offsets = hashes::library_entry_offsets(&blob)
+				.ok_or_else(|| Xex2Error::SigningFailed.into_report())?;
+			// version_min at entry_offset + 0x20, 4 bytes. Zero it.
+			for (entry_off, _entry_size) in &offsets {
+				blob[entry_off + 0x20..entry_off + 0x24].fill(0);
+			}
+			blob_edits.push((off, blob));
+		}
 	}
 
 	// Module flag edits (outside the signed region).
@@ -281,6 +298,53 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 				);
 			}
 		}
+	}
+
+	// Apply blob edits + hash recomputations.
+	if !blob_edits.is_empty() {
+		// Build a working copy of source with the blob edits applied so we can
+		// rehash over the modified bytes.
+		let mut working = source.to_vec();
+		for (off, bytes) in &blob_edits {
+			working[*off..*off + bytes.len()].copy_from_slice(bytes);
+			patch.write(*off as u64, bytes.clone());
+		}
+
+		// If the import table was edited, rebuild its digest chain and
+		// compute the new import_table_hash, write both to the working copy
+		// and stage an image_info update.
+		if limits.library_versions {
+			if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries) {
+				let blob = &mut working[off..off + len];
+				if let Some(new_table_hash) = hashes::rewrite_import_table_hashes(blob) {
+					// Overwrite the blob Write op with the digest-chain-fixed version.
+					let updated = blob.to_vec();
+					for edit in &mut blob_edits {
+						if edit.0 == off {
+							edit.1 = updated.clone();
+						}
+					}
+					patch.write(off as u64, updated);
+					overwrite_image_info(
+						&mut patch,
+						&mut image_info,
+						&mut image_info_changed,
+						IMAGE_INFO_IMPORT_TABLE_HASH,
+						new_table_hash.to_vec(),
+					);
+				}
+			}
+		}
+
+		// Recompute header_hash over the modified source and stage image_info update.
+		let new_header_hash = hashes::compute_header_hash(&working, &xex.header, &xex.security_info);
+		overwrite_image_info(
+			&mut patch,
+			&mut image_info,
+			&mut image_info_changed,
+			IMAGE_INFO_HEADER_HASH,
+			new_header_hash.to_vec(),
+		);
 	}
 
 	if !image_info_changed {
