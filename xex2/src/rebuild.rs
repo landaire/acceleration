@@ -33,38 +33,40 @@ use crate::writer::TargetMachine;
 use rootcause::IntoReport;
 
 pub struct Rebuilder<'a> {
-	xex: &'a Xex2,
+	xex: Xex2,
 	source: &'a [u8],
-	compression: TargetCompression,
+	compression: Option<TargetCompression>,
 	plan: EditPlan,
 	replace_pe: Option<Vec<u8>>,
 }
 
 impl<'a> Rebuilder<'a> {
-	pub fn new(xex: &'a Xex2, source: &'a [u8]) -> Self {
+	pub fn new(xex: Xex2, source: &'a [u8]) -> Self {
 		Self {
 			xex,
 			source,
-			compression: TargetCompression::Unchanged,
+			compression: None,
 			plan: EditPlan::default(),
 			replace_pe: None,
 		}
 	}
 
-	// Transform setters.
+	// Transform setters. Each sets the target state; if it already matches the
+	// current XEX, the transform is a no-op. Not calling a setter leaves the
+	// corresponding aspect untouched.
 
 	pub fn target_encryption(mut self, target: TargetEncryption) -> Self {
-		self.plan.target_encryption = target;
+		self.plan.target_encryption = Some(target);
 		self
 	}
 
 	pub fn target_compression(mut self, target: TargetCompression) -> Self {
-		self.compression = target;
+		self.compression = Some(target);
 		self
 	}
 
 	pub fn target_machine(mut self, target: TargetMachine) -> Self {
-		self.plan.target_machine = target;
+		self.plan.target_machine = Some(target);
 		self
 	}
 
@@ -128,30 +130,37 @@ impl<'a> Rebuilder<'a> {
 		self
 	}
 
-	/// True iff this rebuild doesn't require compression changes or PE replacement.
-	///
-	/// Encryption toggles and machine switching are fully supported and handled
-	/// via `plan_edits`; they remain length-preserving.
+	/// True iff this rebuild doesn't require compression changes or PE
+	/// replacement. Setting a target that already matches is still supported.
 	pub fn is_supported(&self) -> bool {
-		self.compression == TargetCompression::Unchanged && self.replace_pe.is_none()
+		let compression_changes = self.compression.is_some_and(|c| {
+			// A no-op if the current XEX already matches.
+			self.xex.header.file_format_info().is_ok_and(|ff| match (ff.compression_type, c) {
+				(crate::header::CompressionType::None, TargetCompression::Uncompressed) => false,
+				(crate::header::CompressionType::Basic, TargetCompression::Basic) => false,
+				(crate::header::CompressionType::Normal, TargetCompression::Normal) => false,
+				_ => true,
+			})
+		});
+		!compression_changes && self.replace_pe.is_none()
 	}
 
 	/// Produce the [`Patch`] representing this rebuild, if supported.
 	pub fn as_patch(&self) -> Result<Option<Patch>> {
 		if self.is_supported() {
-			Ok(Some(crate::writer::plan_edits(self.xex, self.source, &self.plan)?))
+			Ok(Some(crate::writer::plan_edits(&self.xex, self.source, &self.plan)?))
 		} else {
 			Ok(None)
 		}
 	}
 
-	/// Stream the rebuilt XEX to `sink`. Compression changes and PE
-	/// replacement aren't implemented yet.
+	/// Stream the rebuilt XEX to `sink`. Compression changes (other than
+	/// no-op ones) and PE replacement aren't implemented yet.
 	pub fn write_to<W: Write>(self, sink: &mut W) -> Result<()> {
 		if !self.is_supported() {
 			return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
 		}
-		let patch = crate::writer::plan_edits(self.xex, self.source, &self.plan)?;
+		let patch = crate::writer::plan_edits(&self.xex, self.source, &self.plan)?;
 		patch.stream_to(self.source, sink)
 	}
 }

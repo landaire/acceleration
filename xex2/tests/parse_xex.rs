@@ -178,18 +178,18 @@ fn patch_resign_verifies_with_devkit_key() {
 
 #[test]
 fn rebuild_fast_path_matches_modify() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
 	let mut limits = xex2::writer::RemoveLimits::default();
 	limits.region = true;
 	limits.media = true;
 	limits.zero_media_id = true;
 
+	let (data, xex) = load_xex("haloreach-powerhouse.xex");
 	let via_modify = xex.modify(&data, &limits).unwrap();
 
+	let (data2, xex2) = load_xex("haloreach-powerhouse.xex");
 	let mut via_stream = Vec::new();
-	xex.rebuild(&data).remove_limits(limits.clone()).write_to(&mut via_stream).unwrap();
+	xex2.rebuild(&data2).remove_limits(limits).write_to(&mut via_stream).unwrap();
 
-	assert_eq!(via_modify.len(), via_stream.len());
 	assert_eq!(via_modify, via_stream);
 }
 
@@ -378,7 +378,7 @@ fn library_versions_zeroes_version_min_and_reverifies() {
 	let patched_xex = xex2::Xex2::parse(&patched).unwrap();
 	let table = patched_xex.header.import_table().expect("import table");
 	for lib in &table.libraries {
-		assert_eq!(lib.version_min, 0, "library {} version_min not zeroed", lib.name);
+		assert_eq!(u32::from(lib.version_min), 0, "library {} version_min not zeroed", lib.name);
 	}
 
 	verify_devkit_signature(&patched);
@@ -493,20 +493,33 @@ fn machine_switch_rewraps_file_key() {
 	// the file_key under the devkit master key.
 	let (data, xex) = load_xex("Portal 2.xex");
 	let original_basefile = xex.extract_basefile(&data).unwrap();
+	let original_file_key = xex.security_info.image_info.file_key;
 
 	let mut sink = Vec::new();
 	xex.rebuild(&data).target_machine(xex2::writer::TargetMachine::Devkit).write_to(&mut sink).unwrap();
 
 	let switched_xex = xex2::Xex2::parse(&sink).unwrap();
 	assert_ne!(
-		xex.security_info.image_info.file_key,
-		switched_xex.security_info.image_info.file_key,
+		original_file_key, switched_xex.security_info.image_info.file_key,
 		"file_key should change after re-wrapping"
 	);
 
 	let switched_basefile = switched_xex.extract_basefile(&sink).unwrap();
 	assert_eq!(original_basefile, switched_basefile);
 	verify_devkit_signature(&sink);
+}
+
+#[test]
+fn setting_target_matching_current_state_is_noop() {
+	// AntiPiracyUI is already encrypted; setting target_encryption=Encrypted
+	// should be a no-op (no re-encryption, output equals input modulo unrelated edits).
+	let (data, xex) = load_xex("AntiPiracyUI.xex");
+
+	let mut sink = Vec::new();
+	xex.rebuild(&data).target_encryption(xex2::writer::TargetEncryption::Encrypted).write_to(&mut sink).unwrap();
+
+	// Source bytes should be untouched by a no-op transform.
+	assert_eq!(data, sink, "no-op target should produce identical output");
 }
 
 #[test]

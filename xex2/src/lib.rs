@@ -106,24 +106,28 @@ impl Xex2 {
 
 	/// Start a streaming rebuild of this XEX.
 	///
-	/// The returned [`rebuild::Rebuilder`] holds borrowed references to this
-	/// XEX and the source bytes; configure transforms on it and call
+	/// Consumes `self` so the caller can't accidentally reuse a stale
+	/// [`Xex2`] against the newly-written output. After `write_to`, parse the
+	/// resulting bytes with [`parse`][Self::parse] if further work is needed.
+	///
+	/// Configure transforms on the returned [`rebuild::Rebuilder`] and call
 	/// [`write_to`][rebuild::Rebuilder::write_to] to stream the result, or
 	/// [`as_patch`][rebuild::Rebuilder::as_patch] to get a [`patch::Patch`]
 	/// when the rebuild is length-preserving.
-	pub fn rebuild<'a>(&'a self, data: &'a [u8]) -> rebuild::Rebuilder<'a> {
+	pub fn rebuild<'a>(self, data: &'a [u8]) -> rebuild::Rebuilder<'a> {
 		rebuild::Rebuilder::new(self, data)
 	}
 
 	/// Apply restriction removals and produce a re-signed XEX.
 	///
+	/// Consumes `self`; parse the returned bytes if further work is needed.
 	/// Convenience wrapper: plans the edits as a [`patch::Patch`] and applies
 	/// them to an owned buffer. For streaming output (avoid buffering the full
 	/// XEX), use [`rebuild`][Self::rebuild] + `write_to` instead.
-	pub fn modify(&self, data: impl AsRef<[u8]>, limits: &writer::RemoveLimits) -> Result<Vec<u8>> {
+	pub fn modify(self, data: impl AsRef<[u8]>, limits: &writer::RemoveLimits) -> Result<Vec<u8>> {
 		let data = data.as_ref();
 		let plan: writer::EditPlan = limits.into();
-		let patch = writer::plan_edits(self, data, &plan)?;
+		let patch = writer::plan_edits(&self, data, &plan)?;
 		let mut out = data.to_vec();
 		patch.apply_to_vec(&mut out)?;
 		Ok(out)

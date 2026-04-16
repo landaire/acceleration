@@ -224,20 +224,20 @@ fn main() -> anyhow::Result<()> {
 			limits,
 		} => {
 			let machine = match (devkit, retail) {
-				(true, _) => xex2::writer::TargetMachine::Devkit,
-				(_, true) => xex2::writer::TargetMachine::Retail,
-				_ => xex2::writer::TargetMachine::Unchanged,
+				(true, _) => Some(xex2::writer::TargetMachine::Devkit),
+				(_, true) => Some(xex2::writer::TargetMachine::Retail),
+				_ => None,
 			};
 			let encryption = match (encrypt, decrypt) {
-				(true, _) => xex2::writer::TargetEncryption::Encrypted,
-				(_, true) => xex2::writer::TargetEncryption::Decrypted,
-				_ => xex2::writer::TargetEncryption::Unchanged,
+				(true, _) => Some(xex2::writer::TargetEncryption::Encrypted),
+				(_, true) => Some(xex2::writer::TargetEncryption::Decrypted),
+				_ => None,
 			};
 			let compression = match (compress, decompress, basic_compress) {
-				(true, _, _) => xex2::writer::TargetCompression::Normal,
-				(_, true, _) => xex2::writer::TargetCompression::Uncompressed,
-				(_, _, true) => xex2::writer::TargetCompression::Basic,
-				_ => xex2::writer::TargetCompression::Unchanged,
+				(true, _, _) => Some(xex2::writer::TargetCompression::Normal),
+				(_, true, _) => Some(xex2::writer::TargetCompression::Uncompressed),
+				(_, _, true) => Some(xex2::writer::TargetCompression::Basic),
+				_ => None,
 			};
 			cmd_patch(&file, output, apply_patch, merge_patch, machine, compression, encryption, &limits)
 		}
@@ -299,8 +299,8 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 	if let Some(exec) = header.execution_info() {
 		b.push_record(["Title ID", &format!("{}", exec.title_id)]);
 		b.push_record(["Media ID", &format!("{}", exec.media_id)]);
-		b.push_record(["Version", &format!("{:#010x}", exec.version)]);
-		b.push_record(["Base Version", &format!("{:#010x}", exec.base_version)]);
+		b.push_record(["Version", &format!("{}", exec.version)]);
+		b.push_record(["Base Version", &format!("{}", exec.base_version)]);
 		b.push_record(["Disc", &format!("{}/{}", exec.disc_number, exec.disc_count)]);
 		b.push_record(["Savegame ID", &format!("{:08X}", exec.savegame_id)]);
 	}
@@ -417,7 +417,7 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 			.iter()
 			.map(|lib| LibRow {
 				library: lib.name.clone(),
-				version: format!("{:#010x}", lib.version),
+				version: lib.version.to_string(),
 				imports: lib.records.len() / 2,
 			})
 			.collect();
@@ -623,7 +623,7 @@ fn cmd_imports(path: &PathBuf, fmt: OutputFormat) -> anyhow::Result<()> {
 	}
 
 	for lib in &table.libraries {
-		println!("{} (v{:#010x}, min v{:#010x})", lib.name, lib.version, lib.version_min);
+		println!("{} (v{}, min v{})", lib.name, lib.version, lib.version_min);
 
 		#[derive(Tabled)]
 		struct ImportRow {
@@ -662,9 +662,9 @@ fn cmd_patch(
 	output: Option<PathBuf>,
 	apply_patch: Option<PathBuf>,
 	merge_patch: bool,
-	machine: xex2::writer::TargetMachine,
-	compression: xex2::writer::TargetCompression,
-	encryption: xex2::writer::TargetEncryption,
+	machine: Option<xex2::writer::TargetMachine>,
+	compression: Option<xex2::writer::TargetCompression>,
+	encryption: Option<xex2::writer::TargetEncryption>,
 	limits: &LimitArgs,
 ) -> anyhow::Result<()> {
 	if apply_patch.is_some() {
@@ -673,15 +673,6 @@ fn cmd_patch(
 	if merge_patch {
 		anyhow::bail!("patch merging is not yet implemented");
 	}
-	if !matches!(machine, xex2::writer::TargetMachine::Unchanged) {
-		anyhow::bail!("machine format conversion is not yet implemented");
-	}
-	if !matches!(compression, xex2::writer::TargetCompression::Unchanged) {
-		anyhow::bail!("compression format conversion is not yet implemented");
-	}
-	if !matches!(encryption, xex2::writer::TargetEncryption::Unchanged) {
-		anyhow::bail!("encryption format conversion is not yet implemented");
-	}
 
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(&data)?;
@@ -689,12 +680,17 @@ fn cmd_patch(
 	let limits = xex2::writer::RemoveLimits::from(limits);
 	let out_path = output.unwrap_or_else(|| path.clone());
 	let mut out_file = std::fs::File::create(&out_path)?;
-	xex.rebuild(&data)
-		.target_encryption(encryption)
-		.target_compression(compression)
-		.target_machine(machine)
-		.remove_limits(limits)
-		.write_to(&mut out_file)?;
+	let mut rb = xex.rebuild(&data).remove_limits(limits);
+	if let Some(e) = encryption {
+		rb = rb.target_encryption(e);
+	}
+	if let Some(c) = compression {
+		rb = rb.target_compression(c);
+	}
+	if let Some(m) = machine {
+		rb = rb.target_machine(m);
+	}
+	rb.write_to(&mut out_file)?;
 	println!("Wrote patched XEX to {}", out_path.display());
 
 	Ok(())

@@ -37,7 +37,7 @@ pub fn generate_xml(xex: &Xex2) -> String {
 	if let Some(exec) = header.execution_info() {
 		writeln!(out, "  <title_id>{:08X}</title_id>", exec.title_id).unwrap();
 		writeln!(out, "  <media_id>{:08X}</media_id>", exec.media_id).unwrap();
-		writeln!(out, "  <version>{:#010x}</version>", exec.version).unwrap();
+		writeln!(out, "  <version>{}</version>", exec.version).unwrap();
 		writeln!(out, "  <disc_number>{}</disc_number>", exec.disc_number).unwrap();
 		writeln!(out, "  <disc_count>{}</disc_count>", exec.disc_count).unwrap();
 	}
@@ -69,7 +69,7 @@ pub fn generate_xml(xex: &Xex2) -> String {
 		for lib in &table.libraries {
 			writeln!(
 				out,
-				"    <library name=\"{}\" version=\"{:#010x}\" min_version=\"{:#010x}\" imports=\"{}\"/>",
+				"    <library name=\"{}\" version=\"{}\" min_version=\"{}\" imports=\"{}\"/>",
 				escape_xml(&lib.name),
 				lib.version,
 				lib.version_min,

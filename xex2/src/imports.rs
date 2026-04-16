@@ -18,6 +18,7 @@ use std::io::Read;
 
 use crate::header::OptionalHeaderKey;
 use crate::header::Xex2Header;
+use xenon_types::Version;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -25,8 +26,8 @@ pub struct ImportLibrary {
 	pub name: String,
 	pub digest: [u8; 20],
 	pub import_id: u32,
-	pub version: u32,
-	pub version_min: u32,
+	pub version: Version,
+	pub version_min: Version,
 	pub records: Vec<u32>,
 }
 
@@ -76,8 +77,8 @@ fn parse_import_table(data: &[u8]) -> Option<ImportTable> {
 		let mut digest = [0u8; 20];
 		c.read_exact(&mut digest).ok()?;
 		let import_id = c.read_u32::<BigEndian>().ok()?;
-		let version = c.read_u32::<BigEndian>().ok()?;
-		let version_min = c.read_u32::<BigEndian>().ok()?;
+		let version = Version::from(c.read_u32::<BigEndian>().ok()?);
+		let version_min = Version::from(c.read_u32::<BigEndian>().ok()?);
 		let name_index = c.read_u16::<BigEndian>().ok()? as usize;
 		let record_count = c.read_u16::<BigEndian>().ok()? as usize;
 

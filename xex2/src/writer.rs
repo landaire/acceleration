@@ -21,6 +21,7 @@
 //! limits.region = true;
 //! limits.media = true;
 //!
+//! // `modify` consumes xex -- reparse the output if you need further access.
 //! let patched = xex.modify(&data, &limits).unwrap();
 //! std::fs::write("game_patched.xex", patched).unwrap();
 //! ```
@@ -39,27 +40,21 @@ use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
 use crate::patch::Patch;
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetEncryption {
-	#[default]
-	Unchanged,
 	Encrypted,
 	Decrypted,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetCompression {
-	#[default]
-	Unchanged,
 	Uncompressed,
 	Basic,
 	Normal,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetMachine {
-	#[default]
-	Unchanged,
 	Devkit,
 	Retail,
 }
@@ -167,14 +162,12 @@ pub struct EditPlan {
 	pub load_address: Option<u32>,
 	pub date_range: Option<(u64, u64)>,
 	pub cleared_optional_headers: Vec<OptionalHeaderKey>,
-	/// Re-wrap the session key under the other master key. Decrypts the
-	/// current file_key with the current machine's master, re-encrypts with
-	/// the target machine's master, writes the new file_key to image_info.
-	/// The data region is untouched.
-	pub target_machine: TargetMachine,
-	/// Flip the data region between encrypted and plaintext. The session
-	/// key is preserved (re-wrapped if `target_machine` is also set).
-	pub target_encryption: TargetEncryption,
+	/// Target machine for the file key wrap. `None` = keep current. If the
+	/// request matches the detected current machine, the transform is a no-op.
+	pub target_machine: Option<TargetMachine>,
+	/// Target encryption state. `None` = keep current. If the request matches
+	/// the current `file_format_info.encryption_type`, the transform is a no-op.
+	pub target_encryption: Option<TargetEncryption>,
 }
 
 impl EditPlan {
@@ -189,8 +182,8 @@ impl EditPlan {
 			&& self.load_address.is_none()
 			&& self.date_range.is_none()
 			&& self.cleared_optional_headers.is_empty()
-			&& self.target_machine == TargetMachine::Unchanged
-			&& self.target_encryption == TargetEncryption::Unchanged
+			&& self.target_machine.is_none()
+			&& self.target_encryption.is_none()
 	}
 }
 
@@ -491,9 +484,7 @@ fn apply_encryption_transforms(
 	image_info_changed: &mut bool,
 	blob_edits: &mut Vec<(usize, Vec<u8>)>,
 ) -> Result<()> {
-	let machine_target = plan.target_machine;
-	let encryption_target = plan.target_encryption;
-	if machine_target == TargetMachine::Unchanged && encryption_target == TargetEncryption::Unchanged {
+	if plan.target_machine.is_none() && plan.target_encryption.is_none() {
 		return Ok(());
 	}
 
@@ -502,44 +493,40 @@ fn apply_encryption_transforms(
 	// Determine current session key + which master key currently wraps it.
 	let current_file_key = &xex.security_info.image_info.file_key;
 	let keys = crate::crypto::decrypt_file_key(current_file_key);
-	// Decide "current machine" by checking which unwrapped key produces
-	// valid decrypted output. `extract_basefile` already does this; mirror
-	// its heuristic by test-decrypting a small portion.
 	let current_machine = detect_current_machine(source, xex, &file_format, &keys);
 	let session_key = match current_machine {
 		TargetMachine::Retail => keys.retail.clone(),
 		TargetMachine::Devkit => keys.devkit.clone(),
-		TargetMachine::Unchanged => keys.retail.clone(),
 	};
 
-	let resolved_machine = match machine_target {
-		TargetMachine::Unchanged => current_machine,
-		m => m,
-	};
+	let resolved_machine = plan.target_machine.unwrap_or(current_machine);
 
-	// Re-wrap file_key under the resolved target machine's master key.
-	if machine_target != TargetMachine::Unchanged {
-		let master = match resolved_machine {
-			TargetMachine::Retail => crate::crypto::RETAIL_KEY.clone(),
-			_ => crate::crypto::DEVKIT_KEY.clone(),
-		};
-		let new_file_key = crate::crypto::wrap_file_key(&session_key, &master);
-		overwrite_image_info(
-			patch,
-			image_info,
-			image_info_changed,
-			sec,
-			IMAGE_INFO + 0x48,
-			new_file_key.0.to_vec(),
-		);
+	// Re-wrap file_key under the resolved target machine's master key, but
+	// only if it actually changes.
+	if let Some(target_machine) = plan.target_machine {
+		if target_machine != current_machine {
+			let master = match resolved_machine {
+				TargetMachine::Retail => crate::crypto::RETAIL_KEY.clone(),
+				TargetMachine::Devkit => crate::crypto::DEVKIT_KEY.clone(),
+			};
+			let new_file_key = crate::crypto::wrap_file_key(&session_key, &master);
+			overwrite_image_info(
+				patch,
+				image_info,
+				image_info_changed,
+				sec,
+				IMAGE_INFO + 0x48,
+				new_file_key.0.to_vec(),
+			);
+		}
 	}
 
-	if encryption_target != TargetEncryption::Unchanged {
+	if let Some(target_enc) = plan.target_encryption {
 		let data_off = xex.header.data_offset as usize;
 		let data_len = source.len() - data_off;
 		let encrypted_region = &source[data_off..data_off + data_len];
 
-		match (file_format.encryption_type, encryption_target) {
+		match (file_format.encryption_type, target_enc) {
 			(crate::header::EncryptionType::Normal, TargetEncryption::Decrypted) => {
 				let plaintext = crate::crypto::decrypt_data(encrypted_region, &session_key);
 				patch.write(data_off as u64, plaintext);
@@ -557,7 +544,7 @@ fn apply_encryption_transforms(
 			(crate::header::EncryptionType::None, TargetEncryption::Encrypted) => {
 				let master = match resolved_machine {
 					TargetMachine::Retail => crate::crypto::RETAIL_KEY.clone(),
-					_ => crate::crypto::DEVKIT_KEY.clone(),
+					TargetMachine::Devkit => crate::crypto::DEVKIT_KEY.clone(),
 				};
 				let ciphertext = crate::crypto::encrypt_data(encrypted_region, &session_key);
 				patch.write(data_off as u64, ciphertext);
@@ -572,7 +559,9 @@ fn apply_encryption_transforms(
 				);
 				rewrite_file_format_encryption(xex, source, crate::header::EncryptionType::Normal, patch, blob_edits)?;
 			}
-			_ => { /* no-op: already in target state */ }
+			// Already in target state; no-op.
+			(crate::header::EncryptionType::Normal, TargetEncryption::Encrypted)
+			| (crate::header::EncryptionType::None, TargetEncryption::Decrypted) => {}
 		}
 	}
 
@@ -597,6 +586,7 @@ fn detect_current_machine(
 	let probe = &source[data_off..data_off + 32];
 	let retail_decrypt = crate::crypto::decrypt_data(&probe[..16], &keys.retail);
 	let devkit_decrypt = crate::crypto::decrypt_data(&probe[..16], &keys.devkit);
+	let _ = devkit_decrypt;
 	match file_format.compression_type {
 		CompressionType::Basic | CompressionType::None => {
 			if retail_decrypt[0] == b'M' && retail_decrypt[1] == b'Z' {
@@ -605,12 +595,9 @@ fn detect_current_machine(
 				TargetMachine::Devkit
 			}
 		}
-		_ => {
-			// For normal compression, both keys will produce ~similar-looking
-			// first blocks; heuristic is fuzzier. Default to retail.
-			let _ = devkit_decrypt;
-			TargetMachine::Retail
-		}
+		// For normal compression, both keys will produce ~similar-looking
+		// first blocks; heuristic is fuzzier. Default to retail.
+		_ => TargetMachine::Retail,
 	}
 }
 

@@ -244,8 +244,8 @@ impl std::fmt::Display for OptionalHeaderKey {
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ExecutionInfo {
 	pub media_id: MediaId,
-	pub version: u32,
-	pub base_version: u32,
+	pub version: xenon_types::Version,
+	pub base_version: xenon_types::Version,
 	pub title_id: TitleId,
 	pub platform: u8,
 	pub executable_table: u8,
@@ -414,8 +414,8 @@ impl Xex2Header {
 		let mut c = Cursor::new(data);
 		Some(ExecutionInfo {
 			media_id: MediaId(c.read_u32::<BigEndian>().ok()?),
-			version: c.read_u32::<BigEndian>().ok()?,
-			base_version: c.read_u32::<BigEndian>().ok()?,
+			version: xenon_types::Version::from(c.read_u32::<BigEndian>().ok()?),
+			base_version: xenon_types::Version::from(c.read_u32::<BigEndian>().ok()?),
 			title_id: TitleId(c.read_u32::<BigEndian>().ok()?),
 			platform: c.read_u8().ok()?,
 			executable_table: c.read_u8().ok()?,
