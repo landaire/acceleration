@@ -1,0 +1,22 @@
+[package]
+name = "lzxc"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Lander Brandt"]
+description = "LZX compression encoder. Produces streams decodable by the `lzxd` crate."
+repository = "https://github.com/landaire/acceleration"
+documentation = "https://docs.rs/lzxc"
+readme = "README.md"
+keywords = ["lzx", "compression", "xbox360", "encoder"]
+categories = ["compression"]
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { version = "0.7", features = ["html_reports"] }
+lzxd = "0.2"
+
+[[bench]]
+name = "compression"
+harness = false
