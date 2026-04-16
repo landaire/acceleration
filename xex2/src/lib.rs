@@ -122,7 +122,8 @@ impl Xex2 {
 	/// XEX), use [`rebuild`][Self::rebuild] + `write_to` instead.
 	pub fn modify(&self, data: impl AsRef<[u8]>, limits: &writer::RemoveLimits) -> Result<Vec<u8>> {
 		let data = data.as_ref();
-		let patch = writer::plan_edits(self, data, limits)?;
+		let plan: writer::EditPlan = limits.into();
+		let patch = writer::plan_edits(self, data, &plan)?;
 		let mut out = data.to_vec();
 		patch.apply_to_vec(&mut out)?;
 		Ok(out)

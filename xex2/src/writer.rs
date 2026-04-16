@@ -34,6 +34,9 @@ use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::hashes;
 use crate::header::OptionalHeaderKey;
+use crate::opt::AllowedMediaTypes;
+use crate::opt::ImageFlags;
+use crate::opt::ModuleFlags;
 use crate::patch::Patch;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,19 +114,23 @@ impl RemoveLimits {
 //   +0x17C: page_descriptor_count (u32)
 //   +0x180: page_descriptors   (variable)
 //
-// ImageInfo field offsets (relative to SecurityInfo start):
-//   +0x108: info_size            (u32)
-//   +0x10C: image_flags          (u32)
-//   +0x110: load_address         (u32)
-//   +0x114: image_hash           ([u8; 20])
-//   +0x128: import_count         (u32)
-//   +0x12C: import_hash          ([u8; 20])
-//   +0x140: media_id             ([u8; 16])
-//   +0x150: file_key             ([u8; 16])
-//   +0x160: export_table_address (u32)
-//   +0x164: header_hash          ([u8; 20])
-//   +0x178: game_regions         (u32)
-//   +0x17C: allowed_media        (u32)
+// SecurityInfo layout detail:
+//
+//   +0x108: image_info (info_size - 0x100 = 0x74 bytes, RSA-signed)
+//       +0x000 (0x108): info_size
+//       +0x004 (0x10C): image_flags
+//       +0x008 (0x110): load_address
+//       +0x00C (0x114): image_hash (20)
+//       +0x020 (0x128): import_count
+//       +0x024 (0x12C): import_hash (20)
+//       +0x038 (0x140): media_id (16)
+//       +0x048 (0x150): file_key (16)
+//       +0x058 (0x160): export_table_address
+//       +0x05C (0x164): header_hash (20)
+//       +0x070 (0x178): game_regions
+//   +0x17C: allowed_media_types        <- OUTSIDE image_info, NOT RSA-signed
+//   +0x180: page_descriptor_count
+//   +0x184: page_descriptors
 
 const RSA_SIG: usize = 0x008;
 const RSA_SIG_LEN: usize = 0x100;
@@ -134,58 +141,119 @@ pub(crate) const IMAGE_INFO_IMPORT_TABLE_HASH: usize = IMAGE_INFO + 0x24;
 pub(crate) const IMAGE_INFO_MEDIA_ID: usize = IMAGE_INFO + 0x38;
 pub(crate) const IMAGE_INFO_HEADER_HASH: usize = IMAGE_INFO + 0x5C;
 pub(crate) const IMAGE_INFO_GAME_REGIONS: usize = IMAGE_INFO + 0x70;
-pub(crate) const IMAGE_INFO_ALLOWED_MEDIA: usize = IMAGE_INFO + 0x74;
+// allowed_media_types sits at security_info + 0x17C, immediately after the
+// RSA-signed image_info region. Writes here don't invalidate the signature.
+pub(crate) const SECURITY_ALLOWED_MEDIA: usize = 0x17C;
 
 // XEX main header: module_flags at offset 0x04.
 const HEADER_MODULE_FLAGS: usize = 0x04;
 
-/// Build a [`Patch`] describing the requested [`RemoveLimits`] edits plus a
-/// re-signature.
+/// A bundle of per-field edits to apply to a XEX.
 ///
-/// Pure function -- reads `source` only. Returns an error for limits that
-/// require hash recomputations we haven't implemented yet (header_hash and
-/// import_table_hash) or whose semantics aren't pinned down.
+/// [`RemoveLimits`] lowers into this via [`From`]; [`crate::rebuild::Rebuilder`]
+/// exposes per-field setters that also populate it directly.
+#[derive(Debug, Default, Clone)]
+pub struct EditPlan {
+	pub limits: RemoveLimits,
+	pub module_flags: Option<ModuleFlags>,
+	pub image_flags: Option<ImageFlags>,
+	pub game_regions: Option<u32>,
+	pub allowed_media: Option<AllowedMediaTypes>,
+	pub media_id: Option<[u8; 16]>,
+	pub file_key: Option<[u8; 16]>,
+	pub load_address: Option<u32>,
+	pub date_range: Option<(u64, u64)>,
+	pub cleared_optional_headers: Vec<OptionalHeaderKey>,
+}
+
+impl EditPlan {
+	pub fn is_empty(&self) -> bool {
+		!self.limits.any_set()
+			&& self.module_flags.is_none()
+			&& self.image_flags.is_none()
+			&& self.game_regions.is_none()
+			&& self.allowed_media.is_none()
+			&& self.media_id.is_none()
+			&& self.file_key.is_none()
+			&& self.load_address.is_none()
+			&& self.date_range.is_none()
+			&& self.cleared_optional_headers.is_empty()
+	}
+}
+
+impl From<RemoveLimits> for EditPlan {
+	fn from(limits: RemoveLimits) -> Self {
+		EditPlan { limits, ..Self::default() }
+	}
+}
+
+impl From<&RemoveLimits> for EditPlan {
+	fn from(limits: &RemoveLimits) -> Self {
+		EditPlan { limits: limits.clone(), ..Self::default() }
+	}
+}
+
+/// Build a [`Patch`] describing the requested edits plus re-hashing/re-signing.
 ///
-/// Layout:
-/// - Module flag bits (`bounding_path`, `device_id`) live in the XEX header at
-///   offset 0x04 and are outside the signed region, so they're plain Write ops
-///   with no re-sign.
-/// - Image-info edits (region, media, media_id, image_flags bits for
-///   `keyvault_privileges` / `signed_keyvault_only`) live inside the RSA-signed
-///   image_info; we rebuild the target image_info in a local buffer, hash it,
-///   sign it, and emit Write ops for each changed field + the new signature.
-pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Patch> {
+/// Pure function -- reads `source` only. Covers every edit the writer knows
+/// how to make: [`RemoveLimits`] recipes, per-field overrides via
+/// [`EditPlan`], date-range, optional-header clearing. Image-info edits
+/// trigger a RotSumSha re-sign with the devkit PIRS key; blob edits inside
+/// the header-hash coverage region trigger a `header_hash` recomputation;
+/// import-table edits also recompute `import_table_hash` and the digest
+/// chain.
+pub fn plan_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<Patch> {
+	let limits = &plan.limits;
 	let mut patch = Patch::new();
 	let sec = xex.header.security_offset as usize;
 
 	// Blob edits (optional-header data region, covered by header_hash).
-	// Tracked as `(file_offset, new_bytes)` so we can both emit Write ops and
-	// apply the edits to a working copy of source for hash recomputation.
 	let mut blob_edits: Vec<(usize, Vec<u8>)> = Vec::new();
 
-	if limits.dates {
-		if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::DateRange) {
-			if len >= 16 {
-				// not_before=0, not_after=MAX_FILETIME -> effectively always valid.
-				let mut blob = vec![0u8; len];
-				blob[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
-				blob_edits.push((off, blob));
-			}
+	let mut stage_blob_edit = |k: OptionalHeaderKey, bytes_for: &dyn Fn(usize) -> Vec<u8>, edits: &mut Vec<(usize, Vec<u8>)>| {
+		if let Some((off, len)) = xex.header.optional_header_source_range(source, k) {
+			edits.push((off, bytes_for(len)));
 		}
+	};
+
+	if limits.dates {
+		stage_blob_edit(
+			OptionalHeaderKey::DateRange,
+			&|len| {
+				let mut b = vec![0u8; len];
+				if len >= 16 {
+					b[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
+				}
+				b
+			},
+			&mut blob_edits,
+		);
+	}
+	if let Some((not_before, not_after)) = plan.date_range {
+		stage_blob_edit(
+			OptionalHeaderKey::DateRange,
+			&|len| {
+				let mut b = vec![0u8; len];
+				if len >= 16 {
+					b[0..8].copy_from_slice(&not_before.to_be_bytes());
+					b[8..16].copy_from_slice(&not_after.to_be_bytes());
+				}
+				b
+			},
+			&mut blob_edits,
+		);
 	}
 	if limits.console_id {
-		if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ConsoleSerialList) {
-			// Zero the entire serial list body -> empty whitelist. Kernel
-			// treats an empty list as "no restriction."
-			blob_edits.push((off, vec![0u8; len]));
-		}
+		stage_blob_edit(OptionalHeaderKey::ConsoleSerialList, &|len| vec![0u8; len], &mut blob_edits);
+	}
+	for key in &plan.cleared_optional_headers {
+		stage_blob_edit(*key, &|len| vec![0u8; len], &mut blob_edits);
 	}
 	if limits.library_versions {
 		if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries) {
 			let mut blob = source[off..off + len].to_vec();
 			let offsets = hashes::library_entry_offsets(&blob)
 				.ok_or_else(|| Xex2Error::SigningFailed.into_report())?;
-			// version_min at entry_offset + 0x20, 4 bytes. Zero it.
 			for (entry_off, _entry_size) in &offsets {
 				blob[entry_off + 0x20..entry_off + 0x24].fill(0);
 			}
@@ -194,18 +262,25 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 	}
 
 	// Module flag edits (outside the signed region).
+	let mut module_flags_edit: Option<u32> = None;
 	if limits.bounding_path || limits.device_id {
 		let current = BigEndian::read_u32(&source[HEADER_MODULE_FLAGS..]);
 		let mut new = current;
 		if limits.bounding_path {
-			new &= !crate::opt::ModuleFlags::BOUND_PATH.bits();
+			new &= !ModuleFlags::BOUND_PATH.bits();
 		}
 		if limits.device_id {
-			new &= !crate::opt::ModuleFlags::DEVICE_ID.bits();
+			new &= !ModuleFlags::DEVICE_ID.bits();
 		}
 		if new != current {
-			patch.write(HEADER_MODULE_FLAGS as u64, new.to_be_bytes().to_vec());
+			module_flags_edit = Some(new);
 		}
+	}
+	if let Some(flags) = plan.module_flags {
+		module_flags_edit = Some(flags.bits());
+	}
+	if let Some(new) = module_flags_edit {
+		patch.write(HEADER_MODULE_FLAGS as u64, new.to_be_bytes().to_vec());
 	}
 
 	let info_size = BigEndian::read_u32(&source[sec + IMAGE_INFO_INFO_SIZE..]) as usize;
@@ -238,6 +313,7 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 		}
 	};
 
+	// RemoveLimits recipes.
 	if limits.region {
 		overwrite_image_info(
 			&mut patch,
@@ -247,14 +323,11 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 			0xFFFFFFFFu32.to_be_bytes().to_vec(),
 		);
 	}
+	// `media` edits allowed_media_types which is *outside* the signed image_info,
+	// so it's a plain Write op with no re-sign.
+	let mut allowed_media_value: Option<u32> = None;
 	if limits.media {
-		overwrite_image_info(
-			&mut patch,
-			&mut image_info,
-			&mut image_info_changed,
-			IMAGE_INFO_ALLOWED_MEDIA,
-			0xFFFFFFFFu32.to_be_bytes().to_vec(),
-		);
+		allowed_media_value = Some(0xFFFFFFFFu32);
 	}
 	if limits.zero_media_id {
 		overwrite_image_info(
@@ -265,17 +338,16 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 			vec![0u8; 16],
 		);
 	}
-
 	if limits.keyvault_privileges || limits.signed_keyvault_only {
 		let local = IMAGE_INFO_IMAGE_FLAGS - IMAGE_INFO;
 		if local + 4 <= image_info.len() {
 			let current = BigEndian::read_u32(&image_info[local..]);
 			let mut new = current;
 			if limits.keyvault_privileges {
-				new &= !crate::opt::ImageFlags::KV_PRIVILEGES_REQUIRED.bits();
+				new &= !ImageFlags::KV_PRIVILEGES_REQUIRED.bits();
 			}
 			if limits.signed_keyvault_only {
-				new &= !crate::opt::ImageFlags::SIGNED_KEYVAULT_REQUIRED.bits();
+				new &= !ImageFlags::SIGNED_KEYVAULT_REQUIRED.bits();
 			}
 			if new != current {
 				overwrite_image_info(
@@ -287,6 +359,29 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 				);
 			}
 		}
+	}
+
+	// Per-field overrides (apply after recipes so explicit user values win).
+	if let Some(v) = plan.game_regions {
+		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, IMAGE_INFO_GAME_REGIONS, v.to_be_bytes().to_vec());
+	}
+	if let Some(v) = plan.allowed_media {
+		allowed_media_value = Some(v.bits());
+	}
+	if let Some(v) = allowed_media_value {
+		patch.write((sec + SECURITY_ALLOWED_MEDIA) as u64, v.to_be_bytes().to_vec());
+	}
+	if let Some(id) = plan.media_id {
+		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, IMAGE_INFO_MEDIA_ID, id.to_vec());
+	}
+	if let Some(k) = plan.file_key {
+		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, IMAGE_INFO + 0x48, k.to_vec());
+	}
+	if let Some(addr) = plan.load_address {
+		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, IMAGE_INFO + 0x08, addr.to_be_bytes().to_vec());
+	}
+	if let Some(flags) = plan.image_flags {
+		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, IMAGE_INFO_IMAGE_FLAGS, flags.bits().to_be_bytes().to_vec());
 	}
 
 	// Apply blob edits + hash recomputations.

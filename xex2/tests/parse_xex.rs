@@ -170,8 +170,10 @@ fn patch_resign_verifies_with_devkit_key() {
 		.verify_signature(xecrypt::ConsoleKind::Devkit, sig, &digest)
 		.expect("devkit PIRS signature should verify after re-signing");
 
-	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x178..sec_off + 0x17C].try_into().unwrap()), 0xFFFFFFFF,);
-	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x17C..sec_off + 0x180].try_into().unwrap()), 0xFFFFFFFF,);
+	// game_regions at image_info + 0x70 (inside signed region)
+	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x178..sec_off + 0x17C].try_into().unwrap()), 0xFFFFFFFF);
+	// allowed_media_types at security_info + 0x17C (outside signed region)
+	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x17C..sec_off + 0x180].try_into().unwrap()), 0xFFFFFFFF);
 }
 
 #[test]
@@ -385,6 +387,49 @@ fn library_versions_zeroes_version_min_and_reverifies() {
 	// Also: new import_table_hash must match.
 	let new_table_hash = xex2::hashes::compute_import_table_hash(&patched_xex.header).unwrap();
 	assert_eq!(new_table_hash, patched_xex.security_info.image_info.import_table_hash);
+}
+
+#[test]
+fn rebuild_field_setters_apply_specific_values() {
+	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+
+	let mut sink = Vec::new();
+	xex.rebuild(&data)
+		.set_media_id([0xAB; 16])
+		.set_game_regions(0x0000_0001)
+		.set_allowed_media(xex2::opt::AllowedMediaTypes::HARD_DISK | xex2::opt::AllowedMediaTypes::DVD_X2)
+		.write_to(&mut sink)
+		.unwrap();
+
+	let patched_xex = xex2::Xex2::parse(&sink).unwrap();
+	assert_eq!(patched_xex.security_info.image_info.media_id, [0xAB; 16]);
+	assert_eq!(patched_xex.security_info.image_info.game_regions, 0x0000_0001);
+	assert_eq!(
+		patched_xex.security_info.image_info.allowed_media_types,
+		xex2::opt::AllowedMediaTypes::HARD_DISK | xex2::opt::AllowedMediaTypes::DVD_X2,
+	);
+	verify_devkit_signature(&sink);
+}
+
+#[test]
+fn rebuild_set_date_range_recomputes_header_hash() {
+	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	if xex
+		.header
+		.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange)
+		.is_none()
+	{
+		eprintln!("skipping: no DateRange");
+		return;
+	}
+	let mut sink = Vec::new();
+	xex.rebuild(&data).set_date_range(100, 200).write_to(&mut sink).unwrap();
+	let patched_xex = xex2::Xex2::parse(&sink).unwrap();
+	let dr = patched_xex.header.date_range().unwrap();
+	assert_eq!(dr.not_before, Some(100));
+	assert_eq!(dr.not_after, Some(200));
+	verify_devkit_signature(&sink);
+	verify_header_hash(&sink);
 }
 
 #[test]
