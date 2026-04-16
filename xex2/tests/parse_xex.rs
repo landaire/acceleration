@@ -301,15 +301,6 @@ fn image_flag_limits_re_sign() {
 		.expect("devkit PIRS signature should verify after image_flags edit");
 }
 
-#[test]
-fn revocation_check_still_errors() {
-	let (data, xex) = load_xex("afplayer.xex");
-	let mut l = xex2::writer::RemoveLimits::default();
-	l.revocation_check = true;
-	let err = xex.modify(&data, &l).unwrap_err();
-	assert!(format!("{}", err).contains("revocation_check"));
-}
-
 fn verify_devkit_signature(patched: &[u8]) {
 	let sec_off = u32::from_be_bytes(patched[0x10..0x14].try_into().unwrap()) as usize;
 	let info_size_off = sec_off + 0x108;

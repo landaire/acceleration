@@ -74,10 +74,6 @@ struct LimitArgs {
 	#[arg(short = 'l', long)]
 	lib_versions: bool,
 
-	/// Remove revocation check requirement
-	#[arg(long)]
-	revocation_check: bool,
-
 	/// Zero the media ID
 	#[arg(short = 'z', long)]
 	zero_media_id: bool,
@@ -98,7 +94,6 @@ impl From<&LimitArgs> for xex2::writer::RemoveLimits {
 			keyvault_privileges: args.kv_privileges,
 			signed_keyvault_only: args.signed_kv_only,
 			library_versions: args.lib_versions,
-			revocation_check: args.revocation_check,
 			zero_media_id: args.zero_media_id,
 		}
 	}

@@ -69,7 +69,6 @@ pub struct RemoveLimits {
 	pub keyvault_privileges: bool,
 	pub signed_keyvault_only: bool,
 	pub library_versions: bool,
-	pub revocation_check: bool,
 	pub zero_media_id: bool,
 }
 
@@ -85,7 +84,6 @@ impl RemoveLimits {
 			keyvault_privileges: true,
 			signed_keyvault_only: true,
 			library_versions: true,
-			revocation_check: true,
 			zero_media_id: true,
 		}
 	}
@@ -100,7 +98,6 @@ impl RemoveLimits {
 			|| self.keyvault_privileges
 			|| self.signed_keyvault_only
 			|| self.library_versions
-			|| self.revocation_check
 			|| self.zero_media_id
 	}
 }
@@ -160,14 +157,6 @@ const HEADER_MODULE_FLAGS: usize = 0x04;
 pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Patch> {
 	let mut patch = Patch::new();
 	let sec = xex.header.security_offset as usize;
-
-	if limits.revocation_check {
-		return Err(Xex2Error::LimitRemovalNotImplemented {
-			limit: "revocation_check",
-			reason: "flag location in the XEX header is not currently known",
-		}
-		.into_report());
-	}
 
 	// Blob edits (optional-header data region, covered by header_hash).
 	// Tracked as `(file_offset, new_bytes)` so we can both emit Write ops and
