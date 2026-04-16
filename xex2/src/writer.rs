@@ -16,14 +16,15 @@
 //! use xex2::Xex2;
 //! use xex2::writer::RemoveLimits;
 //!
-//! let xex = Xex2::parse(std::fs::read("game.xex").unwrap()).unwrap();
+//! let data = std::fs::read("game.xex").unwrap();
+//! let xex = Xex2::parse(&data).unwrap();
 //!
 //! // Remove all region and media restrictions
 //! let mut limits = RemoveLimits::default();
 //! limits.region = true;
 //! limits.media = true;
 //!
-//! let patched = xex.modify(&limits).unwrap();
+//! let patched = xex.modify(&data, &limits).unwrap();
 //! std::fs::write("game_patched.xex", patched).unwrap();
 //! ```
 
@@ -140,12 +141,13 @@ const IMAGE_INFO_ALLOWED_MEDIA: usize = IMAGE_INFO + 0x70;
 
 pub fn modify_xex(
 	xex: &Xex2,
+	input: &[u8],
 	_encryption: TargetEncryption,
 	_compression: TargetCompression,
 	_machine: TargetMachine,
 	limits: &RemoveLimits,
 ) -> Result<Vec<u8>> {
-	let mut data = xex.raw().to_vec();
+	let mut data = input.to_vec();
 	let sec = xex.header.security_offset as usize;
 
 	let mut modified = false;

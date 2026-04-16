@@ -11,7 +11,7 @@
 //! use xex2::Xex2;
 //!
 //! let data = std::fs::read("game.xex").unwrap();
-//! let xex = Xex2::parse(data).unwrap();
+//! let xex = Xex2::parse(&data).unwrap();
 //!
 //! // Read metadata from the parsed header
 //! if let Some(exec) = xex.header.execution_info() {
@@ -19,7 +19,7 @@
 //! }
 //!
 //! // Extract the inner PE image
-//! let pe = xex.extract_basefile().unwrap();
+//! let pe = xex.extract_basefile(&data).unwrap();
 //! std::fs::write("game.pe", pe).unwrap();
 //! ```
 //!
@@ -50,9 +50,9 @@ use crate::header::Xex2Header;
 
 /// A parsed XEX2 executable.
 ///
-/// Owns the raw file bytes so accessors that need to read into the data section
-/// (e.g. [`extract_basefile`][Self::extract_basefile]) can return without
-/// additional I/O.
+/// Holds only the parsed header and security info; the raw file bytes are
+/// passed back in to methods that need them (e.g.
+/// [`extract_basefile`][Self::extract_basefile]).
 ///
 /// # Example
 ///
@@ -60,13 +60,12 @@ use crate::header::Xex2Header;
 /// use xex2::Xex2;
 ///
 /// let data = std::fs::read("game.xex").unwrap();
-/// let xex = Xex2::parse(data).unwrap();
+/// let xex = Xex2::parse(&data).unwrap();
 /// println!("Load address: {:#010x}", xex.security_info.image_info.load_address.0);
 /// ```
 pub struct Xex2 {
 	pub header: Xex2Header,
 	pub security_info: SecurityInfo,
-	raw: Vec<u8>,
 }
 
 impl Xex2 {
@@ -87,12 +86,7 @@ impl Xex2 {
 	fn parse_inner(data: &[u8]) -> Result<Self> {
 		let header = Xex2Header::parse(data)?;
 		let security_info = SecurityInfo::parse(data, header.security_offset as usize)?;
-		Ok(Xex2 { header, security_info, raw: data.to_vec() })
-	}
-
-	/// The raw XEX file bytes.
-	pub fn raw(&self) -> &[u8] {
-		&self.raw
+		Ok(Xex2 { header, security_info })
 	}
 
 	/// Decrypt and decompress the inner PE image.
@@ -101,8 +95,8 @@ impl Xex2 {
 	/// For compressed XEXs, performs basic block decompression or LZX
 	/// decompression based on the file format info. The result starts
 	/// with the `MZ` PE signature.
-	pub fn extract_basefile(&self) -> Result<Vec<u8>> {
-		basefile::extract_basefile(&self.raw, &self.header, &self.security_info)
+	pub fn extract_basefile(&self, data: impl AsRef<[u8]>) -> Result<Vec<u8>> {
+		basefile::extract_basefile(data.as_ref(), &self.header, &self.security_info)
 	}
 
 	/// Apply restriction removals and produce a re-signed XEX.
@@ -114,9 +108,10 @@ impl Xex2 {
 	///
 	/// Use [`writer::RemoveLimits::all`] to enable every restriction removal,
 	/// or set specific fields manually.
-	pub fn modify(&self, limits: &writer::RemoveLimits) -> Result<Vec<u8>> {
+	pub fn modify(&self, data: impl AsRef<[u8]>, limits: &writer::RemoveLimits) -> Result<Vec<u8>> {
 		writer::modify_xex(
 			self,
+			data.as_ref(),
 			writer::TargetEncryption::Unchanged,
 			writer::TargetCompression::Unchanged,
 			writer::TargetMachine::Unchanged,

@@ -22,13 +22,13 @@ Parser and extractor for Xbox 360 XEX2 executables.
 use xex2::Xex2;
 
 let data = std::fs::read("game.xex")?;
-let xex = Xex2::parse(data)?;
+let xex = Xex2::parse(&data)?;
 
 if let Some(exec) = xex.header.execution_info() {
     println!("Title ID: {}", exec.title_id);
 }
 
-let pe = xex.extract_basefile()?;
+let pe = xex.extract_basefile(&data)?;
 assert_eq!(&pe[0..2], b"MZ");
 ```
 

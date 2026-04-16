@@ -5,7 +5,7 @@ use std::fmt::Write;
 use xex2::Xex2;
 use xex2::header::EncryptionType;
 
-pub fn generate_xml(xex: &Xex2) -> String {
+pub fn generate_xml(xex: &Xex2, data: &[u8]) -> String {
 	let mut out = String::new();
 	let header = &xex.header;
 	let security = &xex.security_info;
@@ -24,7 +24,7 @@ pub fn generate_xml(xex: &Xex2) -> String {
 	};
 	writeln!(out, "  <basefile_type>{}</basefile_type>", basefile_type).unwrap();
 
-	let machine = if let Ok(fmt) = header.file_format_info(xex.raw()) {
+	let machine = if let Ok(fmt) = header.file_format_info(data) {
 		match fmt.encryption_type {
 			EncryptionType::Normal => "retail",
 			EncryptionType::None => "devkit",

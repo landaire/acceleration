@@ -10,7 +10,8 @@
 //! ```no_run
 //! use xex2::Xex2;
 //!
-//! let xex = Xex2::parse(std::fs::read("game.xex").unwrap()).unwrap();
+//! let data = std::fs::read("game.xex").unwrap();
+//! let xex = Xex2::parse(&data).unwrap();
 //!
 //! if let Some(ratings) = xex.header.game_ratings() {
 //!     println!("ESRB: {}", ratings.esrb);

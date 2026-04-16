@@ -251,15 +251,15 @@ fn main() -> anyhow::Result<()> {
 
 fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
-	let xex = Xex2::parse(data)?;
+	let xex = Xex2::parse(&data)?;
 
 	if matches!(fmt, OutputFormat::Json) {
-		return cmd_info_json(&xex, extended);
+		return cmd_info_json(&xex, &data, extended);
 	}
 
 	let header = &xex.header;
 	let security = &xex.security_info;
-	let file_format = header.file_format_info(xex.raw())?;
+	let file_format = header.file_format_info(&data)?;
 
 	let mut b = Builder::default();
 
@@ -482,10 +482,10 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 	Ok(())
 }
 
-fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
+fn cmd_info_json(xex: &Xex2, data: &[u8], extended: bool) -> anyhow::Result<()> {
 	let header = &xex.header;
 	let security = &xex.security_info;
-	let file_format = header.file_format_info(xex.raw())?;
+	let file_format = header.file_format_info(data)?;
 
 	let mut info = serde_json::Map::new();
 
@@ -561,9 +561,9 @@ fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
 
 fn cmd_basefile(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
-	let xex = Xex2::parse(data)?;
+	let xex = Xex2::parse(&data)?;
 
-	let basefile = xex.extract_basefile()?;
+	let basefile = xex.extract_basefile(&data)?;
 
 	let out_path = output.unwrap_or_else(|| {
 		let mut p = path.clone();
@@ -579,7 +579,7 @@ fn cmd_basefile(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 
 fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
-	let xex = Xex2::parse(data)?;
+	let xex = Xex2::parse(&data)?;
 
 	let resources = match xex.header.resource_info() {
 		Some(r) => r,
@@ -589,7 +589,7 @@ fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
 		}
 	};
 
-	let basefile = xex.extract_basefile()?;
+	let basefile = xex.extract_basefile(&data)?;
 	let base_addr = xex.security_info.image_info.load_address;
 
 	fs::create_dir_all(output_dir)?;
@@ -612,7 +612,7 @@ fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
 
 fn cmd_imports(path: &PathBuf, fmt: OutputFormat) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
-	let xex = Xex2::parse(data)?;
+	let xex = Xex2::parse(&data)?;
 
 	let table = match xex.header.import_table() {
 		Some(t) => t,
@@ -689,10 +689,10 @@ fn cmd_patch(
 	}
 
 	let data = fs::read(path)?;
-	let xex = Xex2::parse(data)?;
+	let xex = Xex2::parse(&data)?;
 
 	let limits = xex2::writer::RemoveLimits::from(limits);
-	let patched = xex2::writer::modify_xex(&xex, encryption, compression, machine, &limits)?;
+	let patched = xex2::writer::modify_xex(&xex, &data, encryption, compression, machine, &limits)?;
 
 	let out_path = output.unwrap_or_else(|| path.clone());
 	fs::write(&out_path, &patched)?;
@@ -703,7 +703,7 @@ fn cmd_patch(
 
 fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
-	let xex = Xex2::parse(data)?;
+	let xex = Xex2::parse(&data)?;
 
 	let idc = idc::generate_idc(
 		&xex.header,
@@ -725,8 +725,8 @@ fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 
 fn cmd_xml(path: &PathBuf) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
-	let xex = Xex2::parse(data)?;
-	print!("{}", xml::generate_xml(&xex));
+	let xex = Xex2::parse(&data)?;
+	print!("{}", xml::generate_xml(&xex, &data));
 	Ok(())
 }
 
