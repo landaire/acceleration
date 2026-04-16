@@ -237,6 +237,20 @@ pub fn filetime_to_timestamp(ft: u64) -> Option<jiff::Timestamp> {
 	jiff::Timestamp::new(unix_secs, nanos_remainder as i32).ok()
 }
 
+/// Convert a `jiff::Timestamp` to a Windows FILETIME (100-ns intervals since
+/// 1601-01-01). Returns `None` for timestamps before the FILETIME epoch.
+#[cfg(feature = "jiff")]
+pub fn timestamp_to_filetime(ts: jiff::Timestamp) -> Option<u64> {
+	let unix_secs = ts.as_second();
+	let subsec_nanos = ts.subsec_nanosecond();
+	if unix_secs < 0 {
+		return None;
+	}
+	let ticks_from_unix = (unix_secs as u64).checked_mul(10_000_000)?;
+	let ticks_subsec = (subsec_nanos as u64) / 100;
+	Some(FILETIME_UNIX_EPOCH_DELTA.checked_add(ticks_from_unix)?.checked_add(ticks_subsec)?)
+}
+
 macro_rules! impl_u32_hex_display {
 	($ty:ty) => {
 		impl std::fmt::Display for $ty {

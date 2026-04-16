@@ -144,6 +144,7 @@ pub(crate) struct ImageInfoOffset(pub u32);
 impl ImageInfoOffset {
 	pub const IMAGE_FLAGS: Self = Self(0x04);
 	pub const LOAD_ADDRESS: Self = Self(0x08);
+	pub const IMAGE_HASH: Self = Self(0x0C);
 	pub const IMPORT_TABLE_HASH: Self = Self(0x24);
 	pub const MEDIA_ID: Self = Self(0x38);
 	pub const FILE_KEY: Self = Self(0x48);
@@ -161,6 +162,8 @@ impl SecurityOffset {
 	pub const IMAGE_INFO: Self = Self(0x108);
 	/// allowed_media_types sits immediately after the RSA-signed image_info.
 	pub const ALLOWED_MEDIA: Self = Self(0x17C);
+	pub const PAGE_DESCRIPTOR_COUNT: Self = Self(0x180);
+	pub const PAGE_DESCRIPTORS: Self = Self(0x184);
 }
 
 const RSA_SIG_LEN: usize = 0x100;
@@ -186,6 +189,31 @@ pub struct DateRangeEdit {
 	pub not_after: u64,
 }
 
+impl DateRangeEdit {
+	/// Construct from raw FILETIME values.
+	pub fn from_filetimes(not_before: u64, not_after: u64) -> Self {
+		Self { not_before, not_after }
+	}
+
+	/// A validity window that the kernel accepts as "always valid":
+	/// `not_before = 0`, `not_after = u64::MAX`.
+	pub fn unlimited() -> Self {
+		Self { not_before: 0, not_after: u64::MAX }
+	}
+
+	/// Construct from `jiff::Timestamp` values. Returns `None` if either
+	/// timestamp is before the FILETIME epoch (1601-01-01).
+	///
+	/// Available with the `jiff` feature.
+	#[cfg(feature = "jiff")]
+	pub fn from_timestamps(not_before: jiff::Timestamp, not_after: jiff::Timestamp) -> Option<Self> {
+		Some(Self {
+			not_before: xenon_types::timestamp_to_filetime(not_before)?,
+			not_after: xenon_types::timestamp_to_filetime(not_after)?,
+		})
+	}
+}
+
 /// A bundle of per-field edits and transforms to apply to a XEX.
 ///
 /// [`RemoveLimits`] lowers into this via [`From`]; [`crate::rebuild::Rebuilder`]
@@ -208,6 +236,15 @@ pub struct EditPlan {
 	/// Target encryption state. `None` = keep current. If the request matches
 	/// the current `file_format_info.encryption_type`, the transform is a no-op.
 	pub target_encryption: Option<TargetEncryption>,
+	/// Replace the inner PE image with these bytes. Requires the source XEX
+	/// to be uncompressed (`CompressionType::None`) and the replacement PE to
+	/// fit within `image_size`; otherwise the rebuild fails. Triggers
+	/// regeneration of page descriptors and `image_hash`.
+	///
+	/// **Note**: the page-descriptor hash formula isn't fully reverse-engineered,
+	/// so the produced XEX may not satisfy a strict retail kernel verification.
+	/// See [`crate::page_descriptors`] for details.
+	pub replace_pe: Option<Vec<u8>>,
 }
 
 impl EditPlan {
@@ -224,6 +261,7 @@ impl EditPlan {
 			&& self.cleared_optional_headers.is_empty()
 			&& self.target_machine.is_none()
 			&& self.target_encryption.is_none()
+			&& self.replace_pe.is_none()
 	}
 }
 
@@ -236,6 +274,38 @@ impl From<RemoveLimits> for EditPlan {
 impl From<&RemoveLimits> for EditPlan {
 	fn from(limits: &RemoveLimits) -> Self {
 		EditPlan { limits: limits.clone(), ..Self::default() }
+	}
+}
+
+#[cfg(test)]
+mod date_range_tests {
+	use super::*;
+
+	#[test]
+	fn unlimited_window() {
+		let r = DateRangeEdit::unlimited();
+		assert_eq!(r.not_before, 0);
+		assert_eq!(r.not_after, u64::MAX);
+	}
+
+	#[cfg(feature = "jiff")]
+	#[test]
+	fn from_timestamps_round_trips_through_filetime() {
+		let nb = jiff::Timestamp::from_second(1_700_000_000).unwrap();
+		let na = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+		let r = DateRangeEdit::from_timestamps(nb, na).unwrap();
+		let parsed_nb = xenon_types::filetime_to_timestamp(r.not_before).unwrap();
+		let parsed_na = xenon_types::filetime_to_timestamp(r.not_after).unwrap();
+		assert_eq!(parsed_nb.as_second(), 1_700_000_000);
+		assert_eq!(parsed_na.as_second(), 1_800_000_000);
+	}
+
+	#[cfg(feature = "jiff")]
+	#[test]
+	fn from_timestamps_rejects_pre_unix_epoch() {
+		let nb = jiff::Timestamp::from_second(-1).unwrap();
+		let na = jiff::Timestamp::from_second(100).unwrap();
+		assert!(DateRangeEdit::from_timestamps(nb, na).is_none());
 	}
 }
 
@@ -268,6 +338,7 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<Patch> {
 	apply_limits(plan, &mut patch, &mut editor);
 	apply_field_overrides(plan, &mut patch, &mut editor);
 	apply_encryption_transforms(xex, source, plan, &mut patch, &mut editor, &mut blob_edits)?;
+	apply_pe_replacement(xex, source, plan, &mut patch, &mut editor)?;
 	apply_blob_edits_and_rehash(xex, source, plan, &mut patch, &mut editor, &mut blob_edits);
 
 	if editor.changed {
@@ -454,6 +525,76 @@ fn apply_blob_edits_and_rehash(
 
 	let new_header_hash = hashes::compute_header_hash(&working, &xex.header, &xex.security_info);
 	editor.overwrite(patch, ImageInfoOffset::HEADER_HASH, new_header_hash.to_vec());
+}
+
+/// Replace the PE image and regenerate page descriptors + image_hash.
+///
+/// Requires the source XEX to be uncompressed + unencrypted, since we only
+/// rewrite data bytes verbatim. Attempts to preserve the existing
+/// descriptor grouping as a template so the new table has the same shape.
+fn apply_pe_replacement(
+	xex: &Xex2,
+	source: &[u8],
+	plan: &EditPlan,
+	patch: &mut Patch,
+	editor: &mut ImageInfoEditor<'_>,
+) -> Result<()> {
+	let Some(new_pe) = plan.replace_pe.as_deref() else {
+		return Ok(());
+	};
+
+	let file_format = xex.header.file_format_info()?;
+	if file_format.compression_type != crate::header::CompressionType::None {
+		return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
+	}
+	if file_format.encryption_type != EncryptionType::None
+		&& plan.target_encryption != Some(TargetEncryption::Decrypted)
+	{
+		return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
+	}
+
+	// Write the new PE bytes in place of the old data region.
+	let data_off = FileOffset::from(xex.header.data_offset);
+	patch.write(data_off.get(), new_pe.to_vec());
+
+	// Regenerate page descriptors using the existing grouping as a template
+	// (so count/flags match the original layout even if hashes differ).
+	let page_size =
+		if xex.security_info.image_info.image_flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
+	let template = read_page_descriptor_template(source, editor.sec, xex.security_info.page_descriptor_count);
+	let (descriptors, image_hash) = crate::page_descriptors::generate(new_pe, page_size, template.as_deref());
+
+	// Stage the new image_hash.
+	editor.overwrite(patch, ImageInfoOffset::IMAGE_HASH, image_hash.to_vec());
+
+	// Stage the new image_size in security_info.
+	let new_image_size = new_pe.len() as u32;
+	let image_size_off = editor.sec + 0x04usize;
+	patch.write(image_size_off.get(), new_image_size.to_be_bytes().to_vec());
+
+	// Stage the descriptor table. count at sec+0x180, entries at sec+0x184.
+	let count_off = editor.sec + SecurityOffset::PAGE_DESCRIPTOR_COUNT.0 as usize;
+	patch.write(count_off.get(), (descriptors.len() as u32).to_be_bytes().to_vec());
+	let desc_off = editor.sec + SecurityOffset::PAGE_DESCRIPTORS.0 as usize;
+	let mut desc_bytes = Vec::with_capacity(descriptors.len() * 24);
+	for d in &descriptors {
+		desc_bytes.extend_from_slice(&d.to_bytes());
+	}
+	patch.write(desc_off.get(), desc_bytes);
+
+	Ok(())
+}
+
+fn read_page_descriptor_template(source: &[u8], sec: FileOffset, count: u32) -> Option<Vec<(u32, u32)>> {
+	let base = (sec + SecurityOffset::PAGE_DESCRIPTORS.0 as usize).as_usize();
+	let mut out = Vec::with_capacity(count as usize);
+	for i in 0..count as usize {
+		let off = base + i * 24;
+		let bytes: &[u8; 4] = source.get(off..off + 4)?.try_into().ok()?;
+		let info = u32::from_be_bytes(*bytes);
+		out.push((info >> 4, info & 0xF));
+	}
+	Some(out)
 }
 
 fn sign_and_stage(sec: FileOffset, image_info: &[u8], patch: &mut Patch) -> Result<()> {

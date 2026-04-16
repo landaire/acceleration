@@ -39,12 +39,14 @@
 //! - `serde` (default off) -- enables `Serialize` on all public types.
 
 pub mod basefile;
+pub mod builder;
 pub mod crypto;
 pub mod error;
 pub mod hashes;
 pub mod header;
 pub mod imports;
 pub mod opt;
+pub mod page_descriptors;
 pub mod patch;
 pub mod rebuild;
 pub mod writer;

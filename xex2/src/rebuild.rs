@@ -37,12 +37,11 @@ pub struct Rebuilder<'a> {
 	source: &'a [u8],
 	compression: Option<TargetCompression>,
 	plan: EditPlan,
-	replace_pe: Option<Vec<u8>>,
 }
 
 impl<'a> Rebuilder<'a> {
 	pub fn new(xex: Xex2, source: &'a [u8]) -> Self {
-		Self { xex, source, compression: None, plan: EditPlan::default(), replace_pe: None }
+		Self { xex, source, compression: None, plan: EditPlan::default() }
 	}
 
 	// Transform setters. Each sets the target state; if it already matches the
@@ -65,7 +64,7 @@ impl<'a> Rebuilder<'a> {
 	}
 
 	pub fn replace_pe(mut self, pe: Vec<u8>) -> Self {
-		self.replace_pe = Some(pe);
+		self.plan.replace_pe = Some(pe);
 		self
 	}
 
@@ -124,8 +123,11 @@ impl<'a> Rebuilder<'a> {
 		self
 	}
 
-	/// True iff this rebuild doesn't require compression changes or PE
-	/// replacement. Setting a target that already matches is still supported.
+	/// True iff this rebuild is supported by the current implementation.
+	///
+	/// Compression changes (other than no-op ones where the target already
+	/// matches the current XEX) are not yet implemented. PE replacement works
+	/// but requires the source to be uncompressed.
 	pub fn is_supported(&self) -> bool {
 		let compression_changes = self.compression.is_some_and(|c| {
 			// A no-op if the current XEX already matches.
@@ -138,7 +140,7 @@ impl<'a> Rebuilder<'a> {
 				)
 			})
 		});
-		!compression_changes && self.replace_pe.is_none()
+		!compression_changes
 	}
 
 	/// Produce the [`Patch`] representing this rebuild, if supported.

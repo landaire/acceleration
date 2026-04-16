@@ -20,9 +20,11 @@ lzxd = "0.2"
 rootcause = "0.12"
 xecrypt = { version = "0.1", path = "../xecrypt" }
 xenon_types = { version = "0.1", path = "../xenon_types" }
+jiff = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta = { workspace = true }
 
 [features]
 serde = ["dep:serde"]
+jiff = ["dep:jiff", "xenon_types/jiff"]
