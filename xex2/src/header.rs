@@ -146,6 +146,7 @@ pub struct ImageInfo {
 	pub import_table_hash: [u8; 20],
 	pub media_id: [u8; 16],
 	pub file_key: AesKey,
+	pub export_table_address: u32,
 	pub header_hash: [u8; 20],
 	pub game_regions: u32,
 	pub allowed_media_types: AllowedMediaTypes,
@@ -472,6 +473,7 @@ impl SecurityInfo {
 				c.read_exact(&mut k).io()?;
 				k
 			}),
+			export_table_address: c.read_u32::<BigEndian>().io()?,
 			header_hash: {
 				let mut h = [0u8; 20];
 				c.read_exact(&mut h).io()?;

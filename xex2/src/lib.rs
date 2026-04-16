@@ -41,6 +41,7 @@
 pub mod basefile;
 pub mod crypto;
 pub mod error;
+pub mod hashes;
 pub mod header;
 pub mod imports;
 pub mod opt;

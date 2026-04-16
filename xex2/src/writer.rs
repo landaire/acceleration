@@ -113,26 +113,28 @@ impl RemoveLimits {
 //   +0x180: page_descriptors   (variable)
 //
 // ImageInfo field offsets (relative to SecurityInfo start):
-//   +0x108: info_size          (u32)
-//   +0x10C: image_flags        (u32)
-//   +0x110: load_address       (u32)
-//   +0x114: image_hash         ([u8; 20])
-//   +0x128: import_count       (u32)
-//   +0x12C: import_hash        ([u8; 20])
-//   +0x140: media_id           ([u8; 16])
-//   +0x150: file_key           ([u8; 16])
-//   +0x160: header_hash        ([u8; 20])
-//   +0x174: game_regions       (u32)
-//   +0x178: allowed_media      (u32)
+//   +0x108: info_size            (u32)
+//   +0x10C: image_flags          (u32)
+//   +0x110: load_address         (u32)
+//   +0x114: image_hash           ([u8; 20])
+//   +0x128: import_count         (u32)
+//   +0x12C: import_hash          ([u8; 20])
+//   +0x140: media_id             ([u8; 16])
+//   +0x150: file_key             ([u8; 16])
+//   +0x160: export_table_address (u32)
+//   +0x164: header_hash          ([u8; 20])
+//   +0x178: game_regions         (u32)
+//   +0x17C: allowed_media        (u32)
 
 const RSA_SIG: usize = 0x008;
 const RSA_SIG_LEN: usize = 0x100;
-const IMAGE_INFO: usize = 0x108;
-const IMAGE_INFO_INFO_SIZE: usize = IMAGE_INFO;
-const IMAGE_INFO_IMAGE_FLAGS: usize = IMAGE_INFO + 0x04;
-const IMAGE_INFO_MEDIA_ID: usize = IMAGE_INFO + 0x38;
-const IMAGE_INFO_GAME_REGIONS: usize = IMAGE_INFO + 0x6C;
-const IMAGE_INFO_ALLOWED_MEDIA: usize = IMAGE_INFO + 0x70;
+pub(crate) const IMAGE_INFO: usize = 0x108;
+pub(crate) const IMAGE_INFO_INFO_SIZE: usize = IMAGE_INFO;
+pub(crate) const IMAGE_INFO_IMAGE_FLAGS: usize = IMAGE_INFO + 0x04;
+pub(crate) const IMAGE_INFO_MEDIA_ID: usize = IMAGE_INFO + 0x38;
+pub(crate) const IMAGE_INFO_HEADER_HASH: usize = IMAGE_INFO + 0x5C;
+pub(crate) const IMAGE_INFO_GAME_REGIONS: usize = IMAGE_INFO + 0x70;
+pub(crate) const IMAGE_INFO_ALLOWED_MEDIA: usize = IMAGE_INFO + 0x74;
 
 // XEX main header: module_flags at offset 0x04.
 const HEADER_MODULE_FLAGS: usize = 0x04;

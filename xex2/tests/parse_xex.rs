@@ -170,8 +170,8 @@ fn patch_resign_verifies_with_devkit_key() {
 		.verify_signature(xecrypt::ConsoleKind::Devkit, sig, &digest)
 		.expect("devkit PIRS signature should verify after re-signing");
 
-	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x174..sec_off + 0x178].try_into().unwrap()), 0xFFFFFFFF,);
 	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x178..sec_off + 0x17C].try_into().unwrap()), 0xFFFFFFFF,);
+	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x17C..sec_off + 0x180].try_into().unwrap()), 0xFFFFFFFF,);
 }
 
 #[test]
@@ -189,6 +189,52 @@ fn rebuild_fast_path_matches_modify() {
 
 	assert_eq!(via_modify.len(), via_stream.len());
 	assert_eq!(via_modify, via_stream);
+}
+
+#[test]
+fn header_hash_formula_matches_fixtures() {
+	for name in &[
+		"afplayer.xex",
+		"AntiPiracyUI.xex",
+		"Portal 2.xex",
+		"Deus Ex.xex",
+		"haloreach-powerhouse.xex",
+		"xshell twi.xex",
+		"ArchEngine.xex",
+		"xbdm.xex",
+	] {
+		let (data, xex) = load_xex(name);
+		let computed = xex2::hashes::compute_header_hash(&data, &xex.header, &xex.security_info);
+		assert_eq!(
+			computed, xex.security_info.image_info.header_hash,
+			"header_hash mismatch for {}",
+			name
+		);
+	}
+}
+
+#[test]
+fn import_table_hash_formula_matches_fixtures() {
+	for name in &[
+		"afplayer.xex",
+		"AntiPiracyUI.xex",
+		"Portal 2.xex",
+		"Deus Ex.xex",
+		"haloreach-powerhouse.xex",
+		"xshell twi.xex",
+		"ArchEngine.xex",
+		"xbdm.xex",
+	] {
+		let (_data, xex) = load_xex(name);
+		let Some(computed) = xex2::hashes::compute_import_table_hash(&xex.header) else {
+			continue;
+		};
+		assert_eq!(
+			computed, xex.security_info.image_info.import_table_hash,
+			"import_table_hash mismatch for {}: computed {:?} vs stored {:?}",
+			name, computed, xex.security_info.image_info.import_table_hash
+		);
+	}
 }
 
 #[test]
