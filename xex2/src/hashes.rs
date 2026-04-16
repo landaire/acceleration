@@ -62,9 +62,24 @@ pub fn compute_import_table_hash(header: &Xex2Header) -> Option<[u8; 20]> {
 	Some(hash_entry_body(first))
 }
 
-/// Find the offsets of each library entry within the blob. Returns a vec of
-/// `(offset, entry_size)` pairs in on-disk order.
-pub fn library_entry_offsets(blob: &[u8]) -> Option<Vec<(usize, usize)>> {
+/// Position of one library entry within the ImportLibraries blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LibraryEntrySpan {
+	/// Blob-relative offset of the entry's first byte (the entry_size u32).
+	pub offset: usize,
+	/// Total size of the entry in bytes (including the entry_size prefix).
+	pub size: usize,
+}
+
+impl LibraryEntrySpan {
+	pub fn range(&self) -> std::ops::Range<usize> {
+		self.offset..self.offset + self.size
+	}
+}
+
+/// Walk the ImportLibraries blob and return the span of each library entry
+/// in on-disk order.
+pub fn library_entry_offsets(blob: &[u8]) -> Option<Vec<LibraryEntrySpan>> {
 	if blob.len() < 12 {
 		return None;
 	}
@@ -80,20 +95,20 @@ pub fn library_entry_offsets(blob: &[u8]) -> Option<Vec<(usize, usize)>> {
 		if off + 4 > blob.len() {
 			return None;
 		}
-		let entry_size = u32::from_be_bytes(blob[off..off + 4].try_into().ok()?) as usize;
-		if off + entry_size > blob.len() || entry_size < 4 {
+		let size = u32::from_be_bytes(blob[off..off + 4].try_into().ok()?) as usize;
+		if off + size > blob.len() || size < 4 {
 			return None;
 		}
-		out.push((off, entry_size));
-		off += entry_size;
+		out.push(LibraryEntrySpan { offset: off, size });
+		off += size;
 	}
 	Some(out)
 }
 
 fn first_library_entry(blob: &[u8]) -> Option<&[u8]> {
-	let offs = library_entry_offsets(blob)?;
-	let (off, size) = *offs.first()?;
-	Some(&blob[off..off + size])
+	let spans = library_entry_offsets(blob)?;
+	let first = *spans.first()?;
+	Some(&blob[first.range()])
 }
 
 /// SHA-1 of a library entry's body (bytes 4..entry_size, skipping the size prefix).
@@ -112,15 +127,14 @@ pub fn hash_entry_body(entry: &[u8]) -> [u8; 20] {
 /// library's digest is left as-is (it's already consistent with whatever
 /// follows it, typically zero). Returns `None` if the blob is malformed.
 pub fn rewrite_import_table_hashes(blob: &mut [u8]) -> Option<[u8; 20]> {
-	let offs = library_entry_offsets(blob)?;
+	let spans = library_entry_offsets(blob)?;
 	// Walk backwards: compute each library's "next-hash" and store it in the
 	// preceding library's digest field.
-	for window in offs.windows(2).rev() {
-		let (cur_off, _cur_size) = window[0];
-		let (next_off, next_size) = window[1];
-		let next_hash = hash_entry_body(&blob[next_off..next_off + next_size]);
-		blob[cur_off + 4..cur_off + 4 + 20].copy_from_slice(&next_hash);
+	for pair in spans.windows(2).rev() {
+		let next_hash = hash_entry_body(&blob[pair[1].range()]);
+		let digest_off = pair[0].offset + 4;
+		blob[digest_off..digest_off + 20].copy_from_slice(&next_hash);
 	}
-	let (first_off, first_size) = *offs.first()?;
-	Some(hash_entry_body(&blob[first_off..first_off + first_size]))
+	let first = *spans.first()?;
+	Some(hash_entry_body(&blob[first.range()]))
 }

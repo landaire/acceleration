@@ -34,11 +34,14 @@ use crate::Xex2;
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::hashes;
+use crate::header::EncryptionType;
+use crate::header::FileSpan;
 use crate::header::OptionalHeaderKey;
 use crate::opt::AllowedMediaTypes;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
 use crate::patch::Patch;
+use xenon_types::FileOffset;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetEncryption {
@@ -130,21 +133,58 @@ impl RemoveLimits {
 //   +0x180: page_descriptor_count
 //   +0x184: page_descriptors
 
-const RSA_SIG: usize = 0x008;
-const RSA_SIG_LEN: usize = 0x100;
-pub(crate) const IMAGE_INFO: usize = 0x108;
-pub(crate) const IMAGE_INFO_INFO_SIZE: usize = IMAGE_INFO;
-pub(crate) const IMAGE_INFO_IMAGE_FLAGS: usize = IMAGE_INFO + 0x04;
-pub(crate) const IMAGE_INFO_IMPORT_TABLE_HASH: usize = IMAGE_INFO + 0x24;
-pub(crate) const IMAGE_INFO_MEDIA_ID: usize = IMAGE_INFO + 0x38;
-pub(crate) const IMAGE_INFO_HEADER_HASH: usize = IMAGE_INFO + 0x5C;
-pub(crate) const IMAGE_INFO_GAME_REGIONS: usize = IMAGE_INFO + 0x70;
-// allowed_media_types sits at security_info + 0x17C, immediately after the
-// RSA-signed image_info region. Writes here don't invalidate the signature.
-pub(crate) const SECURITY_ALLOWED_MEDIA: usize = 0x17C;
+/// Offset of a field within `image_info`.
+///
+/// `image_info` starts at `security_info + 0x108`. A field at
+/// `ImageInfoOffset(0x70)` thus lives at absolute file offset
+/// `security_offset + 0x108 + 0x70`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ImageInfoOffset(pub u32);
 
-// XEX main header: module_flags at offset 0x04.
-const HEADER_MODULE_FLAGS: usize = 0x04;
+impl ImageInfoOffset {
+	pub const IMAGE_FLAGS: Self = Self(0x04);
+	pub const LOAD_ADDRESS: Self = Self(0x08);
+	pub const IMPORT_TABLE_HASH: Self = Self(0x24);
+	pub const MEDIA_ID: Self = Self(0x38);
+	pub const FILE_KEY: Self = Self(0x48);
+	pub const HEADER_HASH: Self = Self(0x5C);
+	pub const GAME_REGIONS: Self = Self(0x70);
+}
+
+/// Offset of a field within `security_info` (from its start, not from the
+/// file start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SecurityOffset(pub u32);
+
+impl SecurityOffset {
+	pub const RSA_SIG: Self = Self(0x008);
+	pub const IMAGE_INFO: Self = Self(0x108);
+	/// allowed_media_types sits immediately after the RSA-signed image_info.
+	pub const ALLOWED_MEDIA: Self = Self(0x17C);
+}
+
+const RSA_SIG_LEN: usize = 0x100;
+const IMAGE_INFO_OFFSET: usize = SecurityOffset::IMAGE_INFO.0 as usize;
+
+/// XEX main header: module_flags at file offset 0x04.
+const HEADER_MODULE_FLAGS: xenon_types::FileOffset = xenon_types::FileOffset(0x04);
+
+/// A single blob-edit: replace `len` bytes at `offset` in the source file
+/// with `bytes`. Used for optional-header data blobs like DateRange,
+/// ConsoleSerialList, ImportLibraries.
+#[derive(Debug, Clone)]
+struct BlobEdit {
+	offset: xenon_types::FileOffset,
+	bytes: Vec<u8>,
+}
+
+/// A FILETIME-based validity window for a XEX's DateRange optional header.
+/// Both ends are 100-ns intervals since 1601-01-01 (Windows FILETIME).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateRangeEdit {
+	pub not_before: u64,
+	pub not_after: u64,
+}
 
 /// A bundle of per-field edits and transforms to apply to a XEX.
 ///
@@ -158,9 +198,9 @@ pub struct EditPlan {
 	pub game_regions: Option<u32>,
 	pub allowed_media: Option<AllowedMediaTypes>,
 	pub media_id: Option<[u8; 16]>,
-	pub file_key: Option<[u8; 16]>,
-	pub load_address: Option<u32>,
-	pub date_range: Option<(u64, u64)>,
+	pub file_key: Option<xenon_types::AesKey>,
+	pub load_address: Option<xenon_types::VirtualAddress>,
+	pub date_range: Option<DateRangeEdit>,
 	pub cleared_optional_headers: Vec<OptionalHeaderKey>,
 	/// Target machine for the file key wrap. `None` = keep current. If the
 	/// request matches the detected current machine, the transform is a no-op.
@@ -209,268 +249,264 @@ impl From<&RemoveLimits> for EditPlan {
 /// import-table edits also recompute `import_table_hash` and the digest
 /// chain.
 pub fn plan_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<Patch> {
-	let limits = &plan.limits;
 	let mut patch = Patch::new();
-	let sec = xex.header.security_offset as usize;
+	let sec: FileOffset = xex.header.security_offset.into();
 
-	// Blob edits (optional-header data region, covered by header_hash).
-	let mut blob_edits: Vec<(usize, Vec<u8>)> = Vec::new();
+	let mut blob_edits = stage_blob_edits(xex, source, plan)?;
+	stage_module_flags(source, plan, &mut patch);
+	stage_allowed_media(source, plan, sec, &mut patch);
 
-	let stage_blob_edit = |k: OptionalHeaderKey, bytes_for: &dyn Fn(usize) -> Vec<u8>, edits: &mut Vec<(usize, Vec<u8>)>| {
-		if let Some((off, len)) = xex.header.optional_header_source_range(source, k) {
-			edits.push((off, bytes_for(len)));
-		}
+	// image_info is the RSA-signed portion of SecurityInfo. Some edits live
+	// here; the rest of `plan_edits` threads an editor through so we can
+	// recompute and sign at the end.
+	let Some(image_info_span) = image_info_span(source, sec) else {
+		return Ok(patch);
 	};
+	let mut image_info_buf = source[image_info_span.as_range()].to_vec();
+	let mut editor = ImageInfoEditor::new(&mut image_info_buf, sec);
 
-	if limits.dates {
-		stage_blob_edit(
-			OptionalHeaderKey::DateRange,
-			&|len| {
-				let mut b = vec![0u8; len];
-				if len >= 16 {
-					b[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
-				}
-				b
-			},
-			&mut blob_edits,
-		);
-	}
-	if let Some((not_before, not_after)) = plan.date_range {
-		stage_blob_edit(
-			OptionalHeaderKey::DateRange,
-			&|len| {
-				let mut b = vec![0u8; len];
-				if len >= 16 {
-					b[0..8].copy_from_slice(&not_before.to_be_bytes());
-					b[8..16].copy_from_slice(&not_after.to_be_bytes());
-				}
-				b
-			},
-			&mut blob_edits,
-		);
-	}
-	if limits.console_id {
-		stage_blob_edit(OptionalHeaderKey::ConsoleSerialList, &|len| vec![0u8; len], &mut blob_edits);
-	}
-	for key in &plan.cleared_optional_headers {
-		stage_blob_edit(*key, &|len| vec![0u8; len], &mut blob_edits);
-	}
-	if limits.library_versions {
-		if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries) {
-			let mut blob = source[off..off + len].to_vec();
-			let offsets = hashes::library_entry_offsets(&blob)
-				.ok_or_else(|| Xex2Error::SigningFailed.into_report())?;
-			for (entry_off, _entry_size) in &offsets {
-				blob[entry_off + 0x20..entry_off + 0x24].fill(0);
-			}
-			blob_edits.push((off, blob));
-		}
-	}
+	apply_limits(plan, &mut patch, &mut editor);
+	apply_field_overrides(plan, &mut patch, &mut editor);
+	apply_encryption_transforms(xex, source, plan, &mut patch, &mut editor, &mut blob_edits)?;
+	apply_blob_edits_and_rehash(xex, source, plan, &mut patch, &mut editor, &mut blob_edits);
 
-	// Module flag edits (outside the signed region).
-	let mut module_flags_edit: Option<u32> = None;
-	if limits.bounding_path || limits.device_id {
-		let current = BigEndian::read_u32(&source[HEADER_MODULE_FLAGS..]);
-		let mut new = current;
-		if limits.bounding_path {
-			new &= !ModuleFlags::BOUND_PATH.bits();
-		}
-		if limits.device_id {
-			new &= !ModuleFlags::DEVICE_ID.bits();
-		}
-		if new != current {
-			module_flags_edit = Some(new);
-		}
+	if editor.changed {
+		sign_and_stage(sec, editor.buffer, &mut patch)?;
 	}
-	if let Some(flags) = plan.module_flags {
-		module_flags_edit = Some(flags.bits());
-	}
-	if let Some(new) = module_flags_edit {
-		patch.write(HEADER_MODULE_FLAGS as u64, new.to_be_bytes().to_vec());
-	}
-
-	let info_size = BigEndian::read_u32(&source[sec + IMAGE_INFO_INFO_SIZE..]) as usize;
-	let image_info_len = info_size.saturating_sub(RSA_SIG_LEN);
-	if image_info_len == 0 {
-		return Ok(patch);
-	}
-
-	let image_info_start = sec + IMAGE_INFO;
-	let image_info_end = image_info_start + image_info_len;
-	if image_info_end > source.len() {
-		return Ok(patch);
-	}
-
-	// Build the post-edit ImageInfo in a local buffer. This doubles as the
-	// bytes we hash + sign.
-	let mut image_info = source[image_info_start..image_info_end].to_vec();
-	let mut image_info_changed = false;
-
-	// RemoveLimits recipes.
-	if limits.region {
-		overwrite_image_info(
-			&mut patch,
-			&mut image_info,
-			&mut image_info_changed,
-			sec,
-			IMAGE_INFO_GAME_REGIONS,
-			0xFFFFFFFFu32.to_be_bytes().to_vec(),
-		);
-	}
-	// `media` edits allowed_media_types which is *outside* the signed image_info,
-	// so it's a plain Write op with no re-sign.
-	let mut allowed_media_value: Option<u32> = None;
-	if limits.media {
-		allowed_media_value = Some(0xFFFFFFFFu32);
-	}
-	if limits.zero_media_id {
-		overwrite_image_info(
-			&mut patch,
-			&mut image_info,
-			&mut image_info_changed,
-			sec,
-			IMAGE_INFO_MEDIA_ID,
-			vec![0u8; 16],
-		);
-	}
-	if limits.keyvault_privileges || limits.signed_keyvault_only {
-		let local = IMAGE_INFO_IMAGE_FLAGS - IMAGE_INFO;
-		if local + 4 <= image_info.len() {
-			let current = BigEndian::read_u32(&image_info[local..]);
-			let mut new = current;
-			if limits.keyvault_privileges {
-				new &= !ImageFlags::KV_PRIVILEGES_REQUIRED.bits();
-			}
-			if limits.signed_keyvault_only {
-				new &= !ImageFlags::SIGNED_KEYVAULT_REQUIRED.bits();
-			}
-			if new != current {
-				overwrite_image_info(
-					&mut patch,
-					&mut image_info,
-					&mut image_info_changed,
-					sec,
-					IMAGE_INFO_IMAGE_FLAGS,
-					new.to_be_bytes().to_vec(),
-				);
-			}
-		}
-	}
-
-	// Per-field overrides (apply after recipes so explicit user values win).
-	if let Some(v) = plan.game_regions {
-		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, sec, IMAGE_INFO_GAME_REGIONS, v.to_be_bytes().to_vec());
-	}
-	if let Some(v) = plan.allowed_media {
-		allowed_media_value = Some(v.bits());
-	}
-	if let Some(v) = allowed_media_value {
-		patch.write((sec + SECURITY_ALLOWED_MEDIA) as u64, v.to_be_bytes().to_vec());
-	}
-	if let Some(id) = plan.media_id {
-		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, sec, IMAGE_INFO_MEDIA_ID, id.to_vec());
-	}
-	if let Some(k) = plan.file_key {
-		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, sec, IMAGE_INFO + 0x48, k.to_vec());
-	}
-	if let Some(addr) = plan.load_address {
-		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, sec, IMAGE_INFO + 0x08, addr.to_be_bytes().to_vec());
-	}
-	if let Some(flags) = plan.image_flags {
-		overwrite_image_info(&mut patch, &mut image_info, &mut image_info_changed, sec, IMAGE_INFO_IMAGE_FLAGS, flags.bits().to_be_bytes().to_vec());
-	}
-
-	// Encryption + machine transforms. These touch:
-	// - file_key in image_info (re-wrapped or zeroed)
-	// - the data region at [data_offset, data_offset + encrypted_size)
-	// - the FileFormatInfo optional header (encryption_type field)
-	apply_encryption_transforms(
-		xex,
-		source,
-		plan,
-		sec,
-		&mut patch,
-		&mut image_info,
-		&mut image_info_changed,
-		&mut blob_edits,
-	)?;
-
-	// Apply blob edits + hash recomputations.
-	if !blob_edits.is_empty() {
-		// Build a working copy of source with the blob edits applied so we can
-		// rehash over the modified bytes.
-		let mut working = source.to_vec();
-		for (off, bytes) in &blob_edits {
-			working[*off..*off + bytes.len()].copy_from_slice(bytes);
-			patch.write(*off as u64, bytes.clone());
-		}
-
-		// If the import table was edited, rebuild its digest chain and
-		// compute the new import_table_hash, write both to the working copy
-		// and stage an image_info update.
-		if limits.library_versions {
-			if let Some((off, len)) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries) {
-				let blob = &mut working[off..off + len];
-				if let Some(new_table_hash) = hashes::rewrite_import_table_hashes(blob) {
-					// Overwrite the blob Write op with the digest-chain-fixed version.
-					let updated = blob.to_vec();
-					for edit in &mut blob_edits {
-						if edit.0 == off {
-							edit.1 = updated.clone();
-						}
-					}
-					patch.write(off as u64, updated);
-					overwrite_image_info(
-						&mut patch,
-						&mut image_info,
-						&mut image_info_changed,
-						sec,
-						IMAGE_INFO_IMPORT_TABLE_HASH,
-						new_table_hash.to_vec(),
-					);
-				}
-			}
-		}
-
-		// Recompute header_hash over the modified source and stage image_info update.
-		let new_header_hash = hashes::compute_header_hash(&working, &xex.header, &xex.security_info);
-		overwrite_image_info(
-			&mut patch,
-			&mut image_info,
-			&mut image_info_changed,
-			sec,
-			IMAGE_INFO_HEADER_HASH,
-			new_header_hash.to_vec(),
-		);
-	}
-
-	if !image_info_changed {
-		return Ok(patch);
-	}
-
-	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(&image_info, &[]);
-	let sig = xecrypt::RsaKeyKind::Pirs
-		.sign(xecrypt::ConsoleKind::Devkit, &digest)
-		.map_err(|_| Xex2Error::SigningFailed.into_report())?;
-
-	patch.write((sec + RSA_SIG) as u64, sig.to_vec());
 
 	Ok(patch)
 }
 
-fn overwrite_image_info(
+fn stage_blob_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<Vec<BlobEdit>> {
+	let mut edits = Vec::new();
+	let stage = |edits: &mut Vec<BlobEdit>, key: OptionalHeaderKey, bytes_for: &dyn Fn(usize) -> Vec<u8>| {
+		if let Some(span) = xex.header.optional_header_source_range(source, key) {
+			edits.push(BlobEdit { offset: span.offset, bytes: bytes_for(span.len) });
+		}
+	};
+
+	if plan.limits.dates {
+		stage(&mut edits, OptionalHeaderKey::DateRange, &|len| {
+			let mut b = vec![0u8; len];
+			if len >= 16 {
+				b[8..16].copy_from_slice(&u64::MAX.to_be_bytes());
+			}
+			b
+		});
+	}
+	if let Some(range) = plan.date_range {
+		stage(&mut edits, OptionalHeaderKey::DateRange, &|len| {
+			let mut b = vec![0u8; len];
+			if len >= 16 {
+				b[0..8].copy_from_slice(&range.not_before.to_be_bytes());
+				b[8..16].copy_from_slice(&range.not_after.to_be_bytes());
+			}
+			b
+		});
+	}
+	if plan.limits.console_id {
+		stage(&mut edits, OptionalHeaderKey::ConsoleSerialList, &|len| vec![0u8; len]);
+	}
+	for key in &plan.cleared_optional_headers {
+		stage(&mut edits, *key, &|len| vec![0u8; len]);
+	}
+	if plan.limits.library_versions
+		&& let Some(span) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries)
+	{
+		let mut blob = source[span.as_range()].to_vec();
+		let entries = hashes::library_entry_offsets(&blob).ok_or_else(|| Xex2Error::SigningFailed.into_report())?;
+		for entry in &entries {
+			let version_min = entry.offset + 0x20;
+			blob[version_min..version_min + 4].fill(0);
+		}
+		edits.push(BlobEdit { offset: span.offset, bytes: blob });
+	}
+
+	Ok(edits)
+}
+
+fn stage_module_flags(source: &[u8], plan: &EditPlan, patch: &mut Patch) {
+	let new_flags = resolve_module_flags(source, plan);
+	if let Some(flags) = new_flags {
+		patch.write(HEADER_MODULE_FLAGS.get(), flags.bits().to_be_bytes().to_vec());
+	}
+}
+
+fn resolve_module_flags(source: &[u8], plan: &EditPlan) -> Option<ModuleFlags> {
+	// Explicit override wins.
+	if let Some(flags) = plan.module_flags {
+		return Some(flags);
+	}
+	if !plan.limits.bounding_path && !plan.limits.device_id {
+		return None;
+	}
+	let current = ModuleFlags::from_bits_retain(BigEndian::read_u32(&source[HEADER_MODULE_FLAGS.as_usize()..]));
+	let mut clear = ModuleFlags::empty();
+	if plan.limits.bounding_path {
+		clear |= ModuleFlags::BOUND_PATH;
+	}
+	if plan.limits.device_id {
+		clear |= ModuleFlags::DEVICE_ID;
+	}
+	let new = current - clear;
+	(new != current).then_some(new)
+}
+
+fn stage_allowed_media(source: &[u8], plan: &EditPlan, sec: FileOffset, patch: &mut Patch) {
+	let _ = source;
+	let value = match (plan.limits.media, plan.allowed_media) {
+		(_, Some(media)) => Some(media.bits()),
+		(true, None) => Some(0xFFFFFFFFu32),
+		_ => None,
+	};
+	if let Some(v) = value {
+		let file_off = sec + SecurityOffset::ALLOWED_MEDIA.0 as usize;
+		patch.write(file_off.get(), v.to_be_bytes().to_vec());
+	}
+}
+
+fn image_info_span(source: &[u8], sec: FileOffset) -> Option<FileSpan> {
+	let info_size_off = sec + IMAGE_INFO_OFFSET;
+	let info_size = BigEndian::read_u32(&source[info_size_off.as_usize()..]) as usize;
+	let image_info_len = info_size.checked_sub(RSA_SIG_LEN)?;
+	if image_info_len == 0 {
+		return None;
+	}
+	let start = sec + IMAGE_INFO_OFFSET;
+	(start.as_usize() + image_info_len <= source.len()).then_some(FileSpan { offset: start, len: image_info_len })
+}
+
+fn apply_limits(plan: &EditPlan, patch: &mut Patch, editor: &mut ImageInfoEditor<'_>) {
+	if plan.limits.region {
+		editor.overwrite(patch, ImageInfoOffset::GAME_REGIONS, 0xFFFFFFFFu32.to_be_bytes().to_vec());
+	}
+	if plan.limits.zero_media_id {
+		editor.overwrite(patch, ImageInfoOffset::MEDIA_ID, vec![0u8; 16]);
+	}
+	if plan.limits.keyvault_privileges || plan.limits.signed_keyvault_only {
+		editor.update_u32(patch, ImageInfoOffset::IMAGE_FLAGS, |current| {
+			let flags = ImageFlags::from_bits_retain(current);
+			let mut clear = ImageFlags::empty();
+			if plan.limits.keyvault_privileges {
+				clear |= ImageFlags::KV_PRIVILEGES_REQUIRED;
+			}
+			if plan.limits.signed_keyvault_only {
+				clear |= ImageFlags::SIGNED_KEYVAULT_REQUIRED;
+			}
+			(flags - clear).bits()
+		});
+	}
+}
+
+fn apply_field_overrides(plan: &EditPlan, patch: &mut Patch, editor: &mut ImageInfoEditor<'_>) {
+	if let Some(v) = plan.game_regions {
+		editor.overwrite(patch, ImageInfoOffset::GAME_REGIONS, v.to_be_bytes().to_vec());
+	}
+	if let Some(id) = plan.media_id {
+		editor.overwrite(patch, ImageInfoOffset::MEDIA_ID, id.to_vec());
+	}
+	if let Some(k) = plan.file_key {
+		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, k.0.to_vec());
+	}
+	if let Some(addr) = plan.load_address {
+		editor.overwrite(patch, ImageInfoOffset::LOAD_ADDRESS, addr.0.to_be_bytes().to_vec());
+	}
+	if let Some(flags) = plan.image_flags {
+		editor.overwrite(patch, ImageInfoOffset::IMAGE_FLAGS, flags.bits().to_be_bytes().to_vec());
+	}
+}
+
+fn apply_blob_edits_and_rehash(
+	xex: &Xex2,
+	source: &[u8],
+	plan: &EditPlan,
 	patch: &mut Patch,
-	image_info: &mut [u8],
-	changed: &mut bool,
-	sec_base: usize,
-	abs_offset: usize,
-	bytes: Vec<u8>,
+	editor: &mut ImageInfoEditor<'_>,
+	blob_edits: &mut [BlobEdit],
 ) {
-	let local = abs_offset - IMAGE_INFO;
-	if local + bytes.len() <= image_info.len() {
-		image_info[local..local + bytes.len()].copy_from_slice(&bytes);
-		patch.write((sec_base + abs_offset) as u64, bytes);
-		*changed = true;
+	if blob_edits.is_empty() {
+		return;
+	}
+
+	// Apply blob edits to a working copy so hash recomputations see the new bytes.
+	let mut working = source.to_vec();
+	for edit in blob_edits.iter() {
+		let start = edit.offset.as_usize();
+		working[start..start + edit.bytes.len()].copy_from_slice(&edit.bytes);
+		patch.write(edit.offset.get(), edit.bytes.clone());
+	}
+
+	// If the import table changed, rebuild its digest chain and stage the
+	// new import_table_hash alongside the updated blob.
+	if plan.limits.library_versions
+		&& let Some(span) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries)
+	{
+		let blob = &mut working[span.as_range()];
+		if let Some(new_table_hash) = hashes::rewrite_import_table_hashes(blob) {
+			let updated = blob.to_vec();
+			if let Some(existing) = blob_edits.iter_mut().find(|e| e.offset == span.offset) {
+				existing.bytes = updated.clone();
+			}
+			patch.write(span.offset.get(), updated);
+			editor.overwrite(patch, ImageInfoOffset::IMPORT_TABLE_HASH, new_table_hash.to_vec());
+		}
+	}
+
+	let new_header_hash = hashes::compute_header_hash(&working, &xex.header, &xex.security_info);
+	editor.overwrite(patch, ImageInfoOffset::HEADER_HASH, new_header_hash.to_vec());
+}
+
+fn sign_and_stage(sec: FileOffset, image_info: &[u8], patch: &mut Patch) -> Result<()> {
+	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
+	let sig = xecrypt::RsaKeyKind::Pirs
+		.sign(xecrypt::ConsoleKind::Devkit, &digest)
+		.map_err(|_| Xex2Error::SigningFailed.into_report())?;
+	let sig_off = sec + SecurityOffset::RSA_SIG.0 as usize;
+	patch.write(sig_off.get(), sig.to_vec());
+	Ok(())
+}
+
+/// Mutable state for staging image_info edits across the various helpers.
+struct ImageInfoEditor<'a> {
+	/// Working copy of the image_info region. Reused to compute the
+	/// post-edit RotSumSha digest that gets signed.
+	buffer: &'a mut [u8],
+	/// Whether any overwrite was staged (drives the re-sign decision).
+	changed: bool,
+	/// Absolute offset of security_info in the source file.
+	sec: xenon_types::FileOffset,
+}
+
+impl<'a> ImageInfoEditor<'a> {
+	fn new(buffer: &'a mut [u8], sec: FileOffset) -> Self {
+		Self { buffer, changed: false, sec }
+	}
+
+	/// Overwrite `bytes.len()` bytes at `field` within the image_info region,
+	/// staging both the local buffer update and a Write op on `patch`.
+	fn overwrite(&mut self, patch: &mut Patch, field: ImageInfoOffset, bytes: Vec<u8>) {
+		let local = field.0 as usize;
+		if local + bytes.len() > self.buffer.len() {
+			return;
+		}
+		self.buffer[local..local + bytes.len()].copy_from_slice(&bytes);
+		let file_off = self.sec + IMAGE_INFO_OFFSET + local;
+		patch.write(file_off.get(), bytes);
+		self.changed = true;
+	}
+
+	/// Read the big-endian u32 at `field`, apply `f` to produce a new value,
+	/// and overwrite only if it actually changed.
+	fn update_u32(&mut self, patch: &mut Patch, field: ImageInfoOffset, f: impl FnOnce(u32) -> u32) {
+		let local = field.0 as usize;
+		if local + 4 > self.buffer.len() {
+			return;
+		}
+		let current = BigEndian::read_u32(&self.buffer[local..]);
+		let new = f(current);
+		if new != current {
+			self.overwrite(patch, field, new.to_be_bytes().to_vec());
+		}
 	}
 }
 
@@ -478,94 +514,68 @@ fn apply_encryption_transforms(
 	xex: &Xex2,
 	source: &[u8],
 	plan: &EditPlan,
-	sec: usize,
 	patch: &mut Patch,
-	image_info: &mut [u8],
-	image_info_changed: &mut bool,
-	blob_edits: &mut Vec<(usize, Vec<u8>)>,
+	editor: &mut ImageInfoEditor<'_>,
+	blob_edits: &mut Vec<BlobEdit>,
 ) -> Result<()> {
 	if plan.target_machine.is_none() && plan.target_encryption.is_none() {
 		return Ok(());
 	}
 
 	let file_format = xex.header.file_format_info()?;
-
-	// Determine current session key + which master key currently wraps it.
 	let current_file_key = &xex.security_info.image_info.file_key;
 	let keys = crate::crypto::decrypt_file_key(current_file_key);
 	let current_machine = detect_current_machine(source, xex, &file_format, &keys);
 	let session_key = match current_machine {
-		TargetMachine::Retail => keys.retail.clone(),
-		TargetMachine::Devkit => keys.devkit.clone(),
+		TargetMachine::Retail => keys.retail,
+		TargetMachine::Devkit => keys.devkit,
 	};
-
 	let resolved_machine = plan.target_machine.unwrap_or(current_machine);
 
-	// Re-wrap file_key under the resolved target machine's master key, but
-	// only if it actually changes.
-	if let Some(target_machine) = plan.target_machine {
-		if target_machine != current_machine {
-			let master = match resolved_machine {
-				TargetMachine::Retail => crate::crypto::RETAIL_KEY.clone(),
-				TargetMachine::Devkit => crate::crypto::DEVKIT_KEY.clone(),
-			};
-			let new_file_key = crate::crypto::wrap_file_key(&session_key, &master);
-			overwrite_image_info(
-				patch,
-				image_info,
-				image_info_changed,
-				sec,
-				IMAGE_INFO + 0x48,
-				new_file_key.0.to_vec(),
-			);
-		}
+	// Re-wrap under target machine's master key, but only when it would change.
+	if let Some(target) = plan.target_machine
+		&& target != current_machine
+	{
+		let master = master_key_for(resolved_machine);
+		let new_file_key = crate::crypto::wrap_file_key(&session_key, &master);
+		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, new_file_key.0.to_vec());
 	}
 
-	if let Some(target_enc) = plan.target_encryption {
-		let data_off = xex.header.data_offset as usize;
-		let data_len = source.len() - data_off;
-		let encrypted_region = &source[data_off..data_off + data_len];
+	if let Some(target) = plan.target_encryption {
+		let data_off = FileOffset::from(xex.header.data_offset);
+		let data_range = data_off.as_usize()..source.len();
+		let region = &source[data_range];
 
-		match (file_format.encryption_type, target_enc) {
-			(crate::header::EncryptionType::Normal, TargetEncryption::Decrypted) => {
-				let plaintext = crate::crypto::decrypt_data(encrypted_region, &session_key);
-				patch.write(data_off as u64, plaintext);
-				rewrite_file_format_encryption(xex, source, crate::header::EncryptionType::None, patch, blob_edits)?;
-				// Zero file_key since it's unused when encryption is None.
-				overwrite_image_info(
-					patch,
-					image_info,
-					image_info_changed,
-					sec,
-					IMAGE_INFO + 0x48,
-					vec![0u8; 16],
-				);
+		match (file_format.encryption_type, target) {
+			(EncryptionType::Normal, TargetEncryption::Decrypted) => {
+				let plaintext = crate::crypto::decrypt_data(region, &session_key);
+				patch.write(data_off.get(), plaintext);
+				stage_file_format_encryption(xex, source, EncryptionType::None, blob_edits)?;
+				// file_key is ignored when encryption is None; zero it out.
+				editor.overwrite(patch, ImageInfoOffset::FILE_KEY, vec![0u8; 16]);
 			}
-			(crate::header::EncryptionType::None, TargetEncryption::Encrypted) => {
-				let master = match resolved_machine {
-					TargetMachine::Retail => crate::crypto::RETAIL_KEY.clone(),
-					TargetMachine::Devkit => crate::crypto::DEVKIT_KEY.clone(),
-				};
-				let ciphertext = crate::crypto::encrypt_data(encrypted_region, &session_key);
-				patch.write(data_off as u64, ciphertext);
+			(EncryptionType::None, TargetEncryption::Encrypted) => {
+				let ciphertext = crate::crypto::encrypt_data(region, &session_key);
+				patch.write(data_off.get(), ciphertext);
+				let master = master_key_for(resolved_machine);
 				let wrapped = crate::crypto::wrap_file_key(&session_key, &master);
-				overwrite_image_info(
-					patch,
-					image_info,
-					image_info_changed,
-					sec,
-					IMAGE_INFO + 0x48,
-					wrapped.0.to_vec(),
-				);
-				rewrite_file_format_encryption(xex, source, crate::header::EncryptionType::Normal, patch, blob_edits)?;
+				editor.overwrite(patch, ImageInfoOffset::FILE_KEY, wrapped.0.to_vec());
+				stage_file_format_encryption(xex, source, EncryptionType::Normal, blob_edits)?;
 			}
-			// Already in target state; no-op.
-			(crate::header::EncryptionType::Normal, TargetEncryption::Encrypted)
-			| (crate::header::EncryptionType::None, TargetEncryption::Decrypted) => {}
+			// Already in target state.
+			(EncryptionType::Normal, TargetEncryption::Encrypted)
+			| (EncryptionType::None, TargetEncryption::Decrypted) => {}
 		}
 	}
 
 	Ok(())
+}
+
+fn master_key_for(machine: TargetMachine) -> crate::header::AesKey {
+	match machine {
+		TargetMachine::Retail => crate::crypto::RETAIL_KEY,
+		TargetMachine::Devkit => crate::crypto::DEVKIT_KEY,
+	}
 }
 
 fn detect_current_machine(
@@ -574,65 +584,56 @@ fn detect_current_machine(
 	file_format: &crate::header::FileFormatInfo,
 	keys: &crate::crypto::DecryptedKeys,
 ) -> TargetMachine {
-	use crate::header::{CompressionType, EncryptionType};
+	use crate::header::CompressionType;
 	if file_format.encryption_type == EncryptionType::None {
-		// When unencrypted, neither master key is used; treat as retail by convention.
+		// Unencrypted: master key unused; pick retail by convention.
 		return TargetMachine::Retail;
 	}
 	let data_off = xex.header.data_offset as usize;
-	if data_off + 32 > source.len() {
+	let Some(probe) = source.get(data_off..data_off + 16) else {
 		return TargetMachine::Retail;
-	}
-	let probe = &source[data_off..data_off + 32];
-	let retail_decrypt = crate::crypto::decrypt_data(&probe[..16], &keys.retail);
-	let devkit_decrypt = crate::crypto::decrypt_data(&probe[..16], &keys.devkit);
-	let _ = devkit_decrypt;
+	};
 	match file_format.compression_type {
 		CompressionType::Basic | CompressionType::None => {
-			if retail_decrypt[0] == b'M' && retail_decrypt[1] == b'Z' {
-				TargetMachine::Retail
-			} else {
-				TargetMachine::Devkit
-			}
+			let decrypted = crate::crypto::decrypt_data(probe, &keys.retail);
+			if decrypted.starts_with(b"MZ") { TargetMachine::Retail } else { TargetMachine::Devkit }
 		}
-		// For normal compression, both keys will produce ~similar-looking
-		// first blocks; heuristic is fuzzier. Default to retail.
+		// Normal compression: both keys produce similar-looking first blocks;
+		// the heuristic is fuzzier, so default to retail.
 		_ => TargetMachine::Retail,
 	}
 }
 
-fn rewrite_file_format_encryption(
+/// Stage a blob edit that flips the encryption_type field in FileFormatInfo.
+fn stage_file_format_encryption(
 	xex: &Xex2,
 	source: &[u8],
-	target: crate::header::EncryptionType,
-	_patch: &mut Patch,
-	blob_edits: &mut Vec<(usize, Vec<u8>)>,
+	target: EncryptionType,
+	blob_edits: &mut Vec<BlobEdit>,
 ) -> Result<()> {
 	// FileFormatInfo blob layout:
 	//   u32: info_size
 	//   u16: encryption_type
 	//   u16: compression_type
 	//   ... (compression-type-specific trailing bytes)
-	let (off, len) = xex
+	let span = xex
 		.header
 		.optional_header_source_range(source, OptionalHeaderKey::FileFormatInfo)
 		.ok_or_else(|| Xex2Error::MissingOptionalHeader(OptionalHeaderKey::FileFormatInfo as u32).into_report())?;
-	let mut blob = source[off..off + len].to_vec();
+	let mut blob = source[span.as_range()].to_vec();
 	if blob.len() < 8 {
-		return Err(Xex2Error::InvalidOptionalHeaderSize { key: OptionalHeaderKey::FileFormatInfo as u32, size: blob.len() }.into_report());
-	}
-	let enc = target as u16;
-	blob[4..6].copy_from_slice(&enc.to_be_bytes());
-	// Replace or add to blob_edits; the main blob_edits loop emits the patch write.
-	let mut replaced = false;
-	for edit in blob_edits.iter_mut() {
-		if edit.0 == off {
-			edit.1 = blob.clone();
-			replaced = true;
+		return Err(Xex2Error::InvalidOptionalHeaderSize {
+			key: OptionalHeaderKey::FileFormatInfo as u32,
+			size: blob.len(),
 		}
+		.into_report());
 	}
-	if !replaced {
-		blob_edits.push((off, blob));
+	blob[4..6].copy_from_slice(&(target as u16).to_be_bytes());
+
+	if let Some(existing) = blob_edits.iter_mut().find(|e| e.offset == span.offset) {
+		existing.bytes = blob;
+	} else {
+		blob_edits.push(BlobEdit { offset: span.offset, bytes: blob });
 	}
 	Ok(())
 }

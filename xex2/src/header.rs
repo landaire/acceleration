@@ -38,9 +38,29 @@ use crate::error::Xex2Error;
 use rootcause::IntoReport;
 
 pub use xenon_types::AesKey;
+pub use xenon_types::FileOffset;
 pub use xenon_types::MediaId;
 pub use xenon_types::TitleId;
 pub use xenon_types::VirtualAddress;
+
+/// A contiguous span of bytes in a source XEX file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct FileSpan {
+	pub offset: FileOffset,
+	pub len: usize,
+}
+
+impl FileSpan {
+	pub fn end(&self) -> FileOffset {
+		self.offset + self.len
+	}
+
+	pub fn as_range(&self) -> std::ops::Range<usize> {
+		let start = self.offset.as_usize();
+		start..start + self.len
+	}
+}
 
 pub const XEX2_MAGIC: [u8; 4] = *b"XEX2";
 
@@ -340,43 +360,41 @@ impl Xex2Header {
 		}
 	}
 
-	/// Find the source-file offset and length of a variable-length optional
-	/// header data blob. Returns the offset/length of the blob *body* (not
-	/// including the `size` u32 prefix that itself lives at `offset - 4`).
+	/// Find the source-file position and length of a variable-length optional
+	/// header data blob. The returned [`FileSpan`] describes the blob *body*;
+	/// the `size` u32 prefix itself lives at `offset - 4`.
 	///
 	/// Returns `None` if the key isn't present, is inline, or the XEX header
 	/// data is malformed.
-	pub fn optional_header_source_range(&self, source: &[u8], key: OptionalHeaderKey) -> Option<(usize, usize)> {
+	pub fn optional_header_source_range(&self, source: &[u8], key: OptionalHeaderKey) -> Option<FileSpan> {
 		let mut c = Cursor::new(source);
 		c.set_position(0x18);
 		let target = key as u32;
 		for _ in 0..self.optional_header_count {
 			let k = c.read_u32::<BigEndian>().ok()?;
 			let v = c.read_u32::<BigEndian>().ok()?;
-			if k == target {
-				let size_class = k & 0xFF;
-				if size_class == 0xFF {
+			if k != target {
+				continue;
+			}
+			let size_class = k & 0xFF;
+			return match size_class {
+				0xFF => {
 					// Variable-length: `v` is a file offset pointing at a u32 size + body.
 					let off = v as usize;
 					if off + 4 > source.len() {
 						return None;
 					}
 					let size = u32::from_be_bytes(source[off..off + 4].try_into().ok()?) as usize;
-					if off + size > source.len() {
-						return None;
-					}
-					return Some((off, size));
-				} else if size_class != 0x00 && size_class != 0x01 {
-					// Fixed-length (size_class bytes * 4): `v` is a file offset.
-					let bytes = (size_class as usize) * 4;
-					let off = v as usize;
-					if off + bytes > source.len() {
-						return None;
-					}
-					return Some((off, bytes));
+					(off + size <= source.len()).then_some(FileSpan { offset: FileOffset::from(off), len: size })
 				}
-				return None;
-			}
+				0x00 | 0x01 => None,
+				n => {
+					// Fixed-length (n * 4 bytes): `v` is a file offset.
+					let bytes = (n as usize) * 4;
+					let off = v as usize;
+					(off + bytes <= source.len()).then_some(FileSpan { offset: FileOffset::from(off), len: bytes })
+				}
+			};
 		}
 		None
 	}

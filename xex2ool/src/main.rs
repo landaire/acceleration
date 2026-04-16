@@ -700,11 +700,7 @@ fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(&data)?;
 
-	let idc = idc::generate_idc(
-		&xex.header,
-		xex.security_info.image_info.load_address.0,
-		xex.security_info.image_size,
-	);
+	let idc = idc::generate_idc(&xex.header, xex.security_info.image_info.load_address.0, xex.security_info.image_size);
 
 	let out_path = output.unwrap_or_else(|| {
 		let mut p = path.clone();

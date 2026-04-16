@@ -42,13 +42,7 @@ pub struct Rebuilder<'a> {
 
 impl<'a> Rebuilder<'a> {
 	pub fn new(xex: Xex2, source: &'a [u8]) -> Self {
-		Self {
-			xex,
-			source,
-			compression: None,
-			plan: EditPlan::default(),
-			replace_pe: None,
-		}
+		Self { xex, source, compression: None, plan: EditPlan::default(), replace_pe: None }
 	}
 
 	// Transform setters. Each sets the target state; if it already matches the
@@ -110,18 +104,18 @@ impl<'a> Rebuilder<'a> {
 		self
 	}
 
-	pub fn set_file_key(mut self, key: [u8; 16]) -> Self {
+	pub fn set_file_key(mut self, key: xenon_types::AesKey) -> Self {
 		self.plan.file_key = Some(key);
 		self
 	}
 
-	pub fn set_load_address(mut self, address: u32) -> Self {
+	pub fn set_load_address(mut self, address: xenon_types::VirtualAddress) -> Self {
 		self.plan.load_address = Some(address);
 		self
 	}
 
-	pub fn set_date_range(mut self, not_before: u64, not_after: u64) -> Self {
-		self.plan.date_range = Some((not_before, not_after));
+	pub fn set_date_range(mut self, range: crate::writer::DateRangeEdit) -> Self {
+		self.plan.date_range = Some(range);
 		self
 	}
 
@@ -135,11 +129,13 @@ impl<'a> Rebuilder<'a> {
 	pub fn is_supported(&self) -> bool {
 		let compression_changes = self.compression.is_some_and(|c| {
 			// A no-op if the current XEX already matches.
-			self.xex.header.file_format_info().is_ok_and(|ff| match (ff.compression_type, c) {
-				(crate::header::CompressionType::None, TargetCompression::Uncompressed) => false,
-				(crate::header::CompressionType::Basic, TargetCompression::Basic) => false,
-				(crate::header::CompressionType::Normal, TargetCompression::Normal) => false,
-				_ => true,
+			self.xex.header.file_format_info().is_ok_and(|ff| {
+				!matches!(
+					(ff.compression_type, c),
+					(crate::header::CompressionType::None, TargetCompression::Uncompressed)
+						| (crate::header::CompressionType::Basic, TargetCompression::Basic)
+						| (crate::header::CompressionType::Normal, TargetCompression::Normal)
+				)
 			})
 		});
 		!compression_changes && self.replace_pe.is_none()

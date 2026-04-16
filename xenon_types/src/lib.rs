@@ -56,6 +56,54 @@ pub struct DeviceId(#[serde(with = "serde_hex::fixed20")] pub [u8; 0x14]);
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VirtualAddress(pub u32);
 
+/// An absolute offset into an on-disk file (XEX, STFS, etc.). Distinguishes
+/// file positions from in-memory sizes/indices, and from virtual addresses.
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct FileOffset(pub u64);
+
+impl FileOffset {
+	pub const ZERO: Self = Self(0);
+
+	pub fn get(self) -> u64 {
+		self.0
+	}
+
+	pub fn as_usize(self) -> usize {
+		self.0 as usize
+	}
+}
+
+impl From<usize> for FileOffset {
+	fn from(v: usize) -> Self {
+		Self(v as u64)
+	}
+}
+
+impl From<u32> for FileOffset {
+	fn from(v: u32) -> Self {
+		Self(v as u64)
+	}
+}
+
+impl From<u64> for FileOffset {
+	fn from(v: u64) -> Self {
+		Self(v)
+	}
+}
+
+impl std::ops::Add<usize> for FileOffset {
+	type Output = Self;
+	fn add(self, rhs: usize) -> Self {
+		Self(self.0 + rhs as u64)
+	}
+}
+
+impl std::fmt::Display for FileOffset {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:#x}", self.0)
+	}
+}
+
 /// 128-bit AES key.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AesKey(pub [u8; 16]);

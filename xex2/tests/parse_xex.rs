@@ -207,11 +207,7 @@ fn header_hash_formula_matches_fixtures() {
 	] {
 		let (data, xex) = load_xex(name);
 		let computed = xex2::hashes::compute_header_hash(&data, &xex.header, &xex.security_info);
-		assert_eq!(
-			computed, xex.security_info.image_info.header_hash,
-			"header_hash mismatch for {}",
-			name
-		);
+		assert_eq!(computed, xex.security_info.image_info.header_hash, "header_hash mismatch for {}", name);
 	}
 }
 
@@ -328,10 +324,7 @@ fn console_id_zeroes_serial_list_and_reverifies() {
 	// Find any fixture with a ConsoleSerialList to exercise this path.
 	for name in &["haloreach-powerhouse.xex", "afplayer.xex", "Portal 2.xex", "Deus Ex.xex"] {
 		let (data, xex) = load_xex(name);
-		if xex
-			.header
-			.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::ConsoleSerialList)
-			.is_none()
+		if xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::ConsoleSerialList).is_none()
 		{
 			continue;
 		}
@@ -348,12 +341,11 @@ fn console_id_zeroes_serial_list_and_reverifies() {
 #[test]
 fn dates_limit_sets_max_filetime_and_reverifies() {
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
-	let range = xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange);
-	if range.is_none() {
+	let Some(span) = xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange) else {
 		eprintln!("skipping: no DateRange in fixture");
 		return;
-	}
-	let (off, len) = range.unwrap();
+	};
+	let off = span.offset.as_usize();
 
 	let mut limits = xex2::writer::RemoveLimits::default();
 	limits.dates = true;
@@ -361,7 +353,7 @@ fn dates_limit_sets_max_filetime_and_reverifies() {
 
 	assert_eq!(&patched[off..off + 8], &[0u8; 8], "not_before should be 0");
 	assert_eq!(&patched[off + 8..off + 16], &u64::MAX.to_be_bytes(), "not_after should be max");
-	assert!(len >= 16);
+	assert!(span.len >= 16);
 
 	verify_devkit_signature(&patched);
 	verify_header_hash(&patched);
@@ -414,16 +406,15 @@ fn rebuild_field_setters_apply_specific_values() {
 #[test]
 fn rebuild_set_date_range_recomputes_header_hash() {
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
-	if xex
-		.header
-		.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange)
-		.is_none()
-	{
+	if xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange).is_none() {
 		eprintln!("skipping: no DateRange");
 		return;
 	}
 	let mut sink = Vec::new();
-	xex.rebuild(&data).set_date_range(100, 200).write_to(&mut sink).unwrap();
+	xex.rebuild(&data)
+		.set_date_range(xex2::writer::DateRangeEdit { not_before: 100, not_after: 200 })
+		.write_to(&mut sink)
+		.unwrap();
 	let patched_xex = xex2::Xex2::parse(&sink).unwrap();
 	let dr = patched_xex.header.date_range().unwrap();
 	assert_eq!(dr.not_before, Some(100));
@@ -440,10 +431,7 @@ fn decrypt_encrypted_xex_roundtrip() {
 	let original_basefile = xex.extract_basefile(&data).unwrap();
 
 	let mut sink = Vec::new();
-	xex.rebuild(&data)
-		.target_encryption(xex2::writer::TargetEncryption::Decrypted)
-		.write_to(&mut sink)
-		.unwrap();
+	xex.rebuild(&data).target_encryption(xex2::writer::TargetEncryption::Decrypted).write_to(&mut sink).unwrap();
 
 	let decrypted_xex = xex2::Xex2::parse(&sink).unwrap();
 	let fmt = decrypted_xex.header.file_format_info().unwrap();
@@ -463,10 +451,7 @@ fn encrypt_decrypted_xex_roundtrip() {
 	let original_basefile = xex.extract_basefile(&data).unwrap();
 
 	let mut decrypted = Vec::new();
-	xex.rebuild(&data)
-		.target_encryption(xex2::writer::TargetEncryption::Decrypted)
-		.write_to(&mut decrypted)
-		.unwrap();
+	xex.rebuild(&data).target_encryption(xex2::writer::TargetEncryption::Decrypted).write_to(&mut decrypted).unwrap();
 
 	let mid_xex = xex2::Xex2::parse(&decrypted).unwrap();
 	let mut re_encrypted = Vec::new();
@@ -526,9 +511,7 @@ fn setting_target_matching_current_state_is_noop() {
 fn compression_transform_not_implemented() {
 	let (data, xex) = load_xex("afplayer.xex");
 	let mut sink = Vec::new();
-	let result = xex
-		.rebuild(&data)
-		.target_compression(xex2::writer::TargetCompression::Uncompressed)
-		.write_to(&mut sink);
+	let result =
+		xex.rebuild(&data).target_compression(xex2::writer::TargetCompression::Uncompressed).write_to(&mut sink);
 	assert!(result.is_err(), "compression transforms are not yet implemented");
 }
