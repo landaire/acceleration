@@ -62,6 +62,44 @@ fn execution_info_parsed() {
 }
 
 #[test]
+fn ratings_are_ordered_by_age() {
+	use xex2::opt::CeroRating;
+	use xex2::opt::EsrbRating;
+	use xex2::opt::PegiRating;
+	use xex2::opt::Rating;
+	use xex2::opt::UskRating;
+
+	// Within a rating board, higher = older
+	assert!(EsrbRating::EC < EsrbRating::E);
+	assert!(EsrbRating::E < EsrbRating::E10);
+	assert!(EsrbRating::E10 < EsrbRating::T);
+	assert!(EsrbRating::T < EsrbRating::M);
+	assert!(PegiRating::Three < PegiRating::Eighteen);
+	assert!(CeroRating::A < CeroRating::Z);
+	assert!(UskRating::Zero < UskRating::Eighteen);
+
+	// Rating<T> ordering: Rated < Unknown < Unrated
+	let rated_low = Rating::Rated(EsrbRating::EC);
+	let rated_high = Rating::Rated(EsrbRating::M);
+	let unknown: Rating<EsrbRating> = Rating::Unknown(0x99);
+	let unrated: Rating<EsrbRating> = Rating::Unrated;
+
+	assert!(rated_low < rated_high);
+	assert!(rated_high < unknown);
+	assert!(unknown < unrated);
+
+	// Cross-check with actual game data
+	let portal = load_xex("Portal 2.xex");
+	let deus_ex = load_xex("Deus Ex.xex");
+	let p_ratings = portal.header.game_ratings().unwrap();
+	let d_ratings = deus_ex.header.game_ratings().unwrap();
+	// Portal 2 (E10+) is rated lower than Deus Ex HR (M)
+	assert!(p_ratings.esrb < d_ratings.esrb);
+	// Portal 2 PEGI 12+ < Deus Ex HR PEGI 18+
+	assert!(p_ratings.pegi < d_ratings.pegi);
+}
+
+#[test]
 fn security_info_file_key_not_all_zeros_for_encrypted() {
 	let xex = load_xex("AntiPiracyUI.xex");
 	assert_ne!(xex.security_info.image_info.file_key, xex2::header::AesKey([0u8; 16]));

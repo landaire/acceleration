@@ -14,6 +14,12 @@ use crate::header::SecurityInfo;
 use crate::header::Xex2Header;
 use rootcause::IntoReport;
 
+const MIN_DECRYPT_TEST_SIZE: usize = 32;
+const MAX_REASONABLE_BLOCK_SIZE: usize = 0x100000;
+const BLOCK_HEADER_SIZE: usize = 24;
+const CHUNK_SIZE_PREFIX_LEN: usize = 2;
+const LZX_OUTPUT_CHUNK_SIZE: usize = 0x8000;
+
 pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &SecurityInfo) -> Result<Vec<u8>> {
 	let file_format = header.file_format_info(data)?;
 	let encrypted_data = &data[header.data_offset as usize..];
@@ -41,15 +47,19 @@ pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &Securi
 }
 
 fn try_decrypt_with_key(data: &[u8], key: &AesKey, format: &FileFormatInfo) -> bool {
-	if data.len() < 32 {
+	if data.len() < MIN_DECRYPT_TEST_SIZE {
 		return false;
 	}
 
 	match format.compression_type {
 		CompressionType::Normal => {
-			let first_block = crypto::decrypt_data(&data[..32], key);
+			let first_block = crypto::decrypt_data(&data[..MIN_DECRYPT_TEST_SIZE], key);
 			let mut c = Cursor::new(&first_block);
-			if let Ok(block_size) = c.read_u32::<BigEndian>() { block_size > 0 && block_size < 0x100000 } else { false }
+			if let Ok(block_size) = c.read_u32::<BigEndian>() {
+				block_size > 0 && (block_size as usize) < MAX_REASONABLE_BLOCK_SIZE
+			} else {
+				false
+			}
 		}
 		CompressionType::Basic | CompressionType::None => {
 			let first_block = crypto::decrypt_data(&data[..16], key);
@@ -98,17 +108,17 @@ fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> R
 
 		let next_block_size = read_u32_be(block_data)? as usize;
 
-		let compressed_payload = &block_data[24..];
+		let compressed_payload = &block_data[BLOCK_HEADER_SIZE..];
 		let mut payload_offset = 0;
 
 		while payload_offset < compressed_payload.len() && output.len() < image_size as usize {
-			if payload_offset + 2 > compressed_payload.len() {
+			if payload_offset + CHUNK_SIZE_PREFIX_LEN > compressed_payload.len() {
 				break;
 			}
 
 			let chunk_compressed_size =
 				((compressed_payload[payload_offset] as usize) << 8) | compressed_payload[payload_offset + 1] as usize;
-			payload_offset += 2;
+			payload_offset += CHUNK_SIZE_PREFIX_LEN;
 
 			if chunk_compressed_size == 0 {
 				break;
@@ -120,7 +130,7 @@ fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> R
 
 			let chunk_data = &compressed_payload[payload_offset..payload_offset + chunk_compressed_size];
 			let remaining = image_size as usize - output.len();
-			let out_size = std::cmp::min(remaining, 0x8000);
+			let out_size = std::cmp::min(remaining, LZX_OUTPUT_CHUNK_SIZE);
 
 			match lzx.decompress_next(chunk_data, out_size) {
 				Ok(decompressed) => {

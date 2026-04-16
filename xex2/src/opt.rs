@@ -1,6 +1,7 @@
 use bitflags::bitflags;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
+use num_enum::TryFromPrimitive;
 #[cfg(feature = "serde")]
 use serde::Serialize;
 #[cfg(feature = "serde")]
@@ -45,20 +46,316 @@ pub struct ResourceEntry {
 	pub size: u32,
 }
 
+/// A rating from a specific board.
+///
+/// Ordered by severity: `Rated(lowest) < Rated(highest) < Unknown(_) < Unrated`.
+/// Unrated and Unknown values sort higher than any recognized rating so that
+/// filtering "at most rating X" excludes content that can't be verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rating<T> {
+	Rated(T),
+	/// The raw byte didn't match any known variant for this board. Used when
+	/// a newer console firmware added rating tiers the current enum doesn't know.
+	Unknown(u8),
+	/// No rating assigned (0xFF).
+	Unrated,
+}
+
+impl<T: Ord> PartialOrd for Rating<T> {
+	fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+		Some(self.cmp(other))
+	}
+}
+
+impl<T: Ord> Ord for Rating<T> {
+	fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+		use std::cmp::Ordering::*;
+		match (self, other) {
+			(Rating::Rated(a), Rating::Rated(b)) => a.cmp(b),
+			(Rating::Rated(_), _) => Less,
+			(_, Rating::Rated(_)) => Greater,
+			(Rating::Unknown(a), Rating::Unknown(b)) => a.cmp(b),
+			(Rating::Unknown(_), Rating::Unrated) => Less,
+			(Rating::Unrated, Rating::Unknown(_)) => Greater,
+			(Rating::Unrated, Rating::Unrated) => Equal,
+		}
+	}
+}
+
+impl<T: std::fmt::Display> std::fmt::Display for Rating<T> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Rating::Rated(v) => v.fmt(f),
+			Rating::Unknown(b) => write!(f, "Unknown(0x{:02x})", b),
+			Rating::Unrated => f.write_str("Unrated"),
+		}
+	}
+}
+
+#[cfg(feature = "serde")]
+impl<T: Serialize> Serialize for Rating<T> {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		match self {
+			Rating::Rated(v) => v.serialize(s),
+			Rating::Unknown(b) => s.serialize_u8(*b),
+			Rating::Unrated => s.serialize_none(),
+		}
+	}
+}
+
+impl<T: TryFrom<u8>> From<u8> for Rating<T> {
+	fn from(value: u8) -> Self {
+		if value == 0xFF {
+			Rating::Unrated
+		} else {
+			match T::try_from(value) {
+				Ok(v) => Rating::Rated(v),
+				Err(_) => Rating::Unknown(value),
+			}
+		}
+	}
+}
+
+/// Entertainment Software Rating Board (North America).
+/// Verified: Portal 2 = E10+ (0x04), Deus Ex HR = M (0x08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum EsrbRating {
+	EC = 0x00,
+	E = 0x02,
+	E10 = 0x04,
+	T = 0x06,
+	M = 0x08,
+	/// Rating Pending. Dashboard has ESRB_RP.png icon.
+	RP = 0x0A,
+}
+
+impl std::fmt::Display for EsrbRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::EC => f.write_str("eC"),
+			Self::E => f.write_str("E"),
+			Self::E10 => f.write_str("E10+"),
+			Self::T => f.write_str("T"),
+			Self::M => f.write_str("M"),
+			Self::RP => f.write_str("RP"),
+		}
+	}
+}
+
+/// Pan European Game Information.
+/// Verified: Portal 2 = Twelve (0x09), Deus Ex HR = Eighteen (0x0E).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum PegiRating {
+	Three = 0x03,
+	Seven = 0x05,
+	Twelve = 0x09,
+	Sixteen = 0x0D,
+	Eighteen = 0x0E,
+}
+
+impl std::fmt::Display for PegiRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Three => f.write_str("3+"),
+			Self::Seven => f.write_str("7+"),
+			Self::Twelve => f.write_str("12+"),
+			Self::Sixteen => f.write_str("16+"),
+			Self::Eighteen => f.write_str("18+"),
+		}
+	}
+}
+
+/// Computer Entertainment Rating Organization (Japan).
+/// Verified: Portal 2 = A (0x00), Deus Ex HR = unrated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum CeroRating {
+	A = 0x00,
+	B = 0x02,
+	C = 0x04,
+	D = 0x06,
+	Z = 0x08,
+}
+
+impl std::fmt::Display for CeroRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::A => f.write_str("A"),
+			Self::B => f.write_str("B (12+)"),
+			Self::C => f.write_str("C (15+)"),
+			Self::D => f.write_str("D (17+)"),
+			Self::Z => f.write_str("Z (18+)"),
+		}
+	}
+}
+
+/// Unterhaltungssoftware Selbstkontrolle (Germany).
+/// Verified: Portal 2 = Twelve (0x04), Halo 3 = Sixteen (0x06), Deus Ex HR = Eighteen (0x08).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum UskRating {
+	Zero = 0x00,
+	Six = 0x02,
+	Twelve = 0x04,
+	Sixteen = 0x06,
+	Eighteen = 0x08,
+}
+
+impl std::fmt::Display for UskRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Zero => f.write_str("0"),
+			Self::Six => f.write_str("6+"),
+			Self::Twelve => f.write_str("12+"),
+			Self::Sixteen => f.write_str("16+"),
+			Self::Eighteen => f.write_str("18+"),
+		}
+	}
+}
+
+/// Office of Film and Literature Classification (Australia).
+/// Verified: Portal 2 = PG (0x03), Halo 3 = M (0x04), Deus Ex HR = MA15 (0x06).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum OflcAuRating {
+	/// Dashboard icon: OFLC_AU_A.png
+	A = 0x00,
+	/// Dashboard icon: OFLC_AU_G8P.png (G with 8+ parental guidance)
+	G8P = 0x02,
+	/// Verified: Portal 2 = PG.
+	PG = 0x03,
+	/// Dashboard icon: OFLC_AU_M15P.png. Verified: Halo 3 = M.
+	M15P = 0x04,
+	/// Dashboard icon: OFLC_AU_MA15P.png. Verified: Deus Ex HR = MA15+.
+	MA15P = 0x06,
+}
+
+impl std::fmt::Display for OflcAuRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::A => f.write_str("A"),
+			Self::G8P => f.write_str("G8+"),
+			Self::PG => f.write_str("PG"),
+			Self::M15P => f.write_str("M"),
+			Self::MA15P => f.write_str("MA15+"),
+		}
+	}
+}
+
+/// British Board of Film Classification.
+/// Verified: Portal 2 = Twelve (0x09), Halo 3 = Fifteen (0x0C), Deus Ex HR = Fifteen (0x0C).
+/// Values partially overlap with PEGI but are a distinct system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum BbfcRating {
+	U = 0x03,
+	PG = 0x05,
+	Twelve = 0x09,
+	TwelveA = 0x0B,
+	Fifteen = 0x0C,
+	Eighteen = 0x0E,
+}
+
+impl std::fmt::Display for BbfcRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::U => f.write_str("U"),
+			Self::PG => f.write_str("PG"),
+			Self::Twelve => f.write_str("12"),
+			Self::TwelveA => f.write_str("12A"),
+			Self::Fifteen => f.write_str("15"),
+			Self::Eighteen => f.write_str("18"),
+		}
+	}
+}
+
+/// Finland VET rating system (used as PEGI-FI in Xbox 360 era).
+/// Verified: Portal 2 = K11 (0x08), Halo 3 = K15 (0x0C), Deus Ex HR = K18 (0x0E).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum PegiFiRating {
+	S = 0x03,
+	K7 = 0x05,
+	K11 = 0x08,
+	K15 = 0x0C,
+	K18 = 0x0E,
+}
+
+impl std::fmt::Display for PegiFiRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::S => f.write_str("S"),
+			Self::K7 => f.write_str("K-7"),
+			Self::K11 => f.write_str("K-11"),
+			Self::K15 => f.write_str("K-15"),
+			Self::K18 => f.write_str("K-18"),
+		}
+	}
+}
+
+/// Office of Film and Literature Classification (New Zealand).
+/// Verified: Portal 2 = PG (0x02), Halo 3 = M (0x04), Deus Ex HR = R18 (0x20).
+/// The R-restricted tiers use bit 5 (0x20) set; exact tier values for
+/// R13/R15/R16 are unknown -- games with those ratings will appear as
+/// `Rating::Unknown(byte)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[repr(u8)]
+pub enum OflcNzRating {
+	G = 0x00,
+	PG = 0x02,
+	M = 0x04,
+	R18 = 0x20,
+}
+
+impl std::fmt::Display for OflcNzRating {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::G => f.write_str("G"),
+			Self::PG => f.write_str("PG"),
+			Self::M => f.write_str("M"),
+			Self::R18 => f.write_str("R18"),
+		}
+	}
+}
+
+/// Game content ratings from each regional rating board.
+///
+/// The full optional header data is 64 bytes, but only the first 12
+/// are rating board fields; the rest are reserved (always 0xFF).
+///
+/// Rating values are board-specific enum indices, NOT literal ages.
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct GameRatings {
-	pub esrb: u8,
-	pub pegi: u8,
-	pub pegifi: u8,
-	pub pegipt: u8,
-	pub bbfc: u8,
-	pub cero: u8,
-	pub usk: u8,
-	pub oflcau: u8,
-	pub oflcnz: u8,
+	pub esrb: Rating<EsrbRating>,
+	pub pegi: Rating<PegiRating>,
+	/// Finland VET system, not standard PEGI.
+	pub pegi_fi: Rating<PegiFiRating>,
+	/// PEGI Portugal (uses standard PEGI values).
+	pub pegi_pt: Rating<PegiRating>,
+	pub bbfc: Rating<BbfcRating>,
+	pub cero: Rating<CeroRating>,
+	pub usk: Rating<UskRating>,
+	pub oflc_au: Rating<OflcAuRating>,
+	pub oflc_nz: Rating<OflcNzRating>,
+	/// Korea Media Rating Board. No observed values -- all test games unrated.
 	pub kmrb: u8,
+	/// Brazil (DJCTQ). Uses 0x40+ range. Observed: 0x40 (Deus Ex HR, real
+	/// rating 18+) and 0x50 (unknown game, likely 18+ variant). Exact tier
+	/// mapping unverified, left as raw byte.
 	pub brazil: u8,
+	/// Film and Publication Board (South Africa). Observed: 0x0A (Portal 2),
+	/// 0x0D (Halo 3), 0x0E (Deus Ex HR). Exact tier mapping unverified.
 	pub fpb: u8,
 	pub reserved: [u8; 4],
 }
@@ -71,13 +368,23 @@ bitflags! {
 	/// system APIs the executable is allowed to call.
 	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 	pub struct SystemFlags: u32 {
+		/// Bit 0. Gates NtSetSystemTime and XexTransformImageKey.
+		/// Without it, titles cannot set the system clock or perform
+		/// cryptographic key transformations.
 		const NO_FORCED_REBOOT         = 0x0000_0001;
+		/// Bit 1. Gates persistent task scheduling in XS::ScheduleTask.
 		const FOREGROUND_TASKS         = 0x0000_0002;
 		const NO_ODD_MAPPING           = 0x0000_0004;
 		const HANDLES_GAMEPAD_DISCONNECT = 0x0000_0008;
+		/// Bit 6. Allows creation of unencrypted network sockets.
+		/// Also gates IP grey list configuration. Without it, all
+		/// network traffic must use Xbox LIVE encryption.
 		const INSECURE_SOCKETS         = 0x0000_0040;
 		const XBOX1_INTEROPERABILITY   = 0x0000_0080;
+		/// Bit 8. Allows XamSetDashContext -- controls what the
+		/// dashboard displays about the current title's activity.
 		const DASH_CONTEXT             = 0x0000_0100;
+		/// Bit 9. Required for titles using Game Voice Channel.
 		const USES_GAME_VOICE_CHANNEL  = 0x0000_0200;
 		const PAL50_INCOMPATIBLE       = 0x0000_1000;
 		const INSECURE_UTILITY_DRIVE   = 0x0000_2000;
@@ -85,7 +392,13 @@ bitflags! {
 		const ACCESS_PIP               = 0x0000_8000;
 		const PREFER_BIG_BUTTON_INPUT  = 0x0010_0000;
 		const ALLOW_CONTROLLER_SWAPPING = 0x0200_0000;
+		/// Bit 26. Enables Kinect (NUI) hardware access. Controls
+		/// whether the Kinect health/safety message is shown and
+		/// how Kinect initialization behaves.
 		const ALLOW_KINECT             = 0x0400_0000;
+		/// Bit 27. Fallback Kinect permission checked when
+		/// ALLOW_KINECT is not set. Together they control NUI
+		/// camera load timeout behavior.
 		const ALLOW_KINECT_UNLESS_BOUND = 0x0800_0000;
 	}
 }
@@ -100,10 +413,22 @@ bitflags! {
 	/// 0x80000000 for normal title modules).
 	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 	pub struct ImageFlags: u32 {
+		/// Image uses 4K pages instead of the default 64K. Must be consistent
+		/// between SecurityInfo offsets 0x10C and 0x110 or the kernel rejects
+		/// the image. System modules use 4K pages because they're small and
+		/// numerous -- saves memory vs wasting up to 60K per module with 64K
+		/// granularity. Game titles use 64K pages for better TLB efficiency
+		/// with large code/data segments.
 		const SMALL_PAGES              = 0x1000_0000;
-		const CONSOLE_ID_REQUIRED      = 0x0400_0000;
+		/// When set, the kernel reads optional header 0x4004 which
+		/// contains a (mask, expected) u64 pair and checks it against
+		/// the keyvault's restricted_privileges (shared page 0x8E038630).
+		/// This is how XEXs gate execution to consoles with specific
+		/// keyvault privilege levels. Corresponds to xextool's `-v`.
+		const KV_PRIVILEGES_REQUIRED   = 0x0400_0000;
 		/// Cleared by kernel if the HV reports the keyvault is unsigned
-		/// (shared page 0x8E038614 bit 8 clear).
+		/// (shared page 0x8E038614 bit 8 clear). Corresponds to
+		/// xextool's `-k`.
 		const SIGNED_KEYVAULT_REQUIRED = 0x0800_0000;
 	}
 }
@@ -118,20 +443,37 @@ bitflags! {
 	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 	pub struct AllowedMediaTypes: u32 {
 		const HARD_DISK                = 0x0000_0001;
+		/// DVDX2 disc (Xbox 360 game disc format).
 		const DVD_X2                   = 0x0000_0002;
 		const DVD_CD                   = 0x0000_0004;
+		/// Single-layer DVD (4.7 GB).
 		const DVD_5                    = 0x0000_0008;
+		/// Dual-layer DVD (8.5 GB).
 		const DVD_9                    = 0x0000_0010;
+		/// Internal NAND flash filesystem.
 		const SYSTEM_FLASH             = 0x0000_0020;
+		/// Xbox 360 Memory Unit (removable flash storage).
 		const MEMORY_UNIT              = 0x0000_0080;
 		const USB_MASS_STORAGE         = 0x0000_0100;
 		const NETWORK                  = 0x0000_0200;
+		/// Loaded directly from memory (not from a filesystem).
 		const DIRECT_FROM_MEMORY       = 0x0000_0400;
 		const RAM_DRIVE                = 0x0000_1000;
+		/// Streamed VOD (SVOD) container format.
 		const SVOD                     = 0x0000_2000;
+		/// Allows loading from writable storage (HDD, MU, USB). Without
+		/// this, XexpVerifyMediaType rejects writable media even if the
+		/// individual media bit is set -- the kernel treats writable
+		/// storage as untrusted by default since files can be modified
+		/// after download. This flag says "trust the content signature
+		/// instead of the physical media." Used by Games on Demand,
+		/// title updates, and DLC that are LIVE-signed but stored on HDD.
 		const INSECURE_PACKAGE         = 0x0000_4000;
+		/// Same as INSECURE_PACKAGE but for savegame-adjacent content.
 		const SAVEGAME_PACKAGE         = 0x0000_8000;
+		/// CON-signed content package (console-signed).
 		const LOCALLY_SIGNED_PACKAGE   = 0x0001_0000;
+		/// LIVE-signed content package (Microsoft-signed).
 		const LIVE_SIGNED_PACKAGE      = 0x0002_0000;
 		const XBOX_PLATFORM_PACKAGE    = 0x0004_0000;
 	}
@@ -146,19 +488,70 @@ bitflags! {
 	/// consistency with the loader's expectations.
 	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 	pub struct ModuleFlags: u32 {
+		/// User-mode title executable. The kernel enforces an isolation
+		/// boundary: title modules can only load other title modules, and
+		/// system modules can only load system modules. The TITLE bit in
+		/// the XEX header must match the loading context or the load
+		/// fails with STATUS_ACCESS_DENIED.
 		const TITLE            = 0x0000_0001;
+		/// Exports symbols visible to title modules. Without this, the
+		/// import resolver rejects cross-boundary imports -- a title
+		/// trying to import from a system module without this flag gets
+		/// STATUS_ACCESS_DENIED. This is why xboxkrnl.exe and xam.xex
+		/// have it set: they export APIs to games.
 		const EXPORTS_TO_TITLE = 0x0000_0002;
+		/// System debugger module (e.g. xbdm.xex). Creates a separate
+		/// trust domain: debugger modules can only be loaded by other
+		/// debugger modules. The kernel XORs this bit between the XEX
+		/// header and the loading context, rejecting mismatches. This
+		/// prevents debug tools from being injected into non-debug
+		/// execution contexts.
 		const SYSTEM_DEBUGGER  = 0x0000_0004;
+		/// Dynamic link library.
 		const DLL              = 0x0000_0008;
+		/// Module is a patch (XEXP). The kernel rejects direct loads
+		/// of modules with this flag -- they must be applied through
+		/// the patch system.
 		const PATCH            = 0x0000_0010;
+		/// Delta patch -- contains binary diffs against a base XEX.
 		const PATCH_DELTA      = 0x0000_0020;
+		/// Full patch -- complete replacement of the base XEX.
 		const PATCH_FULL       = 0x0000_0040;
+		/// Module is locked to a specific filesystem path (header key
+		/// 0x80FF). The kernel compares the actual load path against
+		/// the bound path, resolving symbolic links. If they don't
+		/// match, the load fails. Prevents a signed disc game from
+		/// being copied to HDD and run from there to bypass disc auth.
 		const BOUND_PATH       = 0x4000_0000;
+		/// Module is bound to a specific physical device (header key
+		/// 0x8105). The kernel reads a 0x14-byte device identifier
+		/// and compares it against the boot device.
 		const DEVICE_ID        = 0x2000_0000;
 	}
 }
 #[cfg(feature = "serde")]
 impl_bitflags_serialize!(ModuleFlags);
+
+/// Date range restriction for time-limited executables (header key 0x4104).
+///
+/// Timestamps are Windows FILETIME values (100ns intervals since 1601-01-01),
+/// stored as (high_u32_LE, low_u32_LE) pairs in the XEX header.
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub struct DateRange {
+	pub not_before: Option<u64>,
+	pub not_after: Option<u64>,
+}
+
+impl DateRange {
+	pub fn not_before_unix(&self) -> Option<i64> {
+		self.not_before.and_then(xenon_types::filetime_to_unix_secs)
+	}
+
+	pub fn not_after_unix(&self) -> Option<i64> {
+		self.not_after.and_then(xenon_types::filetime_to_unix_secs)
+	}
+}
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
@@ -211,15 +604,15 @@ impl Xex2Header {
 			return None;
 		}
 		Some(GameRatings {
-			esrb: data[0],
-			pegi: data[1],
-			pegifi: data[2],
-			pegipt: data[3],
-			bbfc: data[4],
-			cero: data[5],
-			usk: data[6],
-			oflcau: data[7],
-			oflcnz: data[8],
+			esrb: data[0].into(),
+			pegi: data[1].into(),
+			pegi_fi: data[2].into(),
+			pegi_pt: data[3].into(),
+			bbfc: data[4].into(),
+			cero: data[5].into(),
+			usk: data[6].into(),
+			oflc_au: data[7].into(),
+			oflc_nz: data[8].into(),
 			kmrb: data[9],
 			brazil: data[10],
 			fpb: data[11],

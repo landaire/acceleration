@@ -1,3 +1,4 @@
+use bitflags::bitflags;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use std::io::Cursor;
@@ -84,20 +85,184 @@ pub struct KeyVaultHeader {
 	pub confounder: [u8; 0x10],
 }
 
+bitflags! {
+	/// Controls how `restricted_privileges` is applied by the HV (kv_data+0x02).
+	///
+	/// Checked by `sub_2e1d0` when restricted_privileges is updated, and by
+	/// `sub_75b8` during `HvxKeysInitialize` for the devkit flag.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct PrivilegeRestrictionFlags: u8 {
+		/// When set, `sub_2e1d0` zeroes restricted_privileges entirely,
+		/// overriding any dynamic updates.
+		const CLEAR_ALL       = 0x01;
+		/// When set, `sub_2e1d0` ANDs the incoming privilege value with
+		/// a stored mask (r2+0x162f0), limiting which bits can be set.
+		const MASK_WITH_STORED = 0x02;
+		/// Marks the console as a development kit. `sub_75b8` sets
+		/// shared page bit 5, causing the entire HV to treat this
+		/// console as a devkit for all privilege and security checks.
+		const DEVKIT          = 0x04;
+	}
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for PrivilegeRestrictionFlags {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_u8(self.bits())
+	}
+}
+
+bitflags! {
+	/// Console-level privilege restrictions stored in the keyvault config
+	/// at kv_data+0x18 (file offset 0x30).
+	///
+	/// The HV checks these in `sub_35b0`, which:
+	/// 1. Returns all-ones (grant all) if the HV flags word bit 15 is clear
+	/// 2. Returns the actual restricted_privileges from keyvault if the console
+	///    is a devkit (console type bit 5 set)
+	/// 3. Returns zero (deny all) otherwise (retail consoles)
+	///
+	/// `HvxKeysSaveSystemUpdate` calls `sub_35b0(0x1, 0)` to check bit 0.
+	/// The field is updated by the HV via `sub_2e800` / `sub_2e1d0`, which
+	/// applies a (clear_mask, set_mask) pair to the stored value.
+	///
+	/// The XEX loader (`sub_8007c4f0`) also checks this value: when
+	/// `ImageFlags::KV_PRIVILEGES_REQUIRED` is set, optional header 0x4004
+	/// contains a (mask, expected) u64 pair and the kernel verifies
+	/// `(restricted_privileges & mask) == expected`. This allows individual
+	/// XEX executables to require arbitrary privilege bit combinations.
+	///
+	/// Only bit 0 has been identified from HV callers. The remaining bits
+	/// are defined per-XEX via header key 0x4004. On retail consoles the
+	/// HV returns 0 for all checks (sub_35b0).
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct RestrictedPrivileges: u64 {
+		const ALLOW_SYSTEM_UPDATE = 0x0000_0000_0000_0001;
+	}
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for RestrictedPrivileges {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_u64(self.bits())
+	}
+}
+
+bitflags! {
+	/// Console certificate privilege flags at cert+0x12 (u32).
+	///
+	/// Part of the signed console certificate in the keyvault. Covered by
+	/// the RSA signature over the certificate -- cannot be modified without
+	/// re-signing with Microsoft's private key.
+	///
+	/// The HV and kernel do not directly mask individual bits of this field
+	/// in the 17559 binaries. `XeKeysConsoleSignatureVerification` verifies
+	/// the certificate's RSA signature and passes the entire cert (including
+	/// privileges) to `XeKeysSetKey(0x1000, ...)` for storage, but no
+	/// bit-level checks on this u32 were found.
+	///
+	/// All test keyvaults have privileges = 0, suggesting this field is
+	/// reserved for future use or only meaningful on special certificates.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct CertificatePrivileges: u32 {
+		const _ = !0;
+	}
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for CertificatePrivileges {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_u32(self.bits())
+	}
+}
+
+bitflags! {
+	/// Optical disc drive feature flags at kv_data+0x04 (u16).
+	///
+	/// Read in `HvxKeysInitialize` as part of keyvault validation.
+	/// The HV at 0x77d8 checks the console cert's console_type bit 27
+	/// (0x10000000) and uses OddFeatures to determine the ODD auth mode.
+	/// At 0x7808-0x7820, bit 2 (0x4) of OddAuthType controls whether
+	/// bit 27 of the console cert's type is cleared.
+	///
+	/// No individual OddFeatures bits were identified by name in the
+	/// 17559 HV. The field is compared as a whole (e.g., == 0x0102) to
+	/// select ODD authentication behavior.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct OddFeatures: u16 {
+		const _ = !0;
+	}
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for OddFeatures {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_u16(self.bits())
+	}
+}
+
+bitflags! {
+	/// Optical disc drive authentication type at kv_data+0x06 (u16).
+	///
+	/// Stored in the keyvault config area. During `HvxKeysInitialize`, the
+	/// HV copies this value to an internal data area (at `r2+0x6A9C`) and
+	/// checks specific bits:
+	///
+	/// - Bit 2 (0x4): Checked in `HvxKeysInitialize` (0x7810). Controls
+	///   whether bit 27 of the console cert's ConsoleType (ODD auth type
+	///   extension) is cleared during initialization. When OddAuthType
+	///   bit 2 is clear AND OddFeatures != 0x0102, the console type's
+	///   bit 27 is forced off.
+	/// - Bit 15 (0x8000): Checked in `sub_3100` (0x3188). When the MSB
+	///   is clear, the HV calls `sub_3040` which configures hardware
+	///   registers for ODD authentication (related to AP2.0/2.1 setup).
+	///
+	/// Note: the HV shared page halfword at offset 6 (read via `lhz rX,
+	/// 6(0)` throughout the HV) is a SEPARATE runtime register populated
+	/// from multiple sources during initialization. Its bits include a
+	/// devkit flag (bit 5, from `restricted_privileges_flags` bit 2),
+	/// update eligibility (bits 12-14), and lock status (bit 15). These
+	/// are NOT the OddAuthType field itself, even though some older
+	/// documentation conflates them.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct OddAuthType: u16 {
+		/// ODD auth extension control. When clear (and OddFeatures !=
+		/// 0x0102), `HvxKeysInitialize` clears bit 27 of the console
+		/// cert's ConsoleType during key initialization.
+		const ODD_AUTH_EXT_CONTROL = 0x0004;
+		/// Allow remaining bits.
+		const _ = !0;
+	}
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for OddAuthType {
+	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_u16(self.bits())
+	}
+}
+
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct KeyVaultConfig {
+	/// Manufacturing mode byte (kv_data+0x00). Set to 1 during factory
+	/// provisioning. The HV checks this in `HvxKeysExCreateKeyVault` and
+	/// `HvxKeysExLoadKeyVault` (bit 23 of flags word, mask 0x100).
 	pub manufacturing_mode: u8,
+	/// Alternate keyvault indicator (kv_data+0x01). Checked by
+	/// `HvxKeysInitialize` at kv_ptr+0x19.
 	pub alternate_key_vault: u8,
-	pub restricted_privileges_flags: u8,
+	/// Privilege restriction flags (kv_data+0x02, u8).
+	///
+	pub restricted_privileges_flags: PrivilegeRestrictionFlags,
 	pub reserved_byte4: u8,
-	pub odd_features: u16,
-	pub odd_authtype: u16,
+	pub odd_features: OddFeatures,
+	pub odd_authtype: OddAuthType,
 	pub restricted_hvext_loader: u32,
 	pub policy_flash_size: u32,
 	pub policy_builtin_usbmu_size: u32,
 	pub reserved_dword4: u32,
-	pub restricted_privileges: u64,
+	pub restricted_privileges: RestrictedPrivileges,
 	#[cfg_attr(feature = "serde", serde(skip))]
 	pub reserved_qword2: u64,
 	#[cfg_attr(feature = "serde", serde(skip))]
@@ -155,21 +320,56 @@ pub struct ConsoleCertificate {
 	pub cert_size: u16,
 	pub console_id: xenon_types::ConsoleId,
 	pub console_part_number: String,
-	pub privileges: u32,
+	pub privileges: CertificatePrivileges,
 	pub console_type: ConsoleType,
 	pub manufacturing_date: String,
 }
 
+/// Console type identifier at cert+0x16 (u32).
+///
+/// Part of the signed console certificate. The HV and kernel verify
+/// consistency of this field between the local certificate and any
+/// incoming certificate during `XeKeysConsoleSignatureVerification`:
+///
+/// - **Retail path** (HV flags bit 15 clear): bits 0-23 must match
+///   exactly between the two certificates.
+/// - **Devkit path** (HV flags bit 15 set): bits 0-23 and bit 30
+///   (TESTKIT) must match. Bits 24-29 may differ. Bit 31
+///   (RECOVERY_GENERATED) is explicitly ignored in the comparison.
+///
+/// ## Bit layout
+///
+/// | Bits  | Mask         | Name                | Description |
+/// |-------|--------------|---------------------|-------------|
+/// | 0-1   | 0x0000_0003  | Console kind        | 1=devkit, 2=retail |
+/// | 2-13  | 0x0000_3FFC  | Reserved            | Must match between certs |
+/// | 14    | 0x0000_4000  | (unknown)           | Seen set in test keyvaults. Must match between certs. |
+/// | 15-23 | 0x00FF_8000  | Reserved            | Must match between certs |
+/// | 24-26 | 0x0700_0000  | (variable)          | May differ on devkit; must match on retail |
+/// | 27    | 0x0800_0000  | ODD auth type       | Checked in `HvxKeysInitialize`. May be cleared based on OddAuthType bit 2. |
+/// | 28    | 0x1000_0000  | (variable)          | Checked in `HvxKeysInitialize` (0x77d8). May differ on devkit. |
+/// | 29    | 0x2000_0000  | (reserved)          | May differ on devkit |
+/// | 30    | 0x4000_0000  | Testkit             | Console is a test kit. Must match between certs on both retail and devkit. |
+/// | 31    | 0x8000_0000  | Recovery generated  | Certificate was recovery-generated. Selects key 0x3a instead of 0x3c for verification. Ignored in cert comparison. |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ConsoleType(pub u32);
 
 impl ConsoleType {
+	/// Console kind mask (bits 0-1).
+	pub const KIND_MASK: u32 = 0x0000_0003;
+	/// Bit 27: ODD authentication type. Checked and potentially cleared in
+	/// `HvxKeysInitialize` based on OddAuthType bit 2.
+	pub const ODD_AUTH_TYPE: u32 = 0x0800_0000;
+	/// Bit 30: Console is a test kit.
 	pub const TESTKIT: u32 = 0x4000_0000;
+	/// Bit 31: Certificate was recovery-generated. When set, the HV uses
+	/// key ID 0x3a (recovery console cert key) instead of 0x3c (normal
+	/// console cert key) for RSA signature verification.
 	pub const RECOVERY_GENERATED: u32 = 0x8000_0000;
 
 	pub fn kind(&self) -> ConsoleKind {
-		match self.0 & 0x3 {
+		match self.0 & Self::KIND_MASK {
 			1 => ConsoleKind::Devkit,
 			2 => ConsoleKind::Retail,
 			_ => ConsoleKind::Unknown,
@@ -177,11 +377,11 @@ impl ConsoleType {
 	}
 
 	pub fn is_devkit(&self) -> bool {
-		self.0 & 0x3 == 1
+		self.0 & Self::KIND_MASK == 1
 	}
 
 	pub fn is_retail(&self) -> bool {
-		self.0 & 0x3 == 2
+		self.0 & Self::KIND_MASK == 2
 	}
 
 	pub fn is_testkit(&self) -> bool {
@@ -204,12 +404,19 @@ pub enum ConsoleKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub enum ConsoleRevision {
+	/// Original Xbox 360 (2005). 90nm CPU/GPU.
 	Xenon,
+	/// Second revision (2007). 80nm GPU, HDMI added.
 	Zephyr,
+	/// Third revision (2007). 65nm CPU.
 	Falcon,
+	/// Fourth revision (2008). 65nm CPU, 65nm GPU.
 	Jasper,
+	/// Xbox 360 S "Slim" (2010). CPU+GPU combined into single die.
 	Trinity,
+	/// Xbox 360 S revision (2011). Smaller combined die.
 	Corona,
+	/// Xbox 360 E (2013). Final hardware revision.
 	Winchester,
 	Unknown,
 }
@@ -325,7 +532,7 @@ pub struct ConsoleCertificateRef<'a> {
 	pub cert_size: u16,
 	pub console_id: xenon_types::ConsoleId,
 	pub console_part_number: &'a str,
-	pub privileges: u32,
+	pub privileges: CertificatePrivileges,
 	pub console_type: ConsoleType,
 	pub manufacturing_date: &'a str,
 }
@@ -387,7 +594,9 @@ impl<'a> KeyVaultRef<'a> {
 			cert_size,
 			console_id: xenon_types::ConsoleId(cert[offsets::CERT_CONSOLE_ID].try_into().unwrap()),
 			console_part_number: std::str::from_utf8(&pn_raw[..pn_end]).unwrap_or(""),
-			privileges: u32::from_be_bytes(cert[offsets::CERT_PRIVILEGES].try_into().unwrap()),
+			privileges: CertificatePrivileges::from_bits_retain(u32::from_be_bytes(
+				cert[offsets::CERT_PRIVILEGES].try_into().unwrap(),
+			)),
 			console_type: ConsoleType(u32::from_be_bytes(cert[offsets::CERT_CONSOLE_TYPE].try_into().unwrap())),
 			manufacturing_date: std::str::from_utf8(&date_raw[..date_end]).unwrap_or(""),
 		};
@@ -535,15 +744,15 @@ impl KeyVaultConfig {
 		let mut c = Cursor::new(data);
 		let manufacturing_mode = c.read_u8()?;
 		let alternate_key_vault = c.read_u8()?;
-		let restricted_privileges_flags = c.read_u8()?;
+		let restricted_privileges_flags = PrivilegeRestrictionFlags::from_bits_retain(c.read_u8()?);
 		let reserved_byte4 = c.read_u8()?;
-		let odd_features = c.read_u16::<BigEndian>()?;
-		let odd_authtype = c.read_u16::<BigEndian>()?;
+		let odd_features = OddFeatures::from_bits_retain(c.read_u16::<BigEndian>()?);
+		let odd_authtype = OddAuthType::from_bits_retain(c.read_u16::<BigEndian>()?);
 		let restricted_hvext_loader = c.read_u32::<BigEndian>()?;
 		let policy_flash_size = c.read_u32::<BigEndian>()?;
 		let policy_builtin_usbmu_size = c.read_u32::<BigEndian>()?;
 		let reserved_dword4 = c.read_u32::<BigEndian>()?;
-		let restricted_privileges = c.read_u64::<BigEndian>()?;
+		let restricted_privileges = RestrictedPrivileges::from_bits_retain(c.read_u64::<BigEndian>()?);
 
 		fn read_qword(c: &mut Cursor<&[u8]>) -> Result<u64, std::io::Error> {
 			c.read_u64::<BigEndian>()
@@ -639,7 +848,7 @@ impl ConsoleCertificate {
 		let pn_end = part_number.iter().position(|b| *b == 0).unwrap_or(part_number.len());
 		let console_part_number = String::from_utf8_lossy(&part_number[..pn_end]).into_owned();
 
-		let privileges = c.read_u32::<BigEndian>()?;
+		let privileges = CertificatePrivileges::from_bits_retain(c.read_u32::<BigEndian>()?);
 		let console_type = ConsoleType(c.read_u32::<BigEndian>()?);
 
 		let mut date_raw = [0u8; 0x08];

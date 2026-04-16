@@ -312,18 +312,18 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 		b.push_record(["LZX Window", &format!("{:#x}", ws)]);
 	}
 
-	b.push_record([
-		"Game Regions",
-		&format_flags(
-			security.image_info.game_regions,
-			&[
-				(xenon_types::GameRegion::NTSC_US, "NTSC/US"),
-				(xenon_types::GameRegion::NTSC_JP, "NTSC/JP"),
-				(xenon_types::GameRegion::PAL, "PAL"),
-				(xenon_types::GameRegion::PAL_AU, "PAL/AU"),
-			],
-		),
-	]);
+	if let Some(dr) = header.date_range() {
+		let fmt_ft = |ft: u64| -> String {
+			xenon_types::filetime_to_timestamp(ft)
+				.map(|ts| ts.strftime("%Y-%m-%d %H:%M:%S UTC").to_string())
+				.unwrap_or_else(|| format!("0x{:016x}", ft))
+		};
+		let before = dr.not_before.map(&fmt_ft).unwrap_or_else(|| "none".into());
+		let after = dr.not_after.map(&fmt_ft).unwrap_or_else(|| "none".into());
+		b.push_record(["Date Range", &format!("{} -- {}", before, after)]);
+	}
+
+	b.push_record(["Game Regions", &format!("{:#010x}", security.image_info.game_regions)]);
 	b.push_record([
 		"Allowed Media",
 		&format_flags(

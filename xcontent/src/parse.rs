@@ -16,7 +16,28 @@ use xecrypt::XContentSignatureType;
 
 use crate::error::XContentError;
 
-const MAX_IMAGE_SIZE: usize = 0x4000;
+const LICENSE_ENTRY_COUNT: usize = 0x10;
+const CONTENT_ID_SIZE: usize = 0x14;
+const SHA1_DIGEST_SIZE: usize = 0x14;
+const DEVICE_ID_SIZE: usize = 0x14;
+const DISPLAY_STRING_COUNT: usize = 12;
+const WIDE_STRING_SIZE: usize = 128;
+const MAX_THUMBNAIL_SIZE: usize = 0x4000;
+const PAGE_ALIGNMENT: usize = 0x1000;
+const PAGE_ALIGNMENT_MASK: usize = PAGE_ALIGNMENT - 1;
+
+mod metadata_offsets {
+	pub const VOLUME_KIND: u64 = 0x3A9;
+	pub const VOLUME_DESCRIPTOR: u64 = 0x379;
+	pub const DATA_FILE_COUNT: u64 = 0x3AD;
+	pub const DEVICE_ID: u64 = 0x3FD;
+	pub const DISPLAY_DESCRIPTION: u64 = 0xD11;
+	pub const PUBLISHER_NAME: u64 = 0x1611;
+	pub const TITLE_NAME: u64 = 0x1691;
+	pub const TRANSFER_FLAGS: u64 = 0x1711;
+	pub const INSTALLER_TYPE_THRESHOLD: usize = 0x971A;
+	pub const INSTALLER_METADATA_SIZE: usize = 0x15F4;
+}
 
 fn read_wide_string_fixed(cursor: &mut Cursor<&[u8]>, byte_len: usize) -> std::io::Result<String> {
 	let start = cursor.position();
@@ -65,7 +86,7 @@ impl std::ops::Deref for FixedLengthNullWideString {
 
 impl FixedLengthNullWideString {
 	fn parse(cursor: &mut Cursor<&[u8]>) -> std::io::Result<Self> {
-		Ok(Self(read_wide_string_fixed(cursor, 128)?))
+		Ok(Self(read_wide_string_fixed(cursor, WIDE_STRING_SIZE)?))
 	}
 }
 
@@ -74,8 +95,8 @@ pub struct XContentHeader {
 	pub signature_type: XContentSignatureType,
 	pub key_material: XContentKeyMaterial,
 	pub license_data_offset: usize,
-	pub license_data: [LicenseEntry; 0x10],
-	pub content_id: [u8; 0x14],
+	pub license_data: [LicenseEntry; LICENSE_ENTRY_COUNT],
+	pub content_id: [u8; CONTENT_ID_SIZE],
 	pub header_size: u32,
 	pub end_of_header_offset: usize,
 	pub metadata: XContentMetadata,
@@ -92,7 +113,7 @@ impl XContentHeader {
 		let key_material = XContentKeyMaterial::parse(&mut cursor, signature_type)?;
 
 		let license_data_offset = cursor.position() as usize;
-		let mut license_data = [LicenseEntry::default(); 0x10];
+		let mut license_data = [LicenseEntry::default(); LICENSE_ENTRY_COUNT];
 		for entry in &mut license_data {
 			let ty_raw = cursor.read_u16::<BigEndian>()?;
 			let mut data = [0u8; 6];
@@ -102,7 +123,7 @@ impl XContentHeader {
 			*entry = LicenseEntry { ty_raw, data, bits, flags };
 		}
 
-		let mut content_id = [0u8; 0x14];
+		let mut content_id = [0u8; CONTENT_ID_SIZE];
 		cursor.read_exact(&mut content_id)?;
 		let header_size = cursor.read_u32::<BigEndian>()?;
 		let end_of_header_offset = cursor.position() as usize;
@@ -122,10 +143,10 @@ impl XContentHeader {
 	}
 
 	pub fn data_start_offset(&self) -> usize {
-		((self.header_size as usize) + 0x0FFF) & 0xFFFF_F000
+		((self.header_size as usize) + PAGE_ALIGNMENT_MASK) & !PAGE_ALIGNMENT_MASK
 	}
 
-	pub fn header_hash(&self, data: &[u8]) -> [u8; 20] {
+	pub fn header_hash(&self, data: &[u8]) -> [u8; SHA1_DIGEST_SIZE] {
 		let mut hasher = Sha1::new();
 		hasher.update(&data[self.license_data_offset..self.end_of_header_offset]);
 		hasher.finalize().into()
@@ -187,11 +208,11 @@ impl XContentMetadata {
 		});
 		let creator_xuid = cursor.read_u64::<BigEndian>()?;
 
-		cursor.set_position(0x3a9);
+		cursor.set_position(metadata_offsets::VOLUME_KIND);
 		let volume_kind =
 			FileSystemKind::try_from(cursor.read_u32::<BigEndian>()?).map_err(|_| XContentError::InvalidHeader)?;
 
-		cursor.set_position(0x379);
+		cursor.set_position(metadata_offsets::VOLUME_DESCRIPTOR);
 		let volume_descriptor = match volume_kind {
 			FileSystemKind::Stfs => FileSystem::Stfs(StfsVolumeDescriptor::parse(cursor)?),
 			FileSystemKind::Svod => FileSystem::Svod(SvodVolumeDescriptor::parse(cursor)?),
@@ -199,50 +220,53 @@ impl XContentMetadata {
 		};
 
 		// After volume descriptor parsing, continue from the right position
-		cursor.set_position(0x3ad);
+		cursor.set_position(metadata_offsets::DATA_FILE_COUNT);
 		let data_file_count = cursor.read_u32::<BigEndian>()?;
 		let data_file_combined_size = cursor.read_u64::<BigEndian>()?;
 
-		cursor.set_position(0x3fd);
+		cursor.set_position(metadata_offsets::DEVICE_ID);
 		let device_id = xenon_types::DeviceId({
-			let mut buf = [0u8; 0x14];
+			let mut buf = [0u8; DEVICE_ID_SIZE];
 			cursor.read_exact(&mut buf)?;
 			buf
 		});
 
-		let mut display_name: [FixedLengthNullWideString; 12] =
+		let mut display_name: [FixedLengthNullWideString; DISPLAY_STRING_COUNT] =
 			std::array::from_fn(|_| FixedLengthNullWideString(String::new()));
 		for name in &mut display_name {
 			*name = FixedLengthNullWideString::parse(cursor)?;
 		}
 
-		cursor.set_position(0xd11);
-		let mut display_description: [FixedLengthNullWideString; 12] =
+		cursor.set_position(metadata_offsets::DISPLAY_DESCRIPTION);
+		let mut display_description: [FixedLengthNullWideString; DISPLAY_STRING_COUNT] =
 			std::array::from_fn(|_| FixedLengthNullWideString(String::new()));
 		for desc in &mut display_description {
 			*desc = FixedLengthNullWideString::parse(cursor)?;
 		}
 
-		cursor.set_position(0x1611);
+		cursor.set_position(metadata_offsets::PUBLISHER_NAME);
 		let publisher_name = read_null_wide_string(cursor, input);
 
-		cursor.set_position(0x1691);
+		cursor.set_position(metadata_offsets::TITLE_NAME);
 		let title_name = read_null_wide_string(cursor, input);
 
-		cursor.set_position(0x1711);
+		cursor.set_position(metadata_offsets::TRANSFER_FLAGS);
 		let transfer_flags = cursor.read_u8()?;
 		let thumbnail_image_size = cursor.read_u32::<BigEndian>()?;
 		let title_thumbnail_image_size = cursor.read_u32::<BigEndian>()?;
 
 		let mut thumbnail_image = vec![0u8; thumbnail_image_size as usize];
 		cursor.read_exact(&mut thumbnail_image)?;
-		cursor.set_position(cursor.position() + (MAX_IMAGE_SIZE - thumbnail_image_size as usize) as u64);
+		cursor.set_position(cursor.position() + (MAX_THUMBNAIL_SIZE - thumbnail_image_size as usize) as u64);
 
 		let mut title_image = vec![0u8; title_thumbnail_image_size as usize];
 		cursor.read_exact(&mut title_image)?;
-		cursor.set_position(cursor.position() + (MAX_IMAGE_SIZE - title_thumbnail_image_size as usize) as u64);
+		cursor.set_position(cursor.position() + (MAX_THUMBNAIL_SIZE - title_thumbnail_image_size as usize) as u64);
 
-		let installer_type = if ((header_size + 0xFFF) & 0xFFFFF000) - 0x971A > 0x15F4 {
+		let aligned_header = ((header_size as usize) + PAGE_ALIGNMENT_MASK) & !PAGE_ALIGNMENT_MASK;
+		let installer_type = if aligned_header - metadata_offsets::INSTALLER_TYPE_THRESHOLD
+			> metadata_offsets::INSTALLER_METADATA_SIZE
+		{
 			Some(InstallerType::try_from(cursor.read_u32::<BigEndian>()?).map_err(|_| XContentError::InvalidHeader)?)
 		} else {
 			None
@@ -354,7 +378,7 @@ pub struct StfsVolumeDescriptor {
 	pub flags: u8,
 	pub file_table_block_count: u16,
 	pub file_table_block_num: u32,
-	pub top_hash_table_hash: [u8; 0x14],
+	pub top_hash_table_hash: [u8; SHA1_DIGEST_SIZE],
 	pub allocated_block_count: u32,
 	pub unallocated_block_count: u32,
 }
@@ -384,7 +408,7 @@ pub struct SvodVolumeDescriptor {
 	pub block_cache_element_count: u8,
 	pub worker_thread_processor: u8,
 	pub worker_thread_priority: u8,
-	pub root_hash: [u8; 0x14],
+	pub root_hash: [u8; SHA1_DIGEST_SIZE],
 	pub flags: u8,
 	pub data_block_count: u32,
 	pub data_block_offset: u32,
@@ -457,18 +481,28 @@ pub enum ContentType {
 #[repr(u32)]
 pub enum InstallerType {
 	None = 0,
+	/// "SUPD" -- system-level dashboard/kernel update.
 	SystemUpdate = 0x53555044,
+	/// "TUPD" -- per-title update patch.
 	TitleUpdate = 0x54555044,
+	/// "P$SU" -- partial download state for a system update.
 	SystemUpdateProgressCache = 0x50245355,
+	/// "P$TU" -- partial download state for a title update.
 	TitleUpdateProgressCache = 0x50245455,
+	/// "P$TC" -- partial download state for title content.
 	TitleContentProgressCache = 0x50245443,
 }
 
 #[derive(Debug, Serialize, Copy, Clone, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum FileSystemKind {
+	/// Secure Transacted File System. Used by CON/LIVE/PIRS packages
+	/// for savegames, DLC, title updates, and profile data.
 	Stfs = 0,
+	/// Streamed VOD. Used for large on-demand content like Games on
+	/// Demand and video.
 	Svod,
+	/// FAT-based filesystem. Used on hard drives and USB storage.
 	Fatx,
 }
 

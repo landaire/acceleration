@@ -21,8 +21,15 @@ pub use error::Error;
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum XContentSignatureType {
+	/// Console-signed package ("CON "). Signed with the console's
+	/// private key from its keyvault. Verified via
+	/// XeKeysConsoleSignatureVerification using the console cert RSA key.
 	Console,
+	/// Microsoft LIVE-signed package ("LIVE"). Signed by Microsoft's
+	/// content servers. Verified with the LIVE RSA key (exp=65537).
 	Live,
+	/// Offline strong-signed package ("PIRS"). Signed by Microsoft's
+	/// build tools. Verified with the PIRS RSA key (exp=3).
 	Pirs,
 }
 
@@ -36,6 +43,15 @@ impl XContentSignatureType {
 		}
 	}
 }
+
+pub const SHA1_DIGEST_SIZE: usize = 20;
+pub const RSA_2048_SIGNATURE_SIZE: usize = 0x100;
+pub const RSA_1024_SIGNATURE_SIZE: usize = 0x80;
+pub const RSA_1024_MODULUS_SIZE: usize = 0x80;
+pub const XCONTENT_KEY_MATERIAL_SIZE: usize = 0x228;
+pub const CONSOLE_PART_NUMBER_WIDE_SIZE: usize = 0x11 * 2;
+pub const DATE_GENERATION_SIZE: usize = 8;
+pub const CONSOLE_ID_SIZE: usize = 5;
 
 impl std::fmt::Display for XContentSignatureType {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -61,14 +77,13 @@ impl XContentKeyMaterial {
 		let result = if signature_type == XContentSignatureType::Console {
 			Self::Certificate(Certificate::parse(cursor)?)
 		} else {
-			let mut sig = vec![0u8; 256];
+			let mut sig = vec![0u8; RSA_2048_SIGNATURE_SIZE];
 			cursor.read_exact(&mut sig)?;
-			let mut reserved = vec![0u8; 256];
+			let mut reserved = vec![0u8; RSA_2048_SIGNATURE_SIZE];
 			cursor.read_exact(&mut reserved)?;
 			Self::Signature(sig, reserved)
 		};
-		// Pad to 0x228 bytes total
-		cursor.set_position(start_pos + 0x228);
+		cursor.set_position(start_pos + XCONTENT_KEY_MATERIAL_SIZE as u64);
 		Ok(result)
 	}
 }
@@ -90,17 +105,17 @@ pub struct Certificate {
 impl Certificate {
 	pub fn parse(cursor: &mut Cursor<&[u8]>) -> std::io::Result<Self> {
 		let pubkey_cert_size = cursor.read_u16::<BigEndian>()?;
-		let mut owner_console_id = [0u8; 5];
+		let mut owner_console_id = [0u8; CONSOLE_ID_SIZE];
 		cursor.read_exact(&mut owner_console_id)?;
 
-		let mut part_number_raw = [0u8; 0x11 * 2];
+		let mut part_number_raw = [0u8; CONSOLE_PART_NUMBER_WIDE_SIZE];
 		cursor.read_exact(&mut part_number_raw)?;
 		let owner_console_part_number = read_wide_string(&part_number_raw);
 
 		let console_type_raw = cursor.read_u32::<BigEndian>()?;
 		let console_type_flags = ConsoleTypeFlags::from_bits(console_type_raw);
 
-		let mut date_gen_raw = [0u8; 8];
+		let mut date_gen_raw = [0u8; DATE_GENERATION_SIZE];
 		cursor.read_exact(&mut date_gen_raw)?;
 		let date_generation = String::from_utf8_lossy(
 			&date_gen_raw[..date_gen_raw.iter().position(|b| *b == 0).unwrap_or(date_gen_raw.len())],
@@ -108,11 +123,11 @@ impl Certificate {
 		.into_owned();
 
 		let public_exponent = cursor.read_u32::<BigEndian>()?;
-		let mut public_modulus = vec![0u8; 0x80];
+		let mut public_modulus = vec![0u8; RSA_1024_MODULUS_SIZE];
 		cursor.read_exact(&mut public_modulus)?;
-		let mut certificate_signature = vec![0u8; 0x100];
+		let mut certificate_signature = vec![0u8; RSA_2048_SIGNATURE_SIZE];
 		cursor.read_exact(&mut certificate_signature)?;
-		let mut signature = vec![0u8; 0x80];
+		let mut signature = vec![0u8; RSA_1024_SIGNATURE_SIZE];
 		cursor.read_exact(&mut signature)?;
 
 		Ok(Certificate {
@@ -334,7 +349,7 @@ fn pkcs1v15_sha1_scheme() -> Pkcs1v15Sign {
 	// SHA-1 AlgorithmIdentifier DER prefix for PKCS#1 v1.5 signatures
 	const SHA1_DER_PREFIX: &[u8] =
 		&[0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14];
-	Pkcs1v15Sign { hash_len: Some(20), prefix: SHA1_DER_PREFIX.into() }
+	Pkcs1v15Sign { hash_len: Some(SHA1_DIGEST_SIZE), prefix: SHA1_DER_PREFIX.into() }
 }
 
 fn standard_signature_to_raw(sig: &[u8]) -> Vec<u8> {

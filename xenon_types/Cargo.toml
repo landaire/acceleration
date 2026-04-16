@@ -13,3 +13,4 @@ categories = ["data-structures"]
 [dependencies]
 serde = { workspace = true }
 bitflags = { workspace = true }
+jiff = { version = "0.2", optional = true }

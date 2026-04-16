@@ -115,6 +115,34 @@ impl<'de> Deserialize<'de> for GameRegion {
 	}
 }
 
+/// Windows FILETIME: 100-nanosecond intervals since 1601-01-01 00:00:00 UTC.
+///
+/// The Xbox 360 stores FILETIME values with each u32 half in little-endian
+/// byte order, arranged as (high, low). Use [`filetime_from_xe_bytes`] to
+/// decode from raw XEX header bytes.
+pub const FILETIME_UNIX_EPOCH_DELTA: u64 = 116_444_736_000_000_000;
+
+/// Decode a FILETIME from Xbox 360 on-disk format: two little-endian u32s
+/// stored as (high, low).
+pub fn filetime_from_xe_bytes(bytes: &[u8; 8]) -> u64 {
+	let hi = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+	let lo = u32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+	((hi as u64) << 32) | lo as u64
+}
+
+/// Convert a Windows FILETIME to a Unix timestamp in seconds.
+pub fn filetime_to_unix_secs(ft: u64) -> Option<i64> {
+	ft.checked_sub(FILETIME_UNIX_EPOCH_DELTA).map(|v| (v / 10_000_000) as i64)
+}
+
+/// Convert a Windows FILETIME to a `jiff::Timestamp`.
+#[cfg(feature = "jiff")]
+pub fn filetime_to_timestamp(ft: u64) -> Option<jiff::Timestamp> {
+	let unix_secs = filetime_to_unix_secs(ft)?;
+	let nanos_remainder = ((ft - FILETIME_UNIX_EPOCH_DELTA) % 10_000_000) * 100;
+	jiff::Timestamp::new(unix_secs, nanos_remainder as i32).ok()
+}
+
 macro_rules! impl_u32_hex_display {
 	($ty:ty) => {
 		impl std::fmt::Display for $ty {

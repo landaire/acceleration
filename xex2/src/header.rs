@@ -45,8 +45,14 @@ pub use crate::opt::ModuleFlags;
 #[repr(u16)]
 pub enum CompressionType {
 	None = 0,
+	/// Data blocks followed by zero-fill blocks. Each block is described
+	/// by a (data_size, zero_size) pair in the FileFormatInfo header.
 	Basic = 1,
+	/// LZX-compressed blocks with u16 BE chunk-size prefixes. Each block
+	/// has a 24-byte header containing the next block's size and a SHA-1
+	/// hash for integrity verification. LZX state persists across blocks.
 	Normal = 2,
+	/// Binary diff against a base XEX. Used by XEXP patch files.
 	Delta = 3,
 }
 
@@ -54,7 +60,11 @@ pub enum CompressionType {
 #[cfg_attr(feature = "serde", derive(Serialize))]
 #[repr(u16)]
 pub enum EncryptionType {
+	/// Data is stored in plaintext. Devkit XEXs and extracted basefiles.
 	None = 0,
+	/// AES-128-CBC with a per-file session key derived from the image
+	/// key in SecurityInfo. The session key is decrypted using either
+	/// the retail or devkit master key.
 	Normal = 1,
 }
 
@@ -112,7 +122,7 @@ pub struct ImageInfo {
 	pub media_id: [u8; 16],
 	pub file_key: AesKey,
 	pub header_hash: [u8; 20],
-	pub game_regions: xenon_types::GameRegion,
+	pub game_regions: u32,
 	pub allowed_media_types: AllowedMediaTypes,
 }
 
@@ -141,6 +151,9 @@ pub enum OptionalHeaderKey {
 	TlsData = 0x00020200,
 	SystemFlags = 0x00030000,
 	Privileges = 0x00030100,
+	KvPrivilegeRequirement = 0x00004004,
+	DateRange = 0x00004104,
+	ConsoleSerialList = 0x000042FF,
 	ExecutionInfo = 0x00040006,
 	ServiceIdList = 0x000401FF,
 	TitleWorkspaceSize = 0x00040201,
@@ -177,6 +190,9 @@ impl OptionalHeaderKey {
 			0x00020200 => Some(Self::TlsData),
 			0x00030000 => Some(Self::SystemFlags),
 			0x00030100 => Some(Self::Privileges),
+			0x00004004 => Some(Self::KvPrivilegeRequirement),
+			0x00004104 => Some(Self::DateRange),
+			0x000042FF => Some(Self::ConsoleSerialList),
 			0x00040006 => Some(Self::ExecutionInfo),
 			0x000401FF => Some(Self::ServiceIdList),
 			0x00040201 => Some(Self::TitleWorkspaceSize),
@@ -243,10 +259,15 @@ impl Xex2Header {
 			let key = cursor.read_u32::<BigEndian>().io()?;
 			let value = cursor.read_u32::<BigEndian>().io()?;
 
-			let size_class = key & 0xFF;
+			const SIZE_CLASS_MASK: u32 = 0xFF;
+			const SIZE_CLASS_SCALAR: u32 = 0x00;
+			const SIZE_CLASS_INLINE_PTR: u32 = 0x01;
+			const SIZE_CLASS_VARIABLE: u32 = 0xFF;
+
+			let size_class = key & SIZE_CLASS_MASK;
 			let header_value = match size_class {
-				0x00 | 0x01 => OptionalHeaderValue::Inline(value),
-				0xFF => {
+				SIZE_CLASS_SCALAR | SIZE_CLASS_INLINE_PTR => OptionalHeaderValue::Inline(value),
+				SIZE_CLASS_VARIABLE => {
 					let offset = value as usize;
 					let struct_size = cursor_read_u32_at(data, offset)? as usize;
 					if offset + struct_size > data.len() {
@@ -298,6 +319,19 @@ impl Xex2Header {
 
 	pub fn default_stack_size(&self) -> Option<u32> {
 		self.get_optional_inline(OptionalHeaderKey::DefaultStackSize)
+	}
+
+	pub fn date_range(&self) -> Option<crate::opt::DateRange> {
+		let data = self.get_optional_data(OptionalHeaderKey::DateRange)?;
+		if data.len() < 16 {
+			return None;
+		}
+		let not_before = xenon_types::filetime_from_xe_bytes(data[0..8].try_into().unwrap());
+		let not_after = xenon_types::filetime_from_xe_bytes(data[8..16].try_into().unwrap());
+		Some(crate::opt::DateRange {
+			not_before: if not_before == 0 { None } else { Some(not_before) },
+			not_after: if not_after == 0 { None } else { Some(not_after) },
+		})
 	}
 
 	pub fn execution_info(&self) -> Option<ExecutionInfo> {
@@ -408,7 +442,7 @@ impl SecurityInfo {
 				c.read_exact(&mut h).io()?;
 				h
 			},
-			game_regions: xenon_types::GameRegion::from_bits_retain(c.read_u32::<BigEndian>().io()?),
+			game_regions: c.read_u32::<BigEndian>().io()?,
 			allowed_media_types: AllowedMediaTypes::from_bits_retain(c.read_u32::<BigEndian>().io()?),
 		};
 
