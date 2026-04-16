@@ -165,6 +165,8 @@ pub enum RsaKeyKind {
 	Console,
 	Dashboard,
 	Manufacturing,
+	Dvdx2,
+	Xsm3,
 	XMacs,
 }
 
@@ -188,36 +190,76 @@ impl RsaKeyKind {
 						PUB_EXPONENT.into(),
 					)?)
 				}
-				RsaKeyKind::Console => todo!(),
-				RsaKeyKind::Dashboard => todo!(),
-				RsaKeyKind::Manufacturing => todo!(),
-				RsaKeyKind::XMacs => todo!(),
+				RsaKeyKind::Console
+				| RsaKeyKind::Dashboard
+				| RsaKeyKind::Manufacturing
+				| RsaKeyKind::Dvdx2
+				| RsaKeyKind::Xsm3
+				| RsaKeyKind::XMacs => Err(crate::error::Error::NoPrivateKey(*self, console_kind)),
 			},
 			ConsoleKind::Retail => match self {
 				RsaKeyKind::Executable
 				| RsaKeyKind::Pirs
 				| RsaKeyKind::Live
+				| RsaKeyKind::Console
 				| RsaKeyKind::Dashboard
-				| RsaKeyKind::Manufacturing => Err(crate::error::Error::NoPrivateKey(*self, ConsoleKind::Retail)),
-				RsaKeyKind::XMacs => todo!(),
-				RsaKeyKind::Console => todo!(),
+				| RsaKeyKind::Manufacturing
+				| RsaKeyKind::Dvdx2
+				| RsaKeyKind::Xsm3
+				| RsaKeyKind::XMacs => Err(crate::error::Error::NoPrivateKey(*self, ConsoleKind::Retail)),
 			},
 		}
 	}
 
 	pub fn public_key(&self, console_kind: ConsoleKind) -> Result<RsaPublicKey, crate::Error> {
 		match console_kind {
-			ConsoleKind::Devkit => Ok(self.private_key(console_kind)?.to_public_key()),
+			ConsoleKind::Devkit => match self {
+				RsaKeyKind::Executable | RsaKeyKind::Pirs | RsaKeyKind::Live => {
+					Ok(self.private_key(console_kind)?.to_public_key())
+				}
+				RsaKeyKind::Dashboard => {
+					use crate::keys::dashboard::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
+				RsaKeyKind::Manufacturing => {
+					use crate::keys::manufacturing::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
+				RsaKeyKind::Xsm3 => {
+					use crate::keys::xsm3::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
+				RsaKeyKind::Console | RsaKeyKind::Dvdx2 | RsaKeyKind::XMacs => todo!(),
+			},
 			ConsoleKind::Retail => match self {
-				RsaKeyKind::Executable => todo!(),
-				RsaKeyKind::Pirs => todo!(),
+				RsaKeyKind::Executable | RsaKeyKind::Pirs => {
+					use crate::keys::retail::pirs::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
 				RsaKeyKind::Live => {
 					use crate::keys::retail::live::*;
 					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), PUB_EXPONENT.into())?)
 				}
-				RsaKeyKind::Console => todo!(),
-				RsaKeyKind::Dashboard => todo!(),
-				RsaKeyKind::Manufacturing => todo!(),
+				RsaKeyKind::Console => {
+					use crate::keys::retail::console::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
+				RsaKeyKind::Dashboard => {
+					use crate::keys::dashboard::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
+				RsaKeyKind::Manufacturing => {
+					use crate::keys::manufacturing::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
+				RsaKeyKind::Dvdx2 => {
+					use crate::keys::retail::dvdx2::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), PUB_EXPONENT.into())?)
+				}
+				RsaKeyKind::Xsm3 => {
+					use crate::keys::xsm3::*;
+					Ok(RsaPublicKey::new(BigUint::from_slice_native(MODULUS.as_slice()), EXPONENT.into())?)
+				}
 				RsaKeyKind::XMacs => todo!(),
 			},
 		}
