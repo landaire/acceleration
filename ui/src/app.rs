@@ -130,7 +130,7 @@ async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) -> anyhow::Res
 		let file_path = PathBuf::from(file.file_name());
 
 		let data = Arc::new(file.read().await);
-		let parsed_package = XContentPackage::try_from(data.as_slice())?;
+		let parsed_package = XContentPackage::parse(data.as_slice())?;
 		let fs = parsed_package.to_vfs_path(Arc::clone(&data));
 		let package_ref = XContentPackageReference { data, parsed: parsed_package, fs };
 

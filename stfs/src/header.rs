@@ -221,8 +221,8 @@ impl XContentHeader {
 		}
 	}
 
-	pub fn parse(input: &[u8]) -> Result<XContentHeader, StfsError> {
-		parse_header_inner(input)
+	pub fn parse(input: impl AsRef<[u8]>) -> Result<XContentHeader, StfsError> {
+		parse_header_inner(input.as_ref())
 	}
 }
 

@@ -458,7 +458,11 @@ impl ConsoleCertificate {
 }
 
 impl KeyVault {
-	pub fn parse(data: &[u8]) -> Result<Self, KeyVaultError> {
+	pub fn parse(data: impl AsRef<[u8]>) -> Result<Self, KeyVaultError> {
+		Self::parse_inner(data.as_ref())
+	}
+
+	fn parse_inner(data: &[u8]) -> Result<Self, KeyVaultError> {
 		if data.len() != KEYVAULT_SIZE_FULL && data.len() != KEYVAULT_SIZE_TRUNCATED {
 			return Err(KeyVaultError::InvalidSize { expected: KEYVAULT_SIZE_FULL, got: data.len() });
 		}

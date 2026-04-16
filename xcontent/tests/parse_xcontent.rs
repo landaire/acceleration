@@ -4,7 +4,7 @@ fn load_package(name: &str) -> (Vec<u8>, XContentPackage) {
 	let path = format!("tests/fixtures/{}", name);
 	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
 	let package =
-		XContentPackage::try_from(data.as_slice()).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e));
+		XContentPackage::parse(&data).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e));
 	(data, package)
 }
 

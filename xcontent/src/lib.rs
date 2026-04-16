@@ -15,7 +15,7 @@
 //! use xcontent::XContentPackage;
 //!
 //! let data = std::fs::read("savegame.bin")?;
-//! let package = XContentPackage::try_from(data.as_slice())?;
+//! let package = XContentPackage::parse(&data)?;
 //!
 //! println!("Title:   {:?}", package.header.metadata.title_name);
 //! println!("Type:    {:?}", package.header.metadata.content_type);

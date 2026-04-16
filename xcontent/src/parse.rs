@@ -103,7 +103,11 @@ pub struct XContentHeader {
 }
 
 impl XContentHeader {
-	pub fn parse(input: &[u8]) -> Result<Self, XContentError> {
+	pub fn parse(input: impl AsRef<[u8]>) -> Result<Self, XContentError> {
+		Self::parse_inner(input.as_ref())
+	}
+
+	fn parse_inner(input: &[u8]) -> Result<Self, XContentError> {
 		let mut cursor = Cursor::new(input);
 
 		let mut magic = [0u8; 4];
@@ -351,10 +355,12 @@ impl XContentPackage {
 	}
 }
 
-impl TryFrom<&[u8]> for XContentPackage {
-	type Error = XContentError;
+impl XContentPackage {
+	pub fn parse(input: impl AsRef<[u8]>) -> Result<Self, XContentError> {
+		Self::parse_inner(input.as_ref())
+	}
 
-	fn try_from(input: &[u8]) -> Result<Self, Self::Error> {
+	fn parse_inner(input: &[u8]) -> Result<Self, XContentError> {
 		let header = XContentHeader::parse(input)?;
 
 		let inner_fs = match &header.metadata.volume_descriptor {

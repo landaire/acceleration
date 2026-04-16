@@ -15,7 +15,7 @@ Parser for Xbox 360 XContent packages. Handles the outer container format that w
 use xcontent::XContentPackage;
 
 let data = std::fs::read("package.stfs")?;
-let package = XContentPackage::try_from(data.as_slice())?;
+let package = XContentPackage::parse(&data)?;
 
 println!("Title ID: {:08X}", package.header.metadata.title_id);
 println!("Signature: {}", package.header.signature_type);

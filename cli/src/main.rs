@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
 	let file = File::open(args.file_name)?;
 	let mmap = unsafe { MmapOptions::new().map(&file)? };
 
-	let package = xcontent::XContentPackage::try_from(&mmap[..])?;
+	let package = xcontent::XContentPackage::parse(&mmap[..])?;
 
 	if let Commands::Info { long: _, json, json_pretty } =
 		args.command.as_ref().unwrap_or(&Commands::Info { long: false, json: false, json_pretty: false })

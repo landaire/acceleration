@@ -80,10 +80,14 @@ impl Xex2 {
 	///
 	/// Returns an error if the magic is wrong, the header is truncated, or
 	/// any offset in the header points outside the file.
-	pub fn parse(data: Vec<u8>) -> Result<Self> {
-		let header = Xex2Header::parse(&data)?;
-		let security_info = SecurityInfo::parse(&data, header.security_offset as usize)?;
-		Ok(Xex2 { header, security_info, raw: data })
+	pub fn parse(data: impl AsRef<[u8]>) -> Result<Self> {
+		Self::parse_inner(data.as_ref())
+	}
+
+	fn parse_inner(data: &[u8]) -> Result<Self> {
+		let header = Xex2Header::parse(data)?;
+		let security_info = SecurityInfo::parse(data, header.security_offset as usize)?;
+		Ok(Xex2 { header, security_info, raw: data.to_vec() })
 	}
 
 	/// The raw XEX file bytes.

@@ -254,7 +254,11 @@ pub struct ExecutionInfo {
 }
 
 impl Xex2Header {
-	pub fn parse(data: &[u8]) -> Result<Self> {
+	pub fn parse(data: impl AsRef<[u8]>) -> Result<Self> {
+		Self::parse_inner(data.as_ref())
+	}
+
+	fn parse_inner(data: &[u8]) -> Result<Self> {
 		let mut cursor = Cursor::new(data);
 
 		let mut magic = [0u8; 4];
@@ -426,7 +430,11 @@ impl Xex2Header {
 }
 
 impl SecurityInfo {
-	pub fn parse(data: &[u8], offset: usize) -> Result<Self> {
+	pub fn parse(data: impl AsRef<[u8]>, offset: usize) -> Result<Self> {
+		Self::parse_inner(data.as_ref(), offset)
+	}
+
+	fn parse_inner(data: &[u8], offset: usize) -> Result<Self> {
 		let mut c = Cursor::new(&data[offset..]);
 
 		let header_size = c.read_u32::<BigEndian>().io()?;
