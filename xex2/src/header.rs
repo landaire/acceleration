@@ -1,3 +1,28 @@
+//! XEX2 file header and security info.
+//!
+//! The on-disk layout of an XEX file is:
+//!
+//! ```text
+//! +0x00  "XEX2" magic
+//! +0x04  ModuleFlags
+//! +0x08  data_offset        (start of the encrypted/compressed payload)
+//! +0x0C  reserved
+//! +0x10  security_offset    (offset of SecurityInfo)
+//! +0x14  optional_header_count
+//! +0x18  optional_header_table[optional_header_count]
+//! ...
+//! ```
+//!
+//! Optional headers are `(key, value)` pairs where the low byte of the key
+//! encodes the size class: `0x00` = scalar value, `0x01` = inline pointer,
+//! `0xFF` = variable-length data (offset with size prefix), `N` = fixed
+//! `N*4`-byte struct. See [`OptionalHeaderKey`] for recognized keys.
+//!
+//! The [`SecurityInfo`] at `security_offset` contains the RSA signature,
+//! image hash, AES file key, and [`ImageInfo`] (media restrictions, flags,
+//! hashes). The kernel verifies this region using `XeCryptRotSumSha` and
+//! the PIRS RSA public key before loading.
+
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use num_enum::TryFromPrimitive;

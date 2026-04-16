@@ -1,3 +1,9 @@
+//! Lookup table mapping Xbox 360 kernel export ordinals to function names.
+
+/// Look up the name of a kernel function by its ordinal.
+///
+/// Returns `None` if the ordinal doesn't correspond to any known kernel
+/// export. Covers `xboxkrnl.exe`, `xam.xex`, and `xbdm.xex`.
 pub fn kernel_export_name(ordinal: u32) -> Option<&'static str> {
 	KERNEL_EXPORTS.iter().find(|(o, _)| *o == ordinal).map(|(_, n)| *n)
 }

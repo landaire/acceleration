@@ -1,3 +1,48 @@
+//! Xbox 360 cryptographic primitives.
+//!
+//! Collects the crypto routines and public keys needed to verify and re-sign
+//! Xbox 360 content:
+//!
+//! - [`symmetric`] -- AES-128-CBC, SHA-1, and `XeCryptRotSumSha` (the rolling
+//!   checksum + SHA-1 hash used for XEX ImageInfo signatures)
+//! - [`keyvault`] -- console keyvault parser (owned and zerocopy variants)
+//! - [`RsaKeyKind`] -- enum of all known RSA public keys (retail + devkit),
+//!   with verify/sign helpers
+//!
+//! # Example: verifying an XContent signature
+//!
+//! ```no_run
+//! use xecrypt::{XContentSignatureType, verify_xcontent_strong_signature};
+//!
+//! let signature = &[0u8; 256];  // raw 256-byte signature from LIVE/PIRS header
+//! let hash = &[0u8; 20];        // SHA-1 of the signed region
+//!
+//! let console_kind = verify_xcontent_strong_signature(
+//!     XContentSignatureType::Live,
+//!     signature,
+//!     hash,
+//! )?;
+//! println!("Verified against {:?} key", console_kind);
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Example: parsing a keyvault
+//!
+//! ```no_run
+//! use xecrypt::keyvault::KeyVault;
+//!
+//! let data = std::fs::read("kv.bin")?;
+//! let kv = KeyVault::parse(&data)?;
+//! println!("Console serial: {}", kv.console_serial());
+//! println!("Region: {:?}", kv.game_region());
+//! println!("Console kind: {:?}", kv.console_type().kind());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! # Features
+//!
+//! - `serde` (default off) -- enables `Serialize` on keyvault and certificate types.
+
 use bitflags::bitflags;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;

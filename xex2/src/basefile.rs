@@ -1,3 +1,14 @@
+//! Basefile (inner PE image) extraction.
+//!
+//! XEX files wrap a standard Windows PE executable. The payload can be
+//! plaintext or AES-128-CBC encrypted with a per-file session key (derived
+//! from the image key via the retail or devkit master key). The payload
+//! can also be basic-compressed (data blocks with zero-fill padding) or
+//! LZX-compressed (with 32KB output chunks and a persistent LZX decoder
+//! state across blocks).
+//!
+//! The primary entry point is [`Xex2::extract_basefile`][crate::Xex2::extract_basefile].
+
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use std::io::Cursor;

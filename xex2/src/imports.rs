@@ -1,3 +1,14 @@
+//! XEX import library parsing.
+//!
+//! The `ImportLibraries` optional header (key `0x000103FF`) contains a list
+//! of libraries this XEX depends on. Each library has a name (e.g.
+//! `xboxkrnl.exe`, `xam.xex`), a SHA-1 digest, a version, and a table of
+//! import records. Import records are raw 32-bit values -- alternating pairs
+//! of IAT and thunk addresses.
+//!
+//! Use [`Xex2Header::import_table`][crate::header::Xex2Header::import_table]
+//! to get the parsed table.
+
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 #[cfg(feature = "serde")]

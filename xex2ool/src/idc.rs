@@ -1,7 +1,13 @@
+//! IDA Pro IDC script generation.
+//!
+//! Generates an IDC script that labels kernel import thunks with their
+//! Microsoft names (e.g. `KeGetCurrentProcessType`, `XamLoaderLaunchTitle`)
+//! and sets up the load address for the extracted basefile.
+
 use std::fmt::Write;
 
-use crate::header::Xex2Header;
-use crate::imports::ImportLibrary;
+use xex2::header::Xex2Header;
+use xex2::imports::ImportLibrary;
 
 pub fn generate_idc(header: &Xex2Header, load_address: u32, image_size: u32) -> String {
 	let mut out = String::new();

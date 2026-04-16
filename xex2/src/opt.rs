@@ -1,3 +1,32 @@
+//! Typed accessors for XEX2 optional headers.
+//!
+//! The XEX2 header contains a table of `(key, offset)` pairs, each
+//! pointing to a different piece of metadata. This module defines
+//! typed structs and enums for the values that the kernel or the
+//! dashboard actually reads.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use xex2::Xex2;
+//!
+//! let xex = Xex2::parse(std::fs::read("game.xex").unwrap()).unwrap();
+//!
+//! if let Some(ratings) = xex.header.game_ratings() {
+//!     println!("ESRB: {}", ratings.esrb);
+//!     println!("PEGI: {}", ratings.pegi);
+//! }
+//!
+//! if let Some(range) = xex.header.date_range() {
+//!     println!("Not before: {:?}", range.not_before);
+//!     println!("Not after:  {:?}", range.not_after);
+//! }
+//!
+//! if let Some(tls) = xex.header.tls_info() {
+//!     println!("TLS slot count: {}", tls.slot_count);
+//! }
+//! ```
+
 use bitflags::bitflags;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;

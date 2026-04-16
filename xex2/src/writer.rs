@@ -1,3 +1,32 @@
+//! Modify a XEX file: remove restrictions, convert format, re-sign.
+//!
+//! All modifications happen on a copy of the raw XEX bytes; the original
+//! [`Xex2`] value is left unchanged.
+//!
+//! Modifying any ImageInfo field (media, region, media_id) invalidates the
+//! kernel's RSA signature over the security info. After modifying, this
+//! module recomputes the `XeCryptRotSumSha` hash and re-signs with the
+//! devkit PIRS private key. Retail consoles will still reject the modified
+//! XEX (since we don't have the retail PIRS private key), but devkit
+//! consoles and JTAG/RGH-modded retail consoles will accept it.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use xex2::Xex2;
+//! use xex2::writer::RemoveLimits;
+//!
+//! let xex = Xex2::parse(std::fs::read("game.xex").unwrap()).unwrap();
+//!
+//! // Remove all region and media restrictions
+//! let mut limits = RemoveLimits::default();
+//! limits.region = true;
+//! limits.media = true;
+//!
+//! let patched = xex.modify(&limits).unwrap();
+//! std::fs::write("game_patched.xex", patched).unwrap();
+//! ```
+
 use byteorder::BigEndian;
 use byteorder::ByteOrder;
 use rootcause::IntoReport;

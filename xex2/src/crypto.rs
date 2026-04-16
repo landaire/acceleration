@@ -1,3 +1,9 @@
+//! AES-128-CBC key handling for XEX file encryption.
+//!
+//! Each XEX stores a per-file "image key" in its ImageInfo. This key is
+//! encrypted with either the retail or devkit master key. Decrypting the
+//! image key yields the session key used to decrypt the payload.
+
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::header::AesKey;

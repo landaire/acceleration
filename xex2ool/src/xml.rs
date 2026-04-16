@@ -1,7 +1,9 @@
+//! XML metadata export in xextool-compatible format.
+
 use std::fmt::Write;
 
-use crate::Xex2;
-use crate::header::EncryptionType;
+use xex2::Xex2;
+use xex2::header::EncryptionType;
 
 pub fn generate_xml(xex: &Xex2) -> String {
 	let mut out = String::new();
@@ -13,9 +15,9 @@ pub fn generate_xml(xex: &Xex2) -> String {
 
 	writeln!(out, "  <module_flags>{:#010x}</module_flags>", header.module_flags.bits()).unwrap();
 
-	let basefile_type = if header.module_flags.contains(crate::opt::ModuleFlags::DLL) {
+	let basefile_type = if header.module_flags.contains(xex2::opt::ModuleFlags::DLL) {
 		"dll"
-	} else if header.module_flags.contains(crate::opt::ModuleFlags::PATCH) {
+	} else if header.module_flags.contains(xex2::opt::ModuleFlags::PATCH) {
 		"patch"
 	} else {
 		"exe"

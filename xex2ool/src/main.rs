@@ -10,6 +10,10 @@ use tabled::builder::Builder;
 use tabled::settings::Style;
 use xex2::Xex2;
 
+mod idc;
+mod kernel_exports;
+mod xml;
+
 #[derive(Clone, Copy, ValueEnum, Default)]
 enum OutputFormat {
 	#[default]
@@ -701,7 +705,11 @@ fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(data)?;
 
-	let idc = xex.generate_idc();
+	let idc = idc::generate_idc(
+		&xex.header,
+		xex.security_info.image_info.load_address.0,
+		xex.security_info.image_size,
+	);
 
 	let out_path = output.unwrap_or_else(|| {
 		let mut p = path.clone();
@@ -718,7 +726,7 @@ fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 fn cmd_xml(path: &PathBuf) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(data)?;
-	print!("{}", xex.to_xml());
+	print!("{}", xml::generate_xml(&xex));
 	Ok(())
 }
 

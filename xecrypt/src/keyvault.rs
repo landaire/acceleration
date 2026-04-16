@@ -1,3 +1,33 @@
+//! Xbox 360 keyvault parser.
+//!
+//! The keyvault is a 16KB (or 16KB-16 truncated) encrypted blob stored on
+//! the console's flash, containing per-console cryptographic material:
+//! serial numbers, RSA private keys, AES session keys, the DVD key, XSM3
+//! device keys, and the signed console certificate.
+//!
+//! Both owned ([`KeyVault`]) and zerocopy ([`KeyVaultRef`]) variants are
+//! provided. The zerocopy variant borrows from the input buffer without
+//! copying large keys/certificates.
+//!
+//! The parser operates on the *decrypted* keyvault -- decryption happens
+//! outside this module (the keyvault is wrapped in AES-CBC with an HMAC,
+//! but users typically have already decrypted it via xeBuild or similar).
+//!
+//! # Example
+//!
+//! ```no_run
+//! use xecrypt::keyvault::KeyVault;
+//!
+//! let data = std::fs::read("kv.bin")?;
+//! let kv = KeyVault::parse(&data)?;
+//!
+//! println!("Console serial: {}", kv.console_serial());
+//! println!("Part number:    {}", kv.console_certificate.console_part_number);
+//! println!("Hardware rev:   {:?}", kv.revision());
+//! println!("Is retail:      {}", kv.is_retail());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+
 use bitflags::bitflags;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;

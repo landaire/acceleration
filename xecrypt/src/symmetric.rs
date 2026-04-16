@@ -1,3 +1,16 @@
+//! Xbox 360 symmetric crypto and hash primitives.
+//!
+//! All functions match the behavior of the `XeCrypt*` routines in the kernel
+//! and hypervisor:
+//!
+//! - [`xe_crypt_sha`] -- standard SHA-1
+//! - [`xe_crypt_rot_sum`] -- rolling checksum used as part of RotSumSha
+//! - [`xe_crypt_rot_sum_sha`] -- the RotSum+SHA-1 construction used to hash
+//!   XEX ImageInfo before RSA signing
+//! - [`xe_crypt_aes_cbc_decrypt`] / [`xe_crypt_aes_cbc_encrypt`] -- AES-128-CBC
+//! - [`xe_crypt_aes_ecb_decrypt`] / [`xe_crypt_aes_ecb_encrypt`] -- AES-128-ECB
+//!   (used for deriving session keys from master keys)
+
 use aes::cipher::BlockModeDecrypt;
 use aes::cipher::BlockModeEncrypt;
 use aes::cipher::KeyIvInit;

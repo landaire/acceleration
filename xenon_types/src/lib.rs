@@ -1,3 +1,16 @@
+//! Shared newtypes and utilities for Xbox 360 file formats.
+//!
+//! This crate provides common identifiers and data types used across
+//! [`xex2`](https://docs.rs/xex2), [`xcontent`](https://docs.rs/xcontent),
+//! [`xecrypt`](https://docs.rs/xecrypt), and other Xbox 360 crates. Keeping
+//! them here avoids type-mismatch friction between crates (e.g. xcontent's
+//! `MediaId` is the same type as xex2's `MediaId`).
+//!
+//! # Features
+//!
+//! - `jiff` (default off) -- enables [`filetime_to_timestamp`] for converting
+//!   Windows FILETIME values to `jiff::Timestamp`.
+
 mod serde_hex;
 
 use bitflags::bitflags;
@@ -5,30 +18,63 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
 
+/// Xbox 360 title identifier (32-bit).
+///
+/// The high 16 bits encode the publisher (e.g. `0x4D53` = Microsoft, `0x5351`
+/// = Square Enix). The low 16 bits identify the game within that publisher.
+/// Display formats as uppercase hex: `4D53885C`.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TitleId(pub u32);
 
+/// Per-installation media identifier (32-bit).
+///
+/// Unique per copy of a game -- two physical copies of the same title have
+/// different media IDs. Used for anti-piracy checks.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaId(pub u32);
 
+/// Savegame/content identifier (32-bit).
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SavegameId(pub u32);
 
+/// 5-byte console identifier from the keyvault.
+///
+/// Unique per console. Used in CON-signed content packages to bind them
+/// to the specific console that created them.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConsoleId(#[serde(with = "serde_hex::fixed5")] pub [u8; 5]);
 
+/// 8-byte Xbox LIVE profile identifier (XUID).
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProfileId(#[serde(with = "serde_hex::fixed8")] pub [u8; 8]);
 
+/// 20-byte device identifier used for HDD/MU/USB device binding.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DeviceId(#[serde(with = "serde_hex::fixed20")] pub [u8; 0x14]);
 
+/// 32-bit virtual address in PowerPC address space (Xbox 360 is big-endian PPC).
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VirtualAddress(pub u32);
 
+/// 128-bit AES key.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AesKey(pub [u8; 16]);
 
+/// Xbox 360 version format (major.minor.build.revision).
+///
+/// Packed into a single u32 for storage: `[major:4][minor:4][build:16][revision:8]`.
+///
+/// # Example
+///
+/// ```
+/// use xenon_types::Version;
+///
+/// let v = Version::from(0x20247000u32);
+/// assert_eq!(v.major, 2);
+/// assert_eq!(v.minor, 0);
+/// assert_eq!(v.build, 0x2470);
+/// assert_eq!(v.to_string(), "2.0.9328.0");
+/// ```
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
 	pub major: u16,
