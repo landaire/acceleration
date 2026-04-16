@@ -433,12 +433,89 @@ fn rebuild_set_date_range_recomputes_header_hash() {
 }
 
 #[test]
-fn rebuild_transform_not_implemented() {
+fn decrypt_encrypted_xex_roundtrip() {
+	// Start from an encrypted fixture, decrypt, re-parse, verify PE extraction
+	// yields the same basefile.
+	let (data, xex) = load_xex("AntiPiracyUI.xex");
+	let original_basefile = xex.extract_basefile(&data).unwrap();
+
+	let mut sink = Vec::new();
+	xex.rebuild(&data)
+		.target_encryption(xex2::writer::TargetEncryption::Decrypted)
+		.write_to(&mut sink)
+		.unwrap();
+
+	let decrypted_xex = xex2::Xex2::parse(&sink).unwrap();
+	let fmt = decrypted_xex.header.file_format_info().unwrap();
+	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::None);
+
+	let decrypted_basefile = decrypted_xex.extract_basefile(&sink).unwrap();
+	assert_eq!(original_basefile, decrypted_basefile);
+
+	verify_devkit_signature(&sink);
+	verify_header_hash(&sink);
+}
+
+#[test]
+fn encrypt_decrypted_xex_roundtrip() {
+	// First decrypt a known XEX, then re-encrypt, then verify basefile matches.
+	let (data, xex) = load_xex("AntiPiracyUI.xex");
+	let original_basefile = xex.extract_basefile(&data).unwrap();
+
+	let mut decrypted = Vec::new();
+	xex.rebuild(&data)
+		.target_encryption(xex2::writer::TargetEncryption::Decrypted)
+		.write_to(&mut decrypted)
+		.unwrap();
+
+	let mid_xex = xex2::Xex2::parse(&decrypted).unwrap();
+	let mut re_encrypted = Vec::new();
+	mid_xex
+		.rebuild(&decrypted)
+		.target_encryption(xex2::writer::TargetEncryption::Encrypted)
+		.write_to(&mut re_encrypted)
+		.unwrap();
+
+	let final_xex = xex2::Xex2::parse(&re_encrypted).unwrap();
+	let fmt = final_xex.header.file_format_info().unwrap();
+	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::Normal);
+
+	let final_basefile = final_xex.extract_basefile(&re_encrypted).unwrap();
+	assert_eq!(original_basefile, final_basefile);
+
+	verify_devkit_signature(&re_encrypted);
+	verify_header_hash(&re_encrypted);
+}
+
+#[test]
+fn machine_switch_rewraps_file_key() {
+	// Portal 2 is retail-signed/encrypted; switching to devkit should re-wrap
+	// the file_key under the devkit master key.
+	let (data, xex) = load_xex("Portal 2.xex");
+	let original_basefile = xex.extract_basefile(&data).unwrap();
+
+	let mut sink = Vec::new();
+	xex.rebuild(&data).target_machine(xex2::writer::TargetMachine::Devkit).write_to(&mut sink).unwrap();
+
+	let switched_xex = xex2::Xex2::parse(&sink).unwrap();
+	assert_ne!(
+		xex.security_info.image_info.file_key,
+		switched_xex.security_info.image_info.file_key,
+		"file_key should change after re-wrapping"
+	);
+
+	let switched_basefile = switched_xex.extract_basefile(&sink).unwrap();
+	assert_eq!(original_basefile, switched_basefile);
+	verify_devkit_signature(&sink);
+}
+
+#[test]
+fn compression_transform_not_implemented() {
 	let (data, xex) = load_xex("afplayer.xex");
 	let mut sink = Vec::new();
 	let result = xex
 		.rebuild(&data)
 		.target_compression(xex2::writer::TargetCompression::Uncompressed)
 		.write_to(&mut sink);
-	assert!(result.is_err(), "rebuild with non-Unchanged compression should error");
+	assert!(result.is_err(), "compression transforms are not yet implemented");
 }

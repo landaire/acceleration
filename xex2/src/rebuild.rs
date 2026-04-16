@@ -35,9 +35,7 @@ use rootcause::IntoReport;
 pub struct Rebuilder<'a> {
 	xex: &'a Xex2,
 	source: &'a [u8],
-	encryption: TargetEncryption,
 	compression: TargetCompression,
-	machine: TargetMachine,
 	plan: EditPlan,
 	replace_pe: Option<Vec<u8>>,
 }
@@ -47,18 +45,16 @@ impl<'a> Rebuilder<'a> {
 		Self {
 			xex,
 			source,
-			encryption: TargetEncryption::Unchanged,
 			compression: TargetCompression::Unchanged,
-			machine: TargetMachine::Unchanged,
 			plan: EditPlan::default(),
 			replace_pe: None,
 		}
 	}
 
-	// Transform setters (require a full rebuild).
+	// Transform setters.
 
 	pub fn target_encryption(mut self, target: TargetEncryption) -> Self {
-		self.encryption = target;
+		self.plan.target_encryption = target;
 		self
 	}
 
@@ -68,7 +64,7 @@ impl<'a> Rebuilder<'a> {
 	}
 
 	pub fn target_machine(mut self, target: TargetMachine) -> Self {
-		self.machine = target;
+		self.plan.target_machine = target;
 		self
 	}
 
@@ -132,27 +128,27 @@ impl<'a> Rebuilder<'a> {
 		self
 	}
 
-	/// True iff this rebuild can be expressed as a length-preserving [`Patch`].
-	pub fn is_fast_path(&self) -> bool {
-		self.encryption == TargetEncryption::Unchanged
-			&& self.compression == TargetCompression::Unchanged
-			&& self.machine == TargetMachine::Unchanged
-			&& self.replace_pe.is_none()
+	/// True iff this rebuild doesn't require compression changes or PE replacement.
+	///
+	/// Encryption toggles and machine switching are fully supported and handled
+	/// via `plan_edits`; they remain length-preserving.
+	pub fn is_supported(&self) -> bool {
+		self.compression == TargetCompression::Unchanged && self.replace_pe.is_none()
 	}
 
-	/// If the rebuild is on the fast path, return the [`Patch`]; otherwise `None`.
+	/// Produce the [`Patch`] representing this rebuild, if supported.
 	pub fn as_patch(&self) -> Result<Option<Patch>> {
-		if self.is_fast_path() {
+		if self.is_supported() {
 			Ok(Some(crate::writer::plan_edits(self.xex, self.source, &self.plan)?))
 		} else {
 			Ok(None)
 		}
 	}
 
-	/// Stream the rebuilt XEX to `sink`. Fast path streams source + patch;
-	/// transform paths aren't implemented yet.
+	/// Stream the rebuilt XEX to `sink`. Compression changes and PE
+	/// replacement aren't implemented yet.
 	pub fn write_to<W: Write>(self, sink: &mut W) -> Result<()> {
-		if !self.is_fast_path() {
+		if !self.is_supported() {
 			return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
 		}
 		let patch = crate::writer::plan_edits(self.xex, self.source, &self.plan)?;

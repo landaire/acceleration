@@ -39,6 +39,48 @@ pub fn decrypt_data(data: &[u8], session_key: &AesKey) -> Vec<u8> {
 	buf
 }
 
+/// Encrypt the raw session key under `master_key` to produce the
+/// ImageInfo.file_key that the kernel would decrypt at load time.
+///
+/// Inverse of [`decrypt_file_key`] + session-key selection.
+pub fn wrap_file_key(session_key: &AesKey, master_key: &AesKey) -> AesKey {
+	let iv = [0u8; 16];
+	let mut buf = session_key.0;
+	xecrypt::symmetric::xe_crypt_aes_cbc_encrypt(&master_key.0, &iv, &mut buf);
+	AesKey(buf)
+}
+
+/// AES-128-CBC encrypt the payload using `session_key`. Mirror of [`decrypt_data`].
+pub fn encrypt_data(data: &[u8], session_key: &AesKey) -> Vec<u8> {
+	let iv = [0u8; 16];
+	let mut buf = data.to_vec();
+	xecrypt::symmetric::xe_crypt_aes_cbc_encrypt(&session_key.0, &iv, &mut buf);
+	buf
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn wrap_round_trips_with_decrypt() {
+		let session = AesKey([0x42; 16]);
+		let wrapped = wrap_file_key(&session, &RETAIL_KEY);
+		let unwrapped = decrypt_file_key(&wrapped);
+		assert_eq!(unwrapped.retail.0, session.0);
+	}
+
+	#[test]
+	fn encrypt_round_trips_with_decrypt() {
+		let key = AesKey([0x77; 16]);
+		let plaintext = vec![0u8; 256];
+		let enc = encrypt_data(&plaintext, &key);
+		assert_ne!(enc, plaintext);
+		let dec = decrypt_data(&enc, &key);
+		assert_eq!(dec, plaintext);
+	}
+}
+
 pub fn verify_block_hash(block_data: &[u8], expected_hash: &[u8; 20]) -> Result<()> {
 	let calculated = sha1_hash(block_data);
 	if calculated != *expected_hash {
