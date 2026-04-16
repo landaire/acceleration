@@ -17,7 +17,6 @@ use xecrypt::XContentSignatureType;
 use crate::error::XContentError;
 
 const LICENSE_ENTRY_COUNT: usize = 0x10;
-const CONTENT_ID_SIZE: usize = 0x14;
 const SHA1_DIGEST_SIZE: usize = 0x14;
 const DEVICE_ID_SIZE: usize = 0x14;
 const DISPLAY_STRING_COUNT: usize = 12;
@@ -96,7 +95,7 @@ pub struct XContentHeader {
 	pub key_material: XContentKeyMaterial,
 	pub license_data_offset: usize,
 	pub license_data: [LicenseEntry; LICENSE_ENTRY_COUNT],
-	pub content_id: [u8; CONTENT_ID_SIZE],
+	pub content_id: xenon_types::ContentId,
 	pub header_size: u32,
 	pub end_of_header_offset: usize,
 	pub metadata: XContentMetadata,
@@ -127,8 +126,9 @@ impl XContentHeader {
 			*entry = LicenseEntry { ty_raw, data, bits, flags };
 		}
 
-		let mut content_id = [0u8; CONTENT_ID_SIZE];
+		let mut content_id = [0u8; 0x14];
 		cursor.read_exact(&mut content_id)?;
+		let content_id = xenon_types::ContentId(content_id);
 		let header_size = cursor.read_u32::<BigEndian>()?;
 		let end_of_header_offset = cursor.position() as usize;
 
@@ -350,7 +350,7 @@ impl XContentPackage {
 			self.header.metadata.creator_xuid,
 			self.header.metadata.title_id,
 			self.header.metadata.content_type as u32,
-			self.header.content_id.iter().map(|b| format!("{:02X}", b)).collect::<String>(),
+			self.header.content_id,
 		)
 	}
 }

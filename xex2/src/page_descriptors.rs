@@ -1,25 +1,43 @@
-//! Page-descriptor generation for the inner PE image.
+//! Page-descriptor generation and verification for the inner PE image.
 //!
-//! The XEX security info stores a table of per-page SHA-1 hashes that the
-//! kernel uses to verify the decompressed PE image. Each descriptor is 24
-//! bytes: `u32 (page_count << 4 | flags)` followed by 20 bytes of SHA-1.
+//! The XEX security info stores a table of per-page descriptors that the
+//! hypervisor uses to verify each page of the decompressed PE image. Each
+//! descriptor is 24 bytes: `u32 (page_count << 4 | flags)` + `[u8; 20]` hash.
 //!
-//! **Caveat**: the exact hash-chain formula the kernel expects is not fully
-//! reverse-engineered. Empirically neither plain SHA-1 of each page range nor
-//! a simple Merkle chain matches the stored values in production XEXs -- the
-//! kernel appears to use HMAC-SHA1 with a key derived from the XEX's session
-//! key (per the `XexTitleHash*` routines in `xboxkrnl.exe`). The values this
-//! module produces are sufficient for tools/emulators that don't strictly
-//! enforce page integrity (Xenia, devkit/JTAG consoles with patched verifiers)
-//! but a retail Xbox 360 is unlikely to accept them even with a valid RSA
-//! signature.
+//! # Verification chain (reverse-engineered from `HvxLoadImageData` in the HV)
+//!
+//! The HV maintains a running "expected" state initialized to
+//! `image_info.image_hash`. For each descriptor `i`:
+//!
+//! 1. `H[i] = SHA1(page_data[i] || descriptor[i].bytes(24))`
+//! 2. Assert `H[i] == expected[i]`
+//! 3. `expected[i+1] = descriptor[i].stored_hash` (bytes 4..24)
+//!
+//! This is a forward-chained hash that anchors at `image_info.image_hash`.
+//!
+//! # Generation (inverse)
+//!
+//! Work backwards from a terminator hash (nothing reads the last descriptor's
+//! stored_hash, so any value works -- we use zeros):
+//!
+//! - `descriptor[N-1].stored_hash = zeros`
+//! - `descriptor[i-1].stored_hash = SHA1(page_data[i] || descriptor[i].bytes(24))`
+//! - `image_info.image_hash = SHA1(page_data[0] || descriptor[0].bytes(24))`
 
 use sha1::Digest;
 use sha1::Sha1;
 
-/// Flag value the kernel uses on descriptors for regular hashed pages.
+use crate::error::Result;
+use crate::error::Xex2Error;
+use crate::header::SecurityInfo;
+use crate::header::Xex2Header;
+use crate::opt::ImageFlags;
+use rootcause::IntoReport;
+
+/// Common flag values observed in production XEXs. The kernel/HV doesn't
+/// strictly enforce specific values for most bits; they group descriptors
+/// with similar protection/memory attributes.
 pub const FLAG_HASHED: u32 = 0x1;
-/// Flag value the kernel uses on descriptors for executable pages.
 pub const FLAG_EXECUTABLE: u32 = 0x3;
 
 /// A single 24-byte page descriptor entry.
@@ -29,12 +47,12 @@ pub struct PageDescriptor {
 	pub page_count: u32,
 	/// Low 4 bits of the descriptor info word.
 	pub flags: u32,
-	/// SHA-1 hash of the covered page range.
+	/// 20-byte hash field. For descriptor `i`, this stores
+	/// `expected[i+1]` in the HV's verification chain.
 	pub hash: [u8; 20],
 }
 
 impl PageDescriptor {
-	/// 24-byte on-disk representation: info word (big-endian) + hash.
 	pub fn to_bytes(&self) -> [u8; 24] {
 		let info = (self.page_count << 4) | (self.flags & 0xF);
 		let mut buf = [0u8; 24];
@@ -50,48 +68,107 @@ impl PageDescriptor {
 	}
 }
 
-/// Best-guess page descriptor generation: SHA-1 of each page range, 64KB
-/// per descriptor.
-///
-/// Takes an optional template of `(page_count, flags)` groupings from the
-/// original XEX. If provided, the output preserves the grouping and flags;
-/// otherwise a single [`FLAG_HASHED`] descriptor covers the whole image.
-pub fn generate(pe: &[u8], page_size: u32, template: Option<&[(u32, u32)]>) -> (Vec<PageDescriptor>, [u8; 20]) {
-	let page_size = page_size as usize;
-	let descriptors = match template {
-		Some(t) => hash_with_template(pe, page_size, t),
-		None => hash_whole_image(pe, page_size),
-	};
-	let image_hash = compute_image_hash(pe);
-	(descriptors, image_hash)
+fn page_size_for(flags: ImageFlags) -> u32 {
+	if flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 }
 }
 
-fn hash_with_template(pe: &[u8], page_size: usize, template: &[(u32, u32)]) -> Vec<PageDescriptor> {
-	let mut offset = 0usize;
-	let mut out = Vec::with_capacity(template.len());
-	for &(page_count, flags) in template {
-		let len = (page_count as usize) * page_size;
-		let end = (offset + len).min(pe.len());
-		out.push(PageDescriptor { page_count, flags, hash: sha1_of(&pe[offset..end]) });
-		offset = end;
-	}
-	out
-}
-
-fn hash_whole_image(pe: &[u8], page_size: usize) -> Vec<PageDescriptor> {
-	let total_pages = pe.len().div_ceil(page_size) as u32;
-	vec![PageDescriptor { page_count: total_pages, flags: FLAG_HASHED, hash: sha1_of(pe) }]
-}
-
-fn sha1_of(bytes: &[u8]) -> [u8; 20] {
+/// Hash a page of exactly `declared_len` bytes followed by the 24-byte
+/// descriptor. If the actual `page` is shorter than `declared_len` (last
+/// page of the image), pad with zeros -- the HV sees virtual memory which
+/// is zero-initialized past image_size.
+fn sha1_page_and_descriptor(page: &[u8], declared_len: usize, descriptor_bytes: &[u8; 24]) -> [u8; 20] {
 	let mut h = Sha1::new();
-	h.update(bytes);
+	h.update(page);
+	if page.len() < declared_len {
+		let padding = vec![0u8; declared_len - page.len()];
+		h.update(&padding);
+	}
+	h.update(descriptor_bytes);
 	h.finalize().into()
 }
 
-/// Best-guess `image_info.image_hash`: SHA-1 over the whole PE image.
-pub fn compute_image_hash(pe: &[u8]) -> [u8; 20] {
-	sha1_of(pe)
+/// Generate descriptors + `image_info.image_hash` for a new PE image.
+///
+/// `template` controls descriptor grouping (count/flags per entry). Pass
+/// `None` to use a single descriptor covering the whole image with
+/// [`FLAG_HASHED`].
+pub fn generate(pe: &[u8], page_size: u32, template: Option<&[(u32, u32)]>) -> (Vec<PageDescriptor>, [u8; 20]) {
+	let page_size_usize = page_size as usize;
+	let owned_template: Vec<(u32, u32)>;
+	let template = match template {
+		Some(t) => t,
+		None => {
+			let total = pe.len().div_ceil(page_size_usize) as u32;
+			owned_template = vec![(total, FLAG_HASHED)];
+			&owned_template
+		}
+	};
+
+	// Slice PE into per-descriptor ranges. Each range's *declared* length is
+	// `count * page_size`; the actual PE byte span may be shorter for the
+	// last descriptor, in which case hashing pads with zeros.
+	struct Range {
+		start: usize,
+		end: usize,
+		declared_len: usize,
+	}
+	let mut ranges: Vec<Range> = Vec::with_capacity(template.len());
+	let mut cursor = 0usize;
+	for &(count, _) in template {
+		let declared = (count as usize) * page_size_usize;
+		let end = (cursor + declared).min(pe.len());
+		ranges.push(Range { start: cursor, end, declared_len: declared });
+		cursor = end;
+	}
+
+	// Last descriptor's stored_hash is the "terminator" -- nothing reads it
+	// after the loop, so any value works. Zeros is simplest.
+	let mut descriptors: Vec<PageDescriptor> =
+		template.iter().map(|&(count, flags)| PageDescriptor { page_count: count, flags, hash: [0u8; 20] }).collect();
+
+	// Work backwards: descriptor[i-1].stored_hash = SHA1(page_data[i] || descriptor[i].bytes).
+	for i in (1..descriptors.len()).rev() {
+		let desc_bytes = descriptors[i].to_bytes();
+		let r = &ranges[i];
+		descriptors[i - 1].hash = sha1_page_and_descriptor(&pe[r.start..r.end], r.declared_len, &desc_bytes);
+	}
+
+	// image_info.image_hash = SHA1(page_data[0] || descriptor[0].bytes).
+	let desc0_bytes = descriptors[0].to_bytes();
+	let r0 = &ranges[0];
+	let image_hash = sha1_page_and_descriptor(&pe[r0.start..r0.end], r0.declared_len, &desc0_bytes);
+
+	(descriptors, image_hash)
+}
+
+/// Verify the complete page-descriptor chain against a decompressed PE
+/// image and an XEX's `source` bytes.
+pub fn verify_chain(pe: &[u8], header: &Xex2Header, security_info: &SecurityInfo, source: &[u8]) -> Result<()> {
+	let sec = header.security_offset as usize;
+	let count = security_info.page_descriptor_count as usize;
+	let pd_off = sec + 0x184;
+	let page_size = page_size_for(security_info.image_info.image_flags) as usize;
+
+	let mut expected: [u8; 20] = security_info.image_info.image_hash;
+	let mut pe_cursor = 0usize;
+
+	for i in 0..count {
+		if pd_off + (i + 1) * 24 > source.len() {
+			return Err(Xex2Error::HashMismatch { block_index: i }.into_report());
+		}
+		let desc_bytes: [u8; 24] = source[pd_off + i * 24..pd_off + (i + 1) * 24].try_into().unwrap();
+		let page_count = u32::from_be_bytes(desc_bytes[0..4].try_into().unwrap()) >> 4;
+		let declared_len = (page_count as usize) * page_size;
+		let range_end = (pe_cursor + declared_len).min(pe.len());
+
+		let computed = sha1_page_and_descriptor(&pe[pe_cursor..range_end], declared_len, &desc_bytes);
+		if computed != expected {
+			return Err(Xex2Error::HashMismatch { block_index: i }.into_report());
+		}
+		expected.copy_from_slice(&desc_bytes[4..24]);
+		pe_cursor = range_end;
+	}
+	Ok(())
 }
 
 #[cfg(test)]
@@ -107,23 +184,32 @@ mod tests {
 	}
 
 	#[test]
-	fn single_descriptor_without_template() {
+	fn generate_chain_self_verifies() {
+		// Build a synthetic PE + template, generate descriptors, confirm the
+		// HV-style verification walk accepts them.
+		let pe: Vec<u8> = (0..(4 * 0x10000)).map(|i| (i & 0xFF) as u8).collect();
+		let template = &[(2, FLAG_EXECUTABLE), (2, FLAG_HASHED)];
+		let (descriptors, image_hash) = generate(&pe, 0x10000, Some(template));
+
+		let mut expected = image_hash;
+		let mut cursor = 0usize;
+		for d in &descriptors {
+			let bytes = d.to_bytes();
+			let declared = (d.page_count as usize) * 0x10000;
+			let end = (cursor + declared).min(pe.len());
+			let computed = sha1_page_and_descriptor(&pe[cursor..end], declared, &bytes);
+			assert_eq!(computed, expected);
+			expected = d.hash;
+			cursor = end;
+		}
+	}
+
+	#[test]
+	fn default_template_single_descriptor() {
 		let pe = vec![0u8; 64 * 1024 * 3];
 		let (descs, _) = generate(&pe, 0x10000, None);
 		assert_eq!(descs.len(), 1);
 		assert_eq!(descs[0].page_count, 3);
 		assert_eq!(descs[0].flags, FLAG_HASHED);
-	}
-
-	#[test]
-	fn template_preserves_shape() {
-		let pe = vec![0xAAu8; 4 * 0x10000];
-		let template = &[(2, 0x3), (2, 0x1)];
-		let (descs, _) = generate(&pe, 0x10000, Some(template));
-		assert_eq!(descs.len(), 2);
-		assert_eq!(descs[0].page_count, 2);
-		assert_eq!(descs[0].flags, 0x3);
-		assert_eq!(descs[1].page_count, 2);
-		assert_eq!(descs[1].flags, 0x1);
 	}
 }

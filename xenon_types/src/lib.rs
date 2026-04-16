@@ -44,13 +44,119 @@ pub struct SavegameId(pub u32);
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConsoleId(#[serde(with = "serde_hex::fixed5")] pub [u8; 5]);
 
+impl std::ops::Deref for ConsoleId {
+	type Target = [u8; 5];
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
 /// 8-byte Xbox LIVE profile identifier (XUID).
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProfileId(#[serde(with = "serde_hex::fixed8")] pub [u8; 8]);
 
+impl std::ops::Deref for ProfileId {
+	type Target = [u8; 8];
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
 /// 20-byte device identifier used for HDD/MU/USB device binding.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DeviceId(#[serde(with = "serde_hex::fixed20")] pub [u8; 0x14]);
+
+impl std::ops::Deref for DeviceId {
+	type Target = [u8; 0x14];
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+/// 20-byte content identifier from an XContent package header.
+///
+/// For LIVE/PIRS-signed content this is a SHA-1 hash (uppercase-hex-encoded,
+/// used as the on-disk filename stem under
+/// `Content/<xuid>/<title_id>/<content_type>/<content_id>`). For CON-signed
+/// content it's derived from the console's key material.
+///
+/// # Example
+///
+/// ```
+/// use xenon_types::ContentId;
+///
+/// let id = ContentId([
+///     0x0F, 0xFB, 0xDC, 0xD7, 0xBD, 0xFB, 0x59, 0x81, 0xB7, 0x44,
+///     0x29, 0xE6, 0x6A, 0xDF, 0x1A, 0xBC, 0xC6, 0x28, 0xDA, 0xE5,
+/// ]);
+/// assert_eq!(id.to_string(), "0FFBDCD7BDFB5981B74429E66ADF1ABCC628DAE5");
+/// ```
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ContentId(#[serde(with = "serde_hex::fixed20")] pub [u8; 0x14]);
+
+impl std::ops::Deref for ContentId {
+	type Target = [u8; 0x14];
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+impl std::fmt::Display for ContentId {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		for b in &self.0 {
+			write!(f, "{:02X}", b)?;
+		}
+		Ok(())
+	}
+}
+
+/// A 20-byte SHA-1 digest.
+///
+/// Used pervasively across Xbox 360 file formats for integrity verification:
+/// XEX page descriptors, import-library chain, STFS hash table, etc. A
+/// dedicated newtype prevents mixing it up with other 20-byte values
+/// ([`ContentId`], `DeviceId`) that live in the same address space but have
+/// entirely different semantics.
+///
+/// Implements `Deref<Target = [u8; 20]>`, so `&hash` coerces to `&[u8]` at
+/// call sites that want raw bytes (e.g. `copy_from_slice(&hash)`).
+///
+/// # Example
+///
+/// ```
+/// use xenon_types::Sha1Hash;
+///
+/// let h = Sha1Hash([0x42; 20]);
+/// assert_eq!(h.to_string(), "4242424242424242424242424242424242424242");
+/// ```
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Sha1Hash(#[serde(with = "serde_hex::fixed20")] pub [u8; 20]);
+
+impl Sha1Hash {
+	pub const ZERO: Self = Self([0u8; 20]);
+}
+
+impl std::ops::Deref for Sha1Hash {
+	type Target = [u8; 20];
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
+
+impl From<[u8; 20]> for Sha1Hash {
+	fn from(v: [u8; 20]) -> Self {
+		Self(v)
+	}
+}
+
+impl std::fmt::Display for Sha1Hash {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		for b in &self.0 {
+			write!(f, "{:02x}", b)?;
+		}
+		Ok(())
+	}
+}
 
 /// 32-bit virtual address in PowerPC address space (Xbox 360 is big-endian PPC).
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,6 +213,13 @@ impl std::fmt::Display for FileOffset {
 /// 128-bit AES key.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AesKey(pub [u8; 16]);
+
+impl std::ops::Deref for AesKey {
+	type Target = [u8; 16];
+	fn deref(&self) -> &Self::Target {
+		&self.0
+	}
+}
 
 /// Xbox 360 version format (major.minor.build.revision).
 ///
@@ -248,7 +361,7 @@ pub fn timestamp_to_filetime(ts: jiff::Timestamp) -> Option<u64> {
 	}
 	let ticks_from_unix = (unix_secs as u64).checked_mul(10_000_000)?;
 	let ticks_subsec = (subsec_nanos as u64) / 100;
-	Some(FILETIME_UNIX_EPOCH_DELTA.checked_add(ticks_from_unix)?.checked_add(ticks_subsec)?)
+	FILETIME_UNIX_EPOCH_DELTA.checked_add(ticks_from_unix)?.checked_add(ticks_subsec)
 }
 
 macro_rules! impl_u32_hex_display {

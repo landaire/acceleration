@@ -194,6 +194,32 @@ fn rebuild_fast_path_matches_modify() {
 }
 
 #[test]
+fn page_descriptor_chain_matches_fixtures() {
+	let mut failures = Vec::new();
+	for name in &[
+		"afplayer.xex",
+		"AntiPiracyUI.xex",
+		"Portal 2.xex",
+		"Deus Ex.xex",
+		"haloreach-powerhouse.xex",
+		"xshell twi.xex",
+		"ArchEngine.xex",
+		"xbdm.xex",
+	] {
+		let (data, xex) = load_xex(name);
+		let basefile = xex.extract_basefile(&data).unwrap();
+		match xex2::page_descriptors::verify_chain(&basefile, &xex.header, &xex.security_info, &data) {
+			Ok(()) => eprintln!("{}: OK", name),
+			Err(e) => {
+				eprintln!("{}: {:?}", name, e);
+				failures.push(*name);
+			}
+		}
+	}
+	assert!(failures.is_empty(), "chain mismatch: {:?}", failures);
+}
+
+#[test]
 fn header_hash_formula_matches_fixtures() {
 	for name in &[
 		"afplayer.xex",

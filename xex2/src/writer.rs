@@ -239,11 +239,8 @@ pub struct EditPlan {
 	/// Replace the inner PE image with these bytes. Requires the source XEX
 	/// to be uncompressed (`CompressionType::None`) and the replacement PE to
 	/// fit within `image_size`; otherwise the rebuild fails. Triggers
-	/// regeneration of page descriptors and `image_hash`.
-	///
-	/// **Note**: the page-descriptor hash formula isn't fully reverse-engineered,
-	/// so the produced XEX may not satisfy a strict retail kernel verification.
-	/// See [`crate::page_descriptors`] for details.
+	/// regeneration of page descriptors and `image_hash` using the kernel-
+	/// verified chain formula in [`crate::page_descriptors`].
 	pub replace_pe: Option<Vec<u8>>,
 }
 

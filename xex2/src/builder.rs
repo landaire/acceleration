@@ -4,11 +4,9 @@
 //! PE image. The result is uncompressed and unencrypted, signed with the devkit
 //! PIRS private key.
 //!
-//! **Scope/caveat**: the builder covers the common "devkit-style" case only --
+//! **Scope**: the builder covers the common "devkit-style" case only --
 //! no compression, no encryption, no delta patches. Page descriptors and
-//! `image_hash` use the best-guess formulas from [`crate::page_descriptors`],
-//! which may not satisfy strict retail kernel verification. Good for Xenia,
-//! devkit/JTAG, and tooling.
+//! `image_hash` use the kernel-verified formula from [`crate::page_descriptors`].
 //!
 //! # Example
 //!

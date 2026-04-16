@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<()> {
 		);
 		println!("{: <padding$} {}", "Storage Path:", storage_path, padding = GENERAL_PADDING,);
 
-		let content_id = hex::encode(header.content_id);
+		let content_id = header.content_id.to_string();
 		let signature = match &header.key_material {
 			XContentKeyMaterial::Certificate(_cert) => {
 				hex::encode([0x0])

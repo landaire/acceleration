@@ -749,28 +749,7 @@ expression: package.header
       "flags": 0
     }
   ],
-  "content_id": [
-    151,
-    49,
-    243,
-    142,
-    237,
-    140,
-    173,
-    93,
-    250,
-    42,
-    168,
-    22,
-    182,
-    32,
-    43,
-    68,
-    202,
-    93,
-    190,
-    103
-  ],
+  "content_id": "9731f38eed8cad5dfa2aa816b6202b44ca5dbe67",
   "header_size": 38682,
   "end_of_header_offset": 836,
   "metadata": {
