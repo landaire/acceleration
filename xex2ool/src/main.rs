@@ -254,12 +254,12 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 	let xex = Xex2::parse(&data)?;
 
 	if matches!(fmt, OutputFormat::Json) {
-		return cmd_info_json(&xex, &data, extended);
+		return cmd_info_json(&xex, extended);
 	}
 
 	let header = &xex.header;
 	let security = &xex.security_info;
-	let file_format = header.file_format_info(&data)?;
+	let file_format = header.file_format_info()?;
 
 	let mut b = Builder::default();
 
@@ -482,10 +482,10 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 	Ok(())
 }
 
-fn cmd_info_json(xex: &Xex2, data: &[u8], extended: bool) -> anyhow::Result<()> {
+fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
 	let header = &xex.header;
 	let security = &xex.security_info;
-	let file_format = header.file_format_info(data)?;
+	let file_format = header.file_format_info()?;
 
 	let mut info = serde_json::Map::new();
 
@@ -730,7 +730,7 @@ fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 fn cmd_xml(path: &PathBuf) -> anyhow::Result<()> {
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(&data)?;
-	print!("{}", xml::generate_xml(&xex, &data));
+	print!("{}", xml::generate_xml(&xex));
 	Ok(())
 }
 

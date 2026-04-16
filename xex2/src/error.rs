@@ -21,6 +21,7 @@ pub enum Xex2Error {
 	PatchHasSplice,
 	PatchOverlap,
 	RebuildTransformNotImplemented,
+	LimitRemovalNotImplemented { limit: &'static str, reason: &'static str },
 	Io(std::io::Error),
 }
 
@@ -57,6 +58,9 @@ impl fmt::Display for Xex2Error {
 			Self::PatchOverlap => write!(f, "patch has overlapping writes"),
 			Self::RebuildTransformNotImplemented => {
 				write!(f, "rebuild transform (compression / encryption / machine / PE replacement) is not implemented")
+			}
+			Self::LimitRemovalNotImplemented { limit, reason } => {
+				write!(f, "removing `{}` is not yet implemented: {}", limit, reason)
 			}
 			Self::Io(e) => write!(f, "I/O error: {}", e),
 		}

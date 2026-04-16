@@ -129,18 +129,76 @@ const RSA_SIG: usize = 0x008;
 const RSA_SIG_LEN: usize = 0x100;
 const IMAGE_INFO: usize = 0x108;
 const IMAGE_INFO_INFO_SIZE: usize = IMAGE_INFO;
+const IMAGE_INFO_IMAGE_FLAGS: usize = IMAGE_INFO + 0x04;
 const IMAGE_INFO_MEDIA_ID: usize = IMAGE_INFO + 0x38;
 const IMAGE_INFO_GAME_REGIONS: usize = IMAGE_INFO + 0x6C;
 const IMAGE_INFO_ALLOWED_MEDIA: usize = IMAGE_INFO + 0x70;
 
-/// Build a [`Patch`] describing the ImageInfo edits + a re-signature.
+// XEX main header: module_flags at offset 0x04.
+const HEADER_MODULE_FLAGS: usize = 0x04;
+
+/// Build a [`Patch`] describing the requested [`RemoveLimits`] edits plus a
+/// re-signature.
 ///
-/// Pure function -- takes the source bytes read-only, computes the target
-/// ImageInfo image, signs it, emits Write ops for each changed field plus
-/// the RSA signature.
+/// Pure function -- reads `source` only. Returns an error for limits that
+/// require hash recomputations we haven't implemented yet (header_hash and
+/// import_table_hash) or whose semantics aren't pinned down.
+///
+/// Layout:
+/// - Module flag bits (`bounding_path`, `device_id`) live in the XEX header at
+///   offset 0x04 and are outside the signed region, so they're plain Write ops
+///   with no re-sign.
+/// - Image-info edits (region, media, media_id, image_flags bits for
+///   `keyvault_privileges` / `signed_keyvault_only`) live inside the RSA-signed
+///   image_info; we rebuild the target image_info in a local buffer, hash it,
+///   sign it, and emit Write ops for each changed field + the new signature.
 pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Patch> {
 	let mut patch = Patch::new();
 	let sec = xex.header.security_offset as usize;
+
+	if limits.dates {
+		return Err(Xex2Error::LimitRemovalNotImplemented {
+			limit: "dates",
+			reason: "requires header_hash recomputation over the optional-header region, not yet reverse-engineered",
+		}
+		.into_report());
+	}
+	if limits.console_id {
+		return Err(Xex2Error::LimitRemovalNotImplemented {
+			limit: "console_id",
+			reason: "requires header_hash recomputation over the optional-header region, not yet reverse-engineered",
+		}
+		.into_report());
+	}
+	if limits.library_versions {
+		return Err(Xex2Error::LimitRemovalNotImplemented {
+			limit: "library_versions",
+			reason: "requires recomputing both header_hash and import_table_hash, not yet reverse-engineered",
+		}
+		.into_report());
+	}
+	if limits.revocation_check {
+		return Err(Xex2Error::LimitRemovalNotImplemented {
+			limit: "revocation_check",
+			reason: "flag location in the XEX header is not currently known",
+		}
+		.into_report());
+	}
+
+	// Module flag edits (outside the signed region).
+	if limits.bounding_path || limits.device_id {
+		let current = BigEndian::read_u32(&source[HEADER_MODULE_FLAGS..]);
+		let mut new = current;
+		if limits.bounding_path {
+			new &= !crate::opt::ModuleFlags::BOUND_PATH.bits();
+		}
+		if limits.device_id {
+			new &= !crate::opt::ModuleFlags::DEVICE_ID.bits();
+		}
+		if new != current {
+			patch.write(HEADER_MODULE_FLAGS as u64, new.to_be_bytes().to_vec());
+		}
+	}
 
 	let info_size = BigEndian::read_u32(&source[sec + IMAGE_INFO_INFO_SIZE..]) as usize;
 	let image_info_len = info_size.saturating_sub(RSA_SIG_LEN);
@@ -154,45 +212,76 @@ pub fn plan_edits(xex: &Xex2, source: &[u8], limits: &RemoveLimits) -> Result<Pa
 		return Ok(patch);
 	}
 
-	// Build the post-edit ImageInfo by copying the source region and applying
-	// each field change. This doubles as the bytes we hash + sign.
+	// Build the post-edit ImageInfo in a local buffer. This doubles as the
+	// bytes we hash + sign.
 	let mut image_info = source[image_info_start..image_info_end].to_vec();
-	let mut changed = false;
+	let mut image_info_changed = false;
+
+	let mut overwrite_image_info = |patch: &mut Patch,
+	                                 image_info: &mut [u8],
+	                                 changed: &mut bool,
+	                                 abs_offset: usize,
+	                                 bytes: Vec<u8>| {
+		let local = abs_offset - IMAGE_INFO;
+		if local + bytes.len() <= image_info.len() {
+			image_info[local..local + bytes.len()].copy_from_slice(&bytes);
+			patch.write((sec + abs_offset) as u64, bytes);
+			*changed = true;
+		}
+	};
 
 	if limits.region {
-		let local = IMAGE_INFO_GAME_REGIONS - IMAGE_INFO;
-		if local + 4 <= image_info.len() {
-			image_info[local..local + 4].copy_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-			patch.write(
-				(sec + IMAGE_INFO_GAME_REGIONS) as u64,
-				0xFFFFFFFFu32.to_be_bytes().to_vec(),
-			);
-			changed = true;
-		}
+		overwrite_image_info(
+			&mut patch,
+			&mut image_info,
+			&mut image_info_changed,
+			IMAGE_INFO_GAME_REGIONS,
+			0xFFFFFFFFu32.to_be_bytes().to_vec(),
+		);
 	}
-
 	if limits.media {
-		let local = IMAGE_INFO_ALLOWED_MEDIA - IMAGE_INFO;
-		if local + 4 <= image_info.len() {
-			image_info[local..local + 4].copy_from_slice(&0xFFFFFFFFu32.to_be_bytes());
-			patch.write(
-				(sec + IMAGE_INFO_ALLOWED_MEDIA) as u64,
-				0xFFFFFFFFu32.to_be_bytes().to_vec(),
-			);
-			changed = true;
-		}
+		overwrite_image_info(
+			&mut patch,
+			&mut image_info,
+			&mut image_info_changed,
+			IMAGE_INFO_ALLOWED_MEDIA,
+			0xFFFFFFFFu32.to_be_bytes().to_vec(),
+		);
 	}
-
 	if limits.zero_media_id {
-		let local = IMAGE_INFO_MEDIA_ID - IMAGE_INFO;
-		if local + 16 <= image_info.len() {
-			image_info[local..local + 16].fill(0);
-			patch.write((sec + IMAGE_INFO_MEDIA_ID) as u64, vec![0u8; 16]);
-			changed = true;
+		overwrite_image_info(
+			&mut patch,
+			&mut image_info,
+			&mut image_info_changed,
+			IMAGE_INFO_MEDIA_ID,
+			vec![0u8; 16],
+		);
+	}
+
+	if limits.keyvault_privileges || limits.signed_keyvault_only {
+		let local = IMAGE_INFO_IMAGE_FLAGS - IMAGE_INFO;
+		if local + 4 <= image_info.len() {
+			let current = BigEndian::read_u32(&image_info[local..]);
+			let mut new = current;
+			if limits.keyvault_privileges {
+				new &= !crate::opt::ImageFlags::KV_PRIVILEGES_REQUIRED.bits();
+			}
+			if limits.signed_keyvault_only {
+				new &= !crate::opt::ImageFlags::SIGNED_KEYVAULT_REQUIRED.bits();
+			}
+			if new != current {
+				overwrite_image_info(
+					&mut patch,
+					&mut image_info,
+					&mut image_info_changed,
+					IMAGE_INFO_IMAGE_FLAGS,
+					new.to_be_bytes().to_vec(),
+				);
+			}
 		}
 	}
 
-	if !changed {
+	if !image_info_changed {
 		return Ok(patch);
 	}
 

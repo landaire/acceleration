@@ -269,7 +269,8 @@ impl Xex2Header {
 
 		let module_flags = ModuleFlags::from_bits_retain(cursor.read_u32::<BigEndian>().io()?);
 		let data_offset = cursor.read_u32::<BigEndian>().io()?;
-		let _reserved = cursor.read_u32::<BigEndian>().io()?;
+		// Reserved field -- always zero in practice.
+		cursor.read_u32::<BigEndian>().io()?;
 		let security_offset = cursor.read_u32::<BigEndian>().io()?;
 		let optional_header_count = cursor.read_u32::<BigEndian>().io()?;
 
@@ -382,7 +383,7 @@ impl Xex2Header {
 		})
 	}
 
-	pub fn file_format_info(&self, _data: &[u8]) -> Result<FileFormatInfo> {
+	pub fn file_format_info(&self) -> Result<FileFormatInfo> {
 		let header_data = match self.get_optional_header(OptionalHeaderKey::FileFormatInfo) {
 			Some(OptionalHeaderValue::Data(d)) => d.as_slice(),
 			Some(OptionalHeaderValue::Inline(_)) => {
@@ -398,7 +399,8 @@ impl Xex2Header {
 		};
 
 		let mut c = Cursor::new(header_data);
-		let _info_size = c.read_u32::<BigEndian>().io()?;
+		// info_size -- redundant with the length of `header_data` itself.
+		c.read_u32::<BigEndian>().io()?;
 		let encryption_type = EncryptionType::try_from(c.read_u16::<BigEndian>().io()?)
 			.map_err(|e| Xex2Error::InvalidEncryptionType(e.number).into_report())?;
 		let compression_type = CompressionType::try_from(c.read_u16::<BigEndian>().io()?)
@@ -443,10 +445,10 @@ impl SecurityInfo {
 		let mut rsa_signature = [0u8; 256];
 		c.read_exact(&mut rsa_signature).io()?;
 
-		let _info_size = c.read_u32::<BigEndian>().io()?;
+		let info_size = c.read_u32::<BigEndian>().io()?;
 
 		let image_info = ImageInfo {
-			info_size: _info_size,
+			info_size,
 			image_flags: ImageFlags::from_bits_retain(c.read_u32::<BigEndian>().io()?),
 			load_address: VirtualAddress(c.read_u32::<BigEndian>().io()?),
 			image_hash: {

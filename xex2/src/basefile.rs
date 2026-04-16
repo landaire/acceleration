@@ -32,7 +32,7 @@ const CHUNK_SIZE_PREFIX_LEN: usize = 2;
 const LZX_OUTPUT_CHUNK_SIZE: usize = 0x8000;
 
 pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &SecurityInfo) -> Result<Vec<u8>> {
-	let file_format = header.file_format_info(data)?;
+	let file_format = header.file_format_info()?;
 	let encrypted_data = &data[header.data_offset as usize..];
 
 	let keys = crypto::decrypt_file_key(&security_info.image_info.file_key);
