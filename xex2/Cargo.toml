@@ -12,7 +12,7 @@ categories = ["parser-implementations"]
 
 [dependencies]
 byteorder = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, optional = true }
 bitflags = { workspace = true }
 sha-1 = { workspace = true }
 num_enum = { workspace = true }
@@ -23,3 +23,6 @@ xenon_types = { version = "0.1", path = "../xenon_types" }
 
 [dev-dependencies]
 insta = { workspace = true }
+
+[features]
+serde = ["dep:serde"]

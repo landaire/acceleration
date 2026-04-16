@@ -1,5 +1,6 @@
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
+#[cfg(feature = "serde")]
 use serde::Serialize;
 use std::io::Cursor;
 use std::io::Read;
@@ -7,7 +8,8 @@ use std::io::Read;
 use crate::header::OptionalHeaderKey;
 use crate::header::Xex2Header;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ImportLibrary {
 	pub name: String,
 	pub digest: [u8; 20],
@@ -17,7 +19,8 @@ pub struct ImportLibrary {
 	pub records: Vec<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ImportTable {
 	pub libraries: Vec<ImportLibrary>,
 }

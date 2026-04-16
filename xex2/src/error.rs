@@ -16,6 +16,7 @@ pub enum Xex2Error {
 	DecompressionFailed,
 	InvalidBasefileSize { expected: usize, got: usize },
 	HashMismatch { block_index: usize },
+	SigningFailed,
 	Io(std::io::Error),
 }
 
@@ -44,6 +45,7 @@ impl fmt::Display for Xex2Error {
 				write!(f, "basefile size mismatch: expected {:#x}, got {:#x}", expected, got)
 			}
 			Self::HashMismatch { block_index } => write!(f, "hash mismatch at block {}", block_index),
+			Self::SigningFailed => write!(f, "RSA signing failed"),
 			Self::Io(e) => write!(f, "I/O error: {}", e),
 		}
 	}

@@ -7,8 +7,18 @@ expression: package.header.metadata
   "metadata_version": 2,
   "content_size": 1019904,
   "media_id": 0,
-  "version": 0,
-  "base_version": 0,
+  "version": {
+    "major": 0,
+    "minor": 0,
+    "build": 0,
+    "revision": 0
+  },
+  "base_version": {
+    "major": 0,
+    "minor": 0,
+    "build": 0,
+    "revision": 0
+  },
   "title_id": 1161889960,
   "platform": 0,
   "executable_type": 0,

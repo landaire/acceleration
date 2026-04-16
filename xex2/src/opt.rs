@@ -1,13 +1,29 @@
+use bitflags::bitflags;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
+#[cfg(feature = "serde")]
 use serde::Serialize;
+#[cfg(feature = "serde")]
+use serde::Serializer;
 use std::io::Cursor;
 use std::io::Read;
 
 use crate::header::OptionalHeaderKey;
 use crate::header::Xex2Header;
 
-#[derive(Debug, Serialize)]
+#[cfg(feature = "serde")]
+macro_rules! impl_bitflags_serialize {
+	($t:ty) => {
+		impl Serialize for $t {
+			fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+				s.serialize_u32(self.bits())
+			}
+		}
+	};
+}
+
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct TlsInfo {
 	pub slot_count: u32,
 	pub raw_data_address: u32,
@@ -15,19 +31,22 @@ pub struct TlsInfo {
 	pub raw_data_size: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ResourceInfo {
 	pub resources: Vec<ResourceEntry>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ResourceEntry {
 	pub name: String,
 	pub address: u32,
 	pub size: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct GameRatings {
 	pub esrb: u8,
 	pub pegi: u8,
@@ -44,61 +63,105 @@ pub struct GameRatings {
 	pub reserved: [u8; 4],
 }
 
-#[derive(Debug, Serialize)]
-pub struct SystemFlags(pub u32);
-
-impl SystemFlags {
-	pub fn no_forced_reboot(&self) -> bool {
-		self.0 & 0x01 != 0
-	}
-	pub fn foreground_tasks(&self) -> bool {
-		self.0 & 0x02 != 0
-	}
-	pub fn no_odd_mapping(&self) -> bool {
-		self.0 & 0x04 != 0
-	}
-	pub fn handles_gamepad_disconnect(&self) -> bool {
-		self.0 & 0x08 != 0
-	}
-	pub fn insecure_sockets(&self) -> bool {
-		self.0 & 0x40 != 0
-	}
-	pub fn xbox1_interoperability(&self) -> bool {
-		self.0 & 0x80 != 0
-	}
-	pub fn dash_context(&self) -> bool {
-		self.0 & 0x100 != 0
-	}
-	pub fn uses_game_voice_channel(&self) -> bool {
-		self.0 & 0x200 != 0
-	}
-	pub fn pal50_incompatible(&self) -> bool {
-		self.0 & 0x1000 != 0
-	}
-	pub fn insecure_utility_drive(&self) -> bool {
-		self.0 & 0x2000 != 0
-	}
-	pub fn xam_hooks(&self) -> bool {
-		self.0 & 0x4000 != 0
-	}
-	pub fn access_pip(&self) -> bool {
-		self.0 & 0x8000 != 0
-	}
-	pub fn prefer_big_button_input(&self) -> bool {
-		self.0 & 0x100000 != 0
-	}
-	pub fn allow_controller_swapping(&self) -> bool {
-		self.0 & 0x2000000 != 0
-	}
-	pub fn allow_kinect(&self) -> bool {
-		self.0 & 0x4000000 != 0
-	}
-	pub fn allow_kinect_unless_bound(&self) -> bool {
-		self.0 & 0x8000000 != 0
+bitflags! {
+	/// XEX system flags (optional header 0x00030000).
+	///
+	/// These are privilege bits 0-31 checked by XeCheckExecutablePrivilege.
+	/// The kernel reads them from the signed XEX header to control what
+	/// system APIs the executable is allowed to call.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct SystemFlags: u32 {
+		const NO_FORCED_REBOOT         = 0x0000_0001;
+		const FOREGROUND_TASKS         = 0x0000_0002;
+		const NO_ODD_MAPPING           = 0x0000_0004;
+		const HANDLES_GAMEPAD_DISCONNECT = 0x0000_0008;
+		const INSECURE_SOCKETS         = 0x0000_0040;
+		const XBOX1_INTEROPERABILITY   = 0x0000_0080;
+		const DASH_CONTEXT             = 0x0000_0100;
+		const USES_GAME_VOICE_CHANNEL  = 0x0000_0200;
+		const PAL50_INCOMPATIBLE       = 0x0000_1000;
+		const INSECURE_UTILITY_DRIVE   = 0x0000_2000;
+		const XAM_HOOKS                = 0x0000_4000;
+		const ACCESS_PIP               = 0x0000_8000;
+		const PREFER_BIG_BUTTON_INPUT  = 0x0010_0000;
+		const ALLOW_CONTROLLER_SWAPPING = 0x0200_0000;
+		const ALLOW_KINECT             = 0x0400_0000;
+		const ALLOW_KINECT_UNLESS_BOUND = 0x0800_0000;
 	}
 }
+#[cfg(feature = "serde")]
+impl_bitflags_serialize!(SystemFlags);
 
-#[derive(Debug, Serialize)]
+bitflags! {
+	/// ImageInfo flags (SecurityInfo + 0x10C).
+	///
+	/// Verified by the kernel during XEX loading (sub_8007c4f0). The low 16
+	/// bits must be zero, and bits 29-31 encode the module type (must be
+	/// 0x80000000 for normal title modules).
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct ImageFlags: u32 {
+		const SMALL_PAGES              = 0x1000_0000;
+		const CONSOLE_ID_REQUIRED      = 0x0400_0000;
+		/// Cleared by kernel if the HV reports the keyvault is unsigned
+		/// (shared page 0x8E038614 bit 8 clear).
+		const SIGNED_KEYVAULT_REQUIRED = 0x0800_0000;
+	}
+}
+#[cfg(feature = "serde")]
+impl_bitflags_serialize!(ImageFlags);
+
+bitflags! {
+	/// Allowed media types bitmask (ImageInfo.allowed_media_types).
+	///
+	/// Checked by XexpVerifyMediaType against the current boot media.
+	/// Setting all bits (0xFFFFFFFF) allows execution from any media.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct AllowedMediaTypes: u32 {
+		const HARD_DISK                = 0x0000_0001;
+		const DVD_X2                   = 0x0000_0002;
+		const DVD_CD                   = 0x0000_0004;
+		const DVD_5                    = 0x0000_0008;
+		const DVD_9                    = 0x0000_0010;
+		const SYSTEM_FLASH             = 0x0000_0020;
+		const MEMORY_UNIT              = 0x0000_0080;
+		const USB_MASS_STORAGE         = 0x0000_0100;
+		const NETWORK                  = 0x0000_0200;
+		const DIRECT_FROM_MEMORY       = 0x0000_0400;
+		const RAM_DRIVE                = 0x0000_1000;
+		const SVOD                     = 0x0000_2000;
+		const INSECURE_PACKAGE         = 0x0000_4000;
+		const SAVEGAME_PACKAGE         = 0x0000_8000;
+		const LOCALLY_SIGNED_PACKAGE   = 0x0001_0000;
+		const LIVE_SIGNED_PACKAGE      = 0x0002_0000;
+		const XBOX_PLATFORM_PACKAGE    = 0x0004_0000;
+	}
+}
+#[cfg(feature = "serde")]
+impl_bitflags_serialize!(AllowedMediaTypes);
+
+bitflags! {
+	/// XEX module flags (XEX header offset 0x04).
+	///
+	/// Identifies the module type. Checked during load to ensure
+	/// consistency with the loader's expectations.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct ModuleFlags: u32 {
+		const TITLE            = 0x0000_0001;
+		const EXPORTS_TO_TITLE = 0x0000_0002;
+		const SYSTEM_DEBUGGER  = 0x0000_0004;
+		const DLL              = 0x0000_0008;
+		const PATCH            = 0x0000_0010;
+		const PATCH_DELTA      = 0x0000_0020;
+		const PATCH_FULL       = 0x0000_0040;
+		const BOUND_PATH       = 0x4000_0000;
+		const DEVICE_ID        = 0x2000_0000;
+	}
+}
+#[cfg(feature = "serde")]
+impl_bitflags_serialize!(ModuleFlags);
+
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct PageHeapOptions {
 	pub size: u32,
 	pub flags: u32,

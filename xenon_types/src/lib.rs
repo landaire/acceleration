@@ -1,7 +1,9 @@
 mod serde_hex;
 
+use bitflags::bitflags;
 use serde::Deserialize;
 use serde::Serialize;
+use serde::Serializer;
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TitleId(pub u32);
@@ -33,6 +35,12 @@ pub struct Version {
 	pub minor: u16,
 	pub build: u16,
 	pub revision: u16,
+}
+
+impl std::fmt::Display for Version {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}.{}.{}.{}", self.major, self.minor, self.build, self.revision)
+	}
 }
 
 impl From<u32> for Version {
@@ -76,6 +84,34 @@ impl std::fmt::Display for DeviceId {
 			write!(f, "{:02x}", b)?;
 		}
 		Ok(())
+	}
+}
+
+bitflags! {
+	/// Game region bitmask. Used in both keyvault (u16) and XEX ImageInfo (u32).
+	///
+	/// The console's keyvault stores which regions it supports. XEX executables
+	/// store which regions they're allowed to run in. The kernel ANDs them
+	/// together during load.
+	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+	pub struct GameRegion: u32 {
+		const NTSC_US = 0x000000FF;
+		const NTSC_JP = 0x0000FF00;
+		const PAL     = 0x00FE0000;
+		const PAL_AU  = 0x01000000;
+		const ALL     = 0x01FEFFFF;
+	}
+}
+
+impl Serialize for GameRegion {
+	fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.serialize_u32(self.bits())
+	}
+}
+
+impl<'de> Deserialize<'de> for GameRegion {
+	fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+		Ok(GameRegion::from_bits_retain(u32::deserialize(d)?))
 	}
 }
 

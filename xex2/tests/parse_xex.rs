@@ -10,7 +10,7 @@ fn load_xex(name: &str) -> Xex2 {
 #[test]
 fn parse_devkit_basic() {
 	let xex = load_xex("afplayer.xex");
-	assert_eq!(xex.header.module_flags.0, 0x09);
+	assert_eq!(xex.header.module_flags.bits(), 0x09);
 	assert_eq!(xex.security_info.image_info.load_address, xex2::header::VirtualAddress(0x9ef30000));
 	assert!(xex.header.entry_point().is_some());
 
@@ -107,4 +107,30 @@ fn extract_multiple_normal_compression() {
 			assert_eq!(&basefile[0..2], b"MZ", "failed for {}", name);
 		}
 	}
+}
+
+#[test]
+fn patch_resign_verifies_with_devkit_key() {
+	let xex = load_xex("haloreach-powerhouse.xex");
+	let mut limits = xex2::writer::RemoveLimits::default();
+	limits.region = true;
+	limits.media = true;
+
+	let patched_data = xex.modify(&limits).unwrap();
+
+	let sec_off = u32::from_be_bytes(patched_data[0x10..0x14].try_into().unwrap()) as usize;
+	let info_size_off = sec_off + 0x108;
+	let info_size = u32::from_be_bytes(patched_data[info_size_off..info_size_off + 4].try_into().unwrap()) as usize;
+	let image_info_len = info_size - 0x100;
+	let image_info = &patched_data[info_size_off..info_size_off + image_info_len];
+
+	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
+	let sig = &patched_data[sec_off + 0x08..sec_off + 0x108];
+
+	xecrypt::RsaKeyKind::Pirs
+		.verify_signature(xecrypt::ConsoleKind::Devkit, sig, &digest)
+		.expect("devkit PIRS signature should verify after re-signing");
+
+	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x174..sec_off + 0x178].try_into().unwrap()), 0xFFFFFFFF,);
+	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x178..sec_off + 0x17C].try_into().unwrap()), 0xFFFFFFFF,);
 }

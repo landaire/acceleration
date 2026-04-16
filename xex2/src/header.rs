@@ -1,6 +1,7 @@
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use num_enum::TryFromPrimitive;
+#[cfg(feature = "serde")]
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::Cursor;
@@ -18,7 +19,8 @@ pub use xenon_types::VirtualAddress;
 
 pub const XEX2_MAGIC: [u8; 4] = *b"XEX2";
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct Xex2Header {
 	pub module_flags: ModuleFlags,
 	pub data_offset: u32,
@@ -27,50 +29,19 @@ pub struct Xex2Header {
 	pub optional_headers: BTreeMap<u32, OptionalHeaderValue>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum OptionalHeaderValue {
 	Inline(u32),
 	Data(Vec<u8>),
 }
 
-#[derive(Debug, Serialize)]
-pub struct ModuleFlags(pub u32);
+pub use crate::opt::AllowedMediaTypes;
+pub use crate::opt::ImageFlags;
+pub use crate::opt::ModuleFlags;
 
-impl ModuleFlags {
-	pub fn is_title(&self) -> bool {
-		self.0 & 0x01 != 0
-	}
-
-	pub fn is_exports_to_title(&self) -> bool {
-		self.0 & 0x02 != 0
-	}
-
-	pub fn is_system_debugger(&self) -> bool {
-		self.0 & 0x04 != 0
-	}
-
-	pub fn is_dll(&self) -> bool {
-		self.0 & 0x08 != 0
-	}
-
-	pub fn is_patch(&self) -> bool {
-		self.0 & 0x10 != 0
-	}
-
-	pub fn is_patch_full(&self) -> bool {
-		self.0 & 0x20 != 0
-	}
-
-	pub fn is_patch_delta(&self) -> bool {
-		self.0 & 0x40 != 0
-	}
-
-	pub fn is_user_mode(&self) -> bool {
-		self.0 & 0x80 != 0
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 #[repr(u16)]
 pub enum CompressionType {
 	None = 0,
@@ -79,14 +50,16 @@ pub enum CompressionType {
 	Delta = 3,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 #[repr(u16)]
 pub enum EncryptionType {
 	None = 0,
 	Normal = 1,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct FileFormatInfo {
 	pub encryption_type: EncryptionType,
 	pub compression_type: CompressionType,
@@ -95,38 +68,43 @@ pub struct FileFormatInfo {
 	pub first_block_size: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct BasicCompressionBlock {
 	pub data_size: u32,
 	pub zero_size: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct NormalCompressionInfo {
 	pub window_size: u32,
 	pub first_block: NormalCompressionBlock,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct NormalCompressionBlock {
 	pub block_size: u32,
 	pub hash: [u8; 20],
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct SecurityInfo {
 	pub header_size: u32,
 	pub image_size: u32,
-	#[serde(skip)]
+	#[cfg_attr(feature = "serde", serde(skip))]
 	pub rsa_signature: [u8; 256],
 	pub image_info: ImageInfo,
 	pub page_descriptor_count: u32,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ImageInfo {
 	pub info_size: u32,
-	pub image_flags: u32,
+	pub image_flags: ImageFlags,
 	pub load_address: VirtualAddress,
 	pub image_hash: [u8; 20],
 	pub import_table_count: u32,
@@ -134,11 +112,12 @@ pub struct ImageInfo {
 	pub media_id: [u8; 16],
 	pub file_key: AesKey,
 	pub header_hash: [u8; 20],
-	pub game_regions: u32,
-	pub allowed_media_types: u32,
+	pub game_regions: xenon_types::GameRegion,
+	pub allowed_media_types: AllowedMediaTypes,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 #[repr(u32)]
 pub enum OptionalHeaderKey {
 	ResourceInfo = 0x000002FF,
@@ -219,7 +198,8 @@ impl std::fmt::Display for OptionalHeaderKey {
 	}
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ExecutionInfo {
 	pub media_id: MediaId,
 	pub version: u32,
@@ -242,7 +222,7 @@ impl Xex2Header {
 			return Err(Xex2Error::InvalidMagic { found: magic }.into_report());
 		}
 
-		let module_flags = ModuleFlags(cursor.read_u32::<BigEndian>().io()?);
+		let module_flags = ModuleFlags::from_bits_retain(cursor.read_u32::<BigEndian>().io()?);
 		let data_offset = cursor.read_u32::<BigEndian>().io()?;
 		let _reserved = cursor.read_u32::<BigEndian>().io()?;
 		let security_offset = cursor.read_u32::<BigEndian>().io()?;
@@ -400,7 +380,7 @@ impl SecurityInfo {
 
 		let image_info = ImageInfo {
 			info_size: _info_size,
-			image_flags: c.read_u32::<BigEndian>().io()?,
+			image_flags: ImageFlags::from_bits_retain(c.read_u32::<BigEndian>().io()?),
 			load_address: VirtualAddress(c.read_u32::<BigEndian>().io()?),
 			image_hash: {
 				let mut h = [0u8; 20];
@@ -428,8 +408,8 @@ impl SecurityInfo {
 				c.read_exact(&mut h).io()?;
 				h
 			},
-			game_regions: c.read_u32::<BigEndian>().io()?,
-			allowed_media_types: c.read_u32::<BigEndian>().io()?,
+			game_regions: xenon_types::GameRegion::from_bits_retain(c.read_u32::<BigEndian>().io()?),
+			allowed_media_types: AllowedMediaTypes::from_bits_retain(c.read_u32::<BigEndian>().io()?),
 		};
 
 		let page_descriptor_count = c.read_u32::<BigEndian>().io()?;

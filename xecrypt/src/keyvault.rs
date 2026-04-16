@@ -123,7 +123,7 @@ pub struct KeyVaultConfig {
 pub struct KeyVaultKeys {
 	pub console_serial_number: String,
 	pub mobo_serial_number: [u8; 0x0C],
-	pub game_region: u16,
+	pub game_region: xenon_types::GameRegion,
 	pub console_obfuscation_key: [u8; 0x10],
 	pub key_obfuscation_key: [u8; 0x10],
 	pub roamable_obfuscation_key: [u8; 0x10],
@@ -165,6 +165,17 @@ pub struct ConsoleCertificate {
 pub struct ConsoleType(pub u32);
 
 impl ConsoleType {
+	pub const TESTKIT: u32 = 0x4000_0000;
+	pub const RECOVERY_GENERATED: u32 = 0x8000_0000;
+
+	pub fn kind(&self) -> ConsoleKind {
+		match self.0 & 0x3 {
+			1 => ConsoleKind::Devkit,
+			2 => ConsoleKind::Retail,
+			_ => ConsoleKind::Unknown,
+		}
+	}
+
 	pub fn is_devkit(&self) -> bool {
 		self.0 & 0x3 == 1
 	}
@@ -174,12 +185,20 @@ impl ConsoleType {
 	}
 
 	pub fn is_testkit(&self) -> bool {
-		self.0 & 0x40000000 != 0
+		self.0 & Self::TESTKIT != 0
 	}
 
 	pub fn is_recovery_generated(&self) -> bool {
-		self.0 & 0x80000000 != 0
+		self.0 & Self::RECOVERY_GENERATED != 0
 	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub enum ConsoleKind {
+	Devkit,
+	Retail,
+	Unknown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,7 +253,7 @@ impl KeyVault {
 		&self.keys.dvd_key
 	}
 
-	pub fn game_region(&self) -> u16 {
+	pub fn game_region(&self) -> xenon_types::GameRegion {
 		self.keys.game_region
 	}
 
@@ -275,7 +294,7 @@ pub struct KeyVaultRef<'a> {
 pub struct KeyVaultKeysRef<'a> {
 	pub console_serial_number: &'a str,
 	pub mobo_serial_number: &'a [u8; 0x0C],
-	pub game_region: u16,
+	pub game_region: xenon_types::GameRegion,
 	pub console_obfuscation_key: &'a [u8; 0x10],
 	pub key_obfuscation_key: &'a [u8; 0x10],
 	pub roamable_obfuscation_key: &'a [u8; 0x10],
@@ -329,7 +348,9 @@ impl<'a> KeyVaultRef<'a> {
 		let keys = KeyVaultKeysRef {
 			console_serial_number,
 			mobo_serial_number: kv[offsets::MOBO_SERIAL].try_into().unwrap(),
-			game_region: u16::from_be_bytes(kv[offsets::GAME_REGION].try_into().unwrap()),
+			game_region: xenon_types::GameRegion::from_bits_retain(u16::from_be_bytes(
+				kv[offsets::GAME_REGION].try_into().unwrap(),
+			) as u32),
 			console_obfuscation_key: kv[offsets::CONSOLE_OBFUSCATION_KEY].try_into().unwrap(),
 			key_obfuscation_key: kv[offsets::KEY_OBFUSCATION_KEY].try_into().unwrap(),
 			roamable_obfuscation_key: kv[offsets::ROAMABLE_OBFUSCATION_KEY].try_into().unwrap(),
@@ -442,7 +463,7 @@ impl<'a> KeyVaultRef<'a> {
 		self.keys.dvd_key
 	}
 
-	pub fn game_region(&self) -> u16 {
+	pub fn game_region(&self) -> xenon_types::GameRegion {
 		self.keys.game_region
 	}
 
@@ -570,7 +591,9 @@ impl KeyVaultKeys {
 		let serial_end = serial_raw.iter().position(|b| *b == 0).unwrap_or(serial_raw.len());
 		let console_serial_number = String::from_utf8_lossy(&serial_raw[..serial_end]).into_owned();
 
-		let game_region = u16::from_be_bytes(data[offsets::GAME_REGION].try_into().unwrap());
+		let game_region = xenon_types::GameRegion::from_bits_retain(u16::from_be_bytes(
+			data[offsets::GAME_REGION].try_into().unwrap(),
+		) as u32);
 
 		Ok(KeyVaultKeys {
 			console_serial_number,

@@ -138,8 +138,8 @@ pub struct XContentMetadata {
 	pub metadata_version: u32,
 	pub content_size: u64,
 	pub media_id: xenon_types::MediaId,
-	pub version: u32,
-	pub base_version: u32,
+	pub version: xenon_types::Version,
+	pub base_version: xenon_types::Version,
 	pub title_id: xenon_types::TitleId,
 	pub platform: u8,
 	pub executable_type: u8,
@@ -172,8 +172,8 @@ impl XContentMetadata {
 		let metadata_version = cursor.read_u32::<BigEndian>()?;
 		let content_size = cursor.read_u64::<BigEndian>()?;
 		let media_id = xenon_types::MediaId(cursor.read_u32::<BigEndian>()?);
-		let version = cursor.read_u32::<BigEndian>()?;
-		let base_version = cursor.read_u32::<BigEndian>()?;
+		let version = xenon_types::Version::from(cursor.read_u32::<BigEndian>()?);
+		let base_version = xenon_types::Version::from(cursor.read_u32::<BigEndian>()?);
 		let title_id = xenon_types::TitleId(cursor.read_u32::<BigEndian>()?);
 		let platform = cursor.read_u8()?;
 		let executable_type = cursor.read_u8()?;
@@ -491,23 +491,4 @@ pub struct LicenseEntry {
 	pub data: [u8; 6],
 	pub bits: u32,
 	pub flags: u32,
-}
-
-#[derive(Debug, Serialize, Copy, Clone)]
-pub struct Version {
-	pub major: u16,
-	pub minor: u16,
-	pub build: u16,
-	pub revision: u16,
-}
-
-impl From<u32> for Version {
-	fn from(input: u32) -> Self {
-		Version {
-			major: ((input & 0xF000_0000) >> 28) as u16,
-			minor: ((input & 0x0F00_0000) >> 24) as u16,
-			build: ((input & 0x00FF_FF00) >> 8) as u16,
-			revision: (input & 0xFF) as u16,
-		}
-	}
 }

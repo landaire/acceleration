@@ -28,11 +28,83 @@ struct Args {
 	command: Commands,
 }
 
+#[derive(clap::Args, Default)]
+struct LimitArgs {
+	/// Remove all restrictions
+	#[arg(short = 'a', long = "all")]
+	all: bool,
+
+	/// Remove media type restrictions
+	#[arg(short = 'm', long)]
+	media: bool,
+
+	/// Remove region restrictions
+	#[arg(short = 'r', long)]
+	region: bool,
+
+	/// Remove bounding path restriction
+	#[arg(short = 'b', long)]
+	bounding_path: bool,
+
+	/// Remove device ID restriction
+	#[arg(short = 'd', long)]
+	device_id: bool,
+
+	/// Remove console ID restriction
+	#[arg(short = 'i', long)]
+	console_id: bool,
+
+	/// Remove date restrictions
+	#[arg(short = 'y', long)]
+	dates: bool,
+
+	/// Remove keyvault privilege restrictions
+	#[arg(short = 'v', long)]
+	kv_privileges: bool,
+
+	/// Remove signed-keyvault-only restriction
+	#[arg(short = 'k', long)]
+	signed_kv_only: bool,
+
+	/// Remove minimum library version restrictions
+	#[arg(short = 'l', long)]
+	lib_versions: bool,
+
+	/// Remove revocation check requirement
+	#[arg(long)]
+	revocation_check: bool,
+
+	/// Zero the media ID
+	#[arg(short = 'z', long)]
+	zero_media_id: bool,
+}
+
+impl From<&LimitArgs> for xex2::writer::RemoveLimits {
+	fn from(args: &LimitArgs) -> Self {
+		if args.all {
+			return xex2::writer::RemoveLimits::all();
+		}
+		xex2::writer::RemoveLimits {
+			media: args.media,
+			region: args.region,
+			bounding_path: args.bounding_path,
+			device_id: args.device_id,
+			console_id: args.console_id,
+			dates: args.dates,
+			keyvault_privileges: args.kv_privileges,
+			signed_keyvault_only: args.signed_kv_only,
+			library_versions: args.lib_versions,
+			revocation_check: args.revocation_check,
+			zero_media_id: args.zero_media_id,
+		}
+	}
+}
+
 #[derive(Subcommand)]
 enum Commands {
 	/// Print info about a XEX file
 	Info {
-		/// Print extended info
+		/// Print extended info (security, optional headers)
 		#[arg(short, long)]
 		extended: bool,
 
@@ -76,34 +148,54 @@ enum Commands {
 		/// Path to the XEX file
 		file: PathBuf,
 	},
-	/// Remove XEX restrictions (modifies in-place unless -o given)
+	/// Modify a XEX: remove restrictions, convert format, apply patches
 	Patch {
 		/// Path to the XEX file
 		file: PathBuf,
 
-		/// Output path (modifies original if not given)
+		/// Output path (defaults to in-place modification)
 		#[arg(short, long)]
 		output: Option<PathBuf>,
 
-		/// Remove all limits
-		#[arg(short = 'a', long)]
-		remove_all: bool,
+		/// Apply a delta patch (.xexp) file
+		#[arg(long)]
+		apply_patch: Option<PathBuf>,
 
-		/// Remove media limits
-		#[arg(short = 'm', long)]
-		remove_media: bool,
+		/// Merge patch into standalone XEX
+		#[arg(long, requires = "apply_patch")]
+		merge_patch: bool,
 
-		/// Remove region limits
-		#[arg(short = 'r', long)]
-		remove_region: bool,
+		/// Convert to devkit format
+		#[arg(long, conflicts_with = "retail")]
+		devkit: bool,
 
-		/// Remove bounding path
-		#[arg(short = 'b', long)]
-		remove_bounding_path: bool,
+		/// Convert to retail format
+		#[arg(long, conflicts_with = "devkit")]
+		retail: bool,
 
-		/// Zero the media ID
-		#[arg(short = 'z', long)]
-		zero_media_id: bool,
+		/// Encrypt the output
+		#[arg(long, conflicts_with = "decrypt")]
+		encrypt: bool,
+
+		/// Decrypt the output
+		#[arg(long, conflicts_with = "encrypt")]
+		decrypt: bool,
+
+		/// Compress the output
+		#[arg(long, conflicts_with_all = ["decompress", "basic_compress"])]
+		compress: bool,
+
+		/// Decompress the output (remove all compression)
+		#[arg(long, conflicts_with_all = ["compress", "basic_compress"])]
+		decompress: bool,
+
+		/// Use basic compression (zero-padded blocks)
+		#[arg(long, conflicts_with_all = ["compress", "decompress"])]
+		basic_compress: bool,
+
+		/// Remove restrictions
+		#[command(flatten)]
+		limits: LimitArgs,
 	},
 }
 
@@ -121,12 +213,35 @@ fn main() -> anyhow::Result<()> {
 		Commands::Patch {
 			file,
 			output,
-			remove_all,
-			remove_media,
-			remove_region,
-			remove_bounding_path,
-			zero_media_id,
-		} => cmd_patch(&file, output, remove_all, remove_media, remove_region, remove_bounding_path, zero_media_id),
+			apply_patch,
+			merge_patch,
+			devkit,
+			retail,
+			encrypt,
+			decrypt,
+			compress,
+			decompress,
+			basic_compress,
+			limits,
+		} => {
+			let machine = match (devkit, retail) {
+				(true, _) => xex2::writer::TargetMachine::Devkit,
+				(_, true) => xex2::writer::TargetMachine::Retail,
+				_ => xex2::writer::TargetMachine::Unchanged,
+			};
+			let encryption = match (encrypt, decrypt) {
+				(true, _) => xex2::writer::TargetEncryption::Encrypted,
+				(_, true) => xex2::writer::TargetEncryption::Decrypted,
+				_ => xex2::writer::TargetEncryption::Unchanged,
+			};
+			let compression = match (compress, decompress, basic_compress) {
+				(true, _, _) => xex2::writer::TargetCompression::Normal,
+				(_, true, _) => xex2::writer::TargetCompression::Uncompressed,
+				(_, _, true) => xex2::writer::TargetCompression::Basic,
+				_ => xex2::writer::TargetCompression::Unchanged,
+			};
+			cmd_patch(&file, output, apply_patch, merge_patch, machine, compression, encryption, &limits)
+		}
 	}
 }
 
@@ -144,21 +259,26 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 
 	let mut b = Builder::default();
 
-	b.push_record(["Module Flags", &format!("{:#010x}", header.module_flags.0)]);
+	use xex2::opt::AllowedMediaTypes;
+	use xex2::opt::ModuleFlags;
 
-	let mut flags = Vec::new();
-	if header.module_flags.is_title() {
-		flags.push("Title");
-	}
-	if header.module_flags.is_dll() {
-		flags.push("DLL");
-	}
-	if header.module_flags.is_patch() {
-		flags.push("Patch");
-	}
-	if !flags.is_empty() {
-		b.push_record(["", &flags.join(", ")]);
-	}
+	b.push_record([
+		"Module Flags",
+		&format_flags(
+			header.module_flags,
+			&[
+				(ModuleFlags::TITLE, "Title"),
+				(ModuleFlags::EXPORTS_TO_TITLE, "ExportsToTitle"),
+				(ModuleFlags::SYSTEM_DEBUGGER, "SystemDebugger"),
+				(ModuleFlags::DLL, "DLL"),
+				(ModuleFlags::PATCH, "Patch"),
+				(ModuleFlags::PATCH_DELTA, "PatchDelta"),
+				(ModuleFlags::PATCH_FULL, "PatchFull"),
+				(ModuleFlags::BOUND_PATH, "BoundPath"),
+				(ModuleFlags::DEVICE_ID, "DeviceID"),
+			],
+		),
+	]);
 
 	b.push_record(["Data Offset", &format!("{:#010x}", header.data_offset)]);
 	b.push_record(["Load Address", &format!("{:#010x}", security.image_info.load_address)]);
@@ -192,8 +312,43 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 		b.push_record(["LZX Window", &format!("{:#x}", ws)]);
 	}
 
-	b.push_record(["Game Regions", &format!("{:#010x}", security.image_info.game_regions)]);
-	b.push_record(["Allowed Media", &format!("{:#010x}", security.image_info.allowed_media_types)]);
+	b.push_record([
+		"Game Regions",
+		&format_flags(
+			security.image_info.game_regions,
+			&[
+				(xenon_types::GameRegion::NTSC_US, "NTSC/US"),
+				(xenon_types::GameRegion::NTSC_JP, "NTSC/JP"),
+				(xenon_types::GameRegion::PAL, "PAL"),
+				(xenon_types::GameRegion::PAL_AU, "PAL/AU"),
+			],
+		),
+	]);
+	b.push_record([
+		"Allowed Media",
+		&format_flags(
+			security.image_info.allowed_media_types,
+			&[
+				(AllowedMediaTypes::HARD_DISK, "HDD"),
+				(AllowedMediaTypes::DVD_X2, "DVDX2"),
+				(AllowedMediaTypes::DVD_CD, "DVDCD"),
+				(AllowedMediaTypes::DVD_5, "DVD5"),
+				(AllowedMediaTypes::DVD_9, "DVD9"),
+				(AllowedMediaTypes::SYSTEM_FLASH, "Flash"),
+				(AllowedMediaTypes::MEMORY_UNIT, "MU"),
+				(AllowedMediaTypes::USB_MASS_STORAGE, "USB"),
+				(AllowedMediaTypes::NETWORK, "Network"),
+				(AllowedMediaTypes::DIRECT_FROM_MEMORY, "Memory"),
+				(AllowedMediaTypes::RAM_DRIVE, "RAMDrive"),
+				(AllowedMediaTypes::SVOD, "SVOD"),
+				(AllowedMediaTypes::INSECURE_PACKAGE, "InsecurePkg"),
+				(AllowedMediaTypes::SAVEGAME_PACKAGE, "SavegamePkg"),
+				(AllowedMediaTypes::LOCALLY_SIGNED_PACKAGE, "LocalSigned"),
+				(AllowedMediaTypes::LIVE_SIGNED_PACKAGE, "LiveSigned"),
+				(AllowedMediaTypes::XBOX_PLATFORM_PACKAGE, "XboxPlatform"),
+			],
+		),
+	]);
 
 	if let Some(ratings) = header.game_ratings() {
 		b.push_record(["ESRB", &ratings.esrb.to_string()]);
@@ -330,7 +485,7 @@ fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
 
 	let mut info = serde_json::Map::new();
 
-	info.insert("module_flags".into(), serde_json::to_value(header.module_flags.0)?);
+	info.insert("module_flags".into(), serde_json::to_value(header.module_flags.bits())?);
 	info.insert("data_offset".into(), serde_json::to_value(header.data_offset)?);
 	info.insert("image_size".into(), serde_json::to_value(security.image_size)?);
 	info.insert("load_address".into(), serde_json::to_value(security.image_info.load_address.0)?);
@@ -502,29 +657,38 @@ fn cmd_imports(path: &PathBuf, fmt: OutputFormat) -> anyhow::Result<()> {
 	Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_patch(
 	path: &PathBuf,
 	output: Option<PathBuf>,
-	remove_all: bool,
-	remove_media: bool,
-	remove_region: bool,
-	remove_bounding_path: bool,
-	zero_media_id: bool,
+	apply_patch: Option<PathBuf>,
+	merge_patch: bool,
+	machine: xex2::writer::TargetMachine,
+	compression: xex2::writer::TargetCompression,
+	encryption: xex2::writer::TargetEncryption,
+	limits: &LimitArgs,
 ) -> anyhow::Result<()> {
+	if apply_patch.is_some() {
+		anyhow::bail!("delta patch application (XEXP) is not yet implemented");
+	}
+	if merge_patch {
+		anyhow::bail!("patch merging is not yet implemented");
+	}
+	if !matches!(machine, xex2::writer::TargetMachine::Unchanged) {
+		anyhow::bail!("machine format conversion is not yet implemented");
+	}
+	if !matches!(compression, xex2::writer::TargetCompression::Unchanged) {
+		anyhow::bail!("compression format conversion is not yet implemented");
+	}
+	if !matches!(encryption, xex2::writer::TargetEncryption::Unchanged) {
+		anyhow::bail!("encryption format conversion is not yet implemented");
+	}
+
 	let data = fs::read(path)?;
 	let xex = Xex2::parse(data)?;
 
-	let mut limits = xex2::writer::RemoveLimits::default();
-	if remove_all {
-		limits = xex2::writer::RemoveLimits::all();
-	} else {
-		limits.media = remove_media;
-		limits.region = remove_region;
-		limits.bounding_path = remove_bounding_path;
-		limits.zero_media_id = zero_media_id;
-	}
-
-	let patched = xex.modify(&limits)?;
+	let limits = xex2::writer::RemoveLimits::from(limits);
+	let patched = xex2::writer::modify_xex(&xex, encryption, compression, machine, &limits)?;
 
 	let out_path = output.unwrap_or_else(|| path.clone());
 	fs::write(&out_path, &patched)?;
@@ -567,4 +731,13 @@ fn optional_header_name(key: u32) -> String {
 
 fn hex_str(bytes: &[u8]) -> String {
 	bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn format_flags<F: bitflags::Flags<Bits = u32> + Copy>(flags: F, names: &[(F, &str)]) -> String {
+	let set: Vec<&str> = names.iter().filter(|(f, _)| flags.contains(*f)).map(|(_, n)| *n).collect();
+	if set.is_empty() {
+		format!("{:#010x}", flags.bits())
+	} else {
+		format!("{:#010x}\n{}", flags.bits(), set.join("\n"))
+	}
 }

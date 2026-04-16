@@ -9,7 +9,9 @@ name = "xex2ool"
 path = "src/main.rs"
 
 [dependencies]
-xex2 = { version = "0.1", path = "../xex2" }
+xex2 = { version = "0.1", path = "../xex2", features = ["serde"] }
+xenon_types = { version = "0.1", path = "../xenon_types" }
+bitflags = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
 serde_json = "1.0"

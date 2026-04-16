@@ -11,11 +11,11 @@ pub fn generate_xml(xex: &Xex2) -> String {
 	writeln!(out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>").unwrap();
 	writeln!(out, "<xex>").unwrap();
 
-	writeln!(out, "  <module_flags>{:#010x}</module_flags>", header.module_flags.0).unwrap();
+	writeln!(out, "  <module_flags>{:#010x}</module_flags>", header.module_flags.bits()).unwrap();
 
-	let basefile_type = if header.module_flags.is_dll() {
+	let basefile_type = if header.module_flags.contains(crate::opt::ModuleFlags::DLL) {
 		"dll"
-	} else if header.module_flags.is_patch() {
+	} else if header.module_flags.contains(crate::opt::ModuleFlags::PATCH) {
 		"patch"
 	} else {
 		"exe"
