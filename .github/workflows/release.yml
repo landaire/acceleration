@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-cli:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: xex2ool
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin: xex2ool
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: xex2ool.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p xex2ool
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/${{ matrix.bin }} dist/
+          cd dist && tar czf ../xex2ool-${{ matrix.target }}.tar.gz *
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: xex2ool-${{ matrix.target }}
+          path: xex2ool-${{ matrix.target }}.tar.gz
+
+  publish:
+    needs: [build-cli]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+          generate_release_notes: true
