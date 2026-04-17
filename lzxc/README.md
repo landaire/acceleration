@@ -124,6 +124,22 @@ The bench binary also prints one `ratio: ...` line per corpus/strategy
 pair to stderr so the numbers can be regenerated without opening the HTML
 reports.
 
+## Limitations
+
+### 4 GiB input cap per encoder
+
+A single `Encoder` / `EncoderWriter` can compress **up to 4 GiB of input**
+before its match finder silently degrades to literal-only output. Internal
+hash-chain positions are stored as `u32`, so once total bytes fed through
+one encoder exceed `u32::MAX`, the stale-entry guard rejects every match
+candidate. The output stream remains valid LZX (it decodes correctly via
+`lzxd`), but compression ratio collapses to ~1.0x for all bytes past the
+4 GiB mark.
+
+In practice XEX payloads and other LZX targets are orders of magnitude
+below this bound. If you need to compress larger streams, segment the
+input and construct a fresh `Encoder` per segment.
+
 ## License
 
 Licensed under either of Apache License, Version 2.0 or MIT license at

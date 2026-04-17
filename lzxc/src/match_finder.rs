@@ -69,6 +69,18 @@ fn common_prefix_len(a: &[u8], b: &[u8], max: usize) -> usize {
 }
 
 /// Stateful, cross-chunk match finder.
+///
+/// ## 4 GiB input limit
+///
+/// Absolute byte positions stored in `head` and `prev` are truncated to
+/// `u32` (the raw-buffer size of 4 GiB is large enough that we save half
+/// the memory by not storing u64s). Once more than `u32::MAX` bytes have
+/// been fed through a single `MatchFinder`, `base` exceeds 4 GiB while
+/// stored positions remain < 4 GiB; the `candidate_abs < base` stale-entry
+/// guard in `find_best_match` then rejects every candidate and no matches
+/// are ever found. The encoder silently falls through to all-literal
+/// output -- the stream remains valid LZX (decodes correctly), but ratio
+/// degrades to ~1.0x. In practice XEX payloads are far below this limit.
 pub struct MatchFinder {
 	/// Maximum match offset allowed. This is the LZX representable limit for
 	/// the target window size, which is smaller than the raw buffer size
@@ -82,7 +94,8 @@ pub struct MatchFinder {
 	/// monotonically as old bytes are trimmed.
 	base: u64,
 	/// `head[hash]` is the most recent absolute position whose 4-byte
-	/// prefix hashes to `hash`, or `u32::MAX` if unseen.
+	/// prefix hashes to `hash`, or `u32::MAX` if unseen. See the struct-
+	/// level doc for the 4 GiB limit implied by the u32 width.
 	head: Vec<u32>,
 	/// `prev[idx]` is the previous absolute position sharing the hash of
 	/// the byte at `base + idx`, or `u32::MAX` to terminate the chain.
@@ -90,7 +103,10 @@ pub struct MatchFinder {
 	///
 	/// (A u16-delta packing was tried -- halves the memory but adds enough
 	/// per-hop arithmetic that the M4's out-of-order core was already
-	/// hiding the L2-miss latency on this working set. Net: regression.)
+	/// hiding the L2-miss latency on this working set. Net: regression.
+	/// u64 was also measured -- ~7% throughput regression on structured
+	/// input from the doubled memory traffic + halved L1 line density on
+	/// chain-walk loads. The 4 GiB cap is retained as a deliberate trade.)
 	prev: Vec<u32>,
 }
 
@@ -124,6 +140,23 @@ impl MatchFinder {
 		let chunk_start_abs = self.base + self.history.len() as u64;
 		self.history.extend_from_slice(chunk);
 		self.prev.resize(self.history.len(), u32::MAX);
+
+		// Catch the 4 GiB limit in debug builds. Absolute positions written
+		// to `head`/`prev` are truncated to u32 (see struct-level doc); once
+		// the total stream exceeds u32::MAX bytes, every chain candidate is
+		// rejected as stale and compression silently degrades to all-literal
+		// output. Flag it loudly in debug so users don't hit the ratio
+		// cliff in production without warning.
+		let post_extend_end_abs = self.base + self.history.len() as u64;
+		debug_assert!(
+			post_extend_end_abs <= u32::MAX as u64,
+			"lzxc MatchFinder: input crossed 4 GiB (base={}, history_len={}); \
+			 stored chain positions truncate to u32 past this point and compression \
+			 will silently fall back to all-literal output. Segment your input and \
+			 construct a fresh Encoder per segment.",
+			self.base,
+			self.history.len(),
+		);
 
 		// Hoist disjoint borrows out of `self` so the compiler stops
 		// reloading `head`/`prev`/`history` base+len from struct slots on
