@@ -31,10 +31,17 @@ pub const MAX_MATCH_LEN: usize = 257;
 pub const LENGTH_SYM_COUNT: usize = 249;
 
 /// An emit action: either a literal byte or an LZ77 back-reference.
+///
+/// Match length is a `NonZeroU32` so the compiler niche-optimizes the
+/// enum into 8 bytes (vs. the natural 12 if `length` were `u32`). The
+/// niche -- the 0 value that `NonZeroU32` forbids -- encodes "this is a
+/// Literal", which means no separate discriminant byte and no padding.
+/// MIN_MATCH is 2 so no legitimate match has length 0; the restriction
+/// is free.
 #[derive(Debug, Clone, Copy)]
 pub enum Token {
 	Literal(u8),
-	Match { offset: u32, length: u32 },
+	Match { offset: u32, length: core::num::NonZeroU32 },
 }
 
 /// Encoder-side repeated-offset queue. Mirror of the decoder's logic.
@@ -163,7 +170,7 @@ pub fn main_tree_is_nondegenerate(tokens: &[Token], initial_r: RepeatOffsets) ->
 	for &tok in tokens {
 		let sym = match tok {
 			Token::Literal(b) => b as u16,
-			Token::Match { offset, length } => encode_match(offset, length, &mut r).main_symbol,
+			Token::Match { offset, length } => encode_match(offset, length.get(), &mut r).main_symbol,
 		};
 		match seen {
 			None => seen = Some(sym),
@@ -211,11 +218,11 @@ fn avoid_single_symbol_length_tree(tokens: &[Token]) -> std::borrow::Cow<'_, [To
 	let mut first_len: Option<u32> = None;
 	for t in tokens {
 		if let Token::Match { length, .. } = *t
-			&& length >= 9
+			&& length.get() >= 9
 		{
 			match first_len {
-				None => first_len = Some(length),
-				Some(l) if l != length => return std::borrow::Cow::Borrowed(tokens),
+				None => first_len = Some(length.get()),
+				Some(l) if l != length.get() => return std::borrow::Cow::Borrowed(tokens),
 				_ => {}
 			}
 		}
@@ -230,9 +237,10 @@ fn avoid_single_symbol_length_tree(tokens: &[Token]) -> std::borrow::Cow<'_, [To
 	let mut out = Vec::with_capacity(tokens.len());
 	for &tok in tokens {
 		match tok {
-			Token::Match { offset, length } if length >= 9 => {
-				for part in split_length(length) {
-					out.push(Token::Match { offset, length: part });
+			Token::Match { offset, length } if length.get() >= 9 => {
+				for part in split_length(length.get()) {
+					let part_nz = core::num::NonZeroU32::new(part).expect("split_length parts are in 2..=8");
+					out.push(Token::Match { offset, length: part_nz });
 				}
 			}
 			t => out.push(t),
@@ -272,6 +280,7 @@ pub fn emit_verbatim_block(
 				state.encoded.push(EncodedToken::Literal(b));
 			}
 			Token::Match { offset, length } => {
+				let length = length.get();
 				debug_assert!((MIN_MATCH_LEN as u32..=MAX_MATCH_LEN as u32).contains(&length));
 				let enc = encode_match(offset, length, &mut state.r);
 				state.main_freq[enc.main_symbol as usize] += 1;

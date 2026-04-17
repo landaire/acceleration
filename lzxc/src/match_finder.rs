@@ -12,6 +12,7 @@
 //! are rare enough that ratio is unaffected on representative workloads.
 
 use crate::verbatim::Token;
+use core::mem::MaybeUninit;
 
 const HASH_BITS: u32 = 15;
 const HASH_SIZE: usize = 1 << HASH_BITS;
@@ -113,53 +114,90 @@ impl MatchFinder {
 	/// Hash state persists across calls so matches can span chunk boundaries.
 	pub fn process(&mut self, chunk: &[u8], tokens: &mut Vec<Token>) {
 		tokens.clear();
+		// Upper bound: one token per input byte (worst case is all literals).
+		// Reserve up front so we can write directly into `spare_capacity_mut`
+		// without Vec's per-push cap-check; the hot loop previously spent
+		// ~18% of its samples on the `ldr tokens.len / ldr tokens.cap / cmp`
+		// sequence emitted by `Vec::push`.
+		tokens.reserve(chunk.len());
+
 		let chunk_start_abs = self.base + self.history.len() as u64;
 		self.history.extend_from_slice(chunk);
 		self.prev.resize(self.history.len(), u32::MAX);
 
-		let end_abs = self.base + self.history.len() as u64;
-		let mut p = chunk_start_abs;
+		// Hoist disjoint borrows out of `self` so the compiler stops
+		// reloading `head`/`prev`/`history` base+len from struct slots on
+		// every inner-loop iteration.
+		let base = self.base;
+		let head: &mut [u32] = &mut self.head;
+		let prev: &mut [u32] = &mut self.prev;
+		let history: &[u8] = &self.history;
+		let history_len = history.len();
+		let end_abs = base + history_len as u64;
+		let chunk_start_rel = (chunk_start_abs - base) as usize;
 
-		while p < end_abs {
-			let p_rel = (p - self.base) as usize;
+		// Track `p_rel` directly instead of deriving it from `p` each
+		// iteration: p_rel increments by 1 (literal) or best.length (match)
+		// and is what every inner access actually needs.
+		let mut p_rel = chunk_start_rel;
+		let mut tok_written: usize = 0;
 
-			// 4-byte hash lookahead requirement. The last few positions fall
-			// through to literal emission; still a strict superset of the
-			// MIN_MATCH=3 constraint on what we can actually emit.
-			if end_abs - p < 4 {
-				for i in p_rel..self.history.len() {
-					tokens.push(Token::Literal(self.history[i]));
+		// Write tokens directly into the reserved spare capacity instead of
+		// using `Vec::push` (which reloads len/cap from memory each call,
+		// previously ~18% of samples). The slice borrow is scoped so we can
+		// call `tokens.set_len` after it's released.
+		{
+			let tokens_spare: &mut [MaybeUninit<Token>] = tokens.spare_capacity_mut();
+
+			while p_rel + 4 <= history_len {
+				let p_abs = base + p_rel as u64;
+				let h = hash4(&history[p_rel..p_rel + 4]);
+				let best = Self::find_best_match(history, head, prev, base, p_abs, p_rel, h, end_abs, self.max_offset);
+
+				if best.length >= MIN_MATCH {
+					// Sparse insert: only record the match-start position in
+					// the chain. With MAX_CHAIN_DEPTH=16 the walk budget is
+					// tight, and inserting every intra-match position fills
+					// the head of each hash bucket with nearby, short-
+					// extending candidates -- starving searches of the older,
+					// longer-extending candidates further down the chain.
+					// Skipping intra-match inserts is a Pareto win: ratio on
+					// structured data improves sharply (2.90x vs 1.76x on
+					// the 1 MB corpus) and throughput is neutral-to-slightly-
+					// better.
+					let length =
+						core::num::NonZeroU32::new(best.length as u32).expect("best.length >= MIN_MATCH >= 3");
+					tokens_spare[tok_written] = MaybeUninit::new(Token::Match { offset: best.offset, length });
+					prev[p_rel] = head[h];
+					head[h] = p_abs as u32;
+					tok_written += 1;
+					p_rel += best.length;
+				} else {
+					tokens_spare[tok_written] = MaybeUninit::new(Token::Literal(history[p_rel]));
+					prev[p_rel] = head[h];
+					head[h] = p_abs as u32;
+					tok_written += 1;
+					p_rel += 1;
 				}
-				break;
 			}
 
-			let h = hash4(&self.history[p_rel..p_rel + 4]);
-			let best = self.find_best_match(p, p_rel, h, end_abs);
-
-			if best.length >= MIN_MATCH {
-				tokens.push(Token::Match { offset: best.offset, length: best.length as u32 });
-				// Insert every position covered by this match into the chain
-				// so subsequent searches see all potential match starts. A
-				// bounded-insert heuristic (zlib-fast style) was measured to
-				// trade ~1.5% speed for ~0.3% compression; that's the wrong
-				// side of the tradeoff for XEX output where size is king.
-				for i in 0..best.length {
-					let abs = p + i as u64;
-					let rel = (abs - self.base) as usize;
-					if rel + 4 <= self.history.len() {
-						let hh = hash4(&self.history[rel..rel + 4]);
-						self.prev[rel] = self.head[hh];
-						self.head[hh] = abs as u32;
-					}
-				}
-				p += best.length as u64;
-			} else {
-				tokens.push(Token::Literal(self.history[p_rel]));
-				self.prev[p_rel] = self.head[h];
-				self.head[h] = p as u32;
-				p += 1;
+			// Tail literals: the last <4 bytes can't participate in a 4-byte
+			// hash lookup, so emit them as literals.
+			for i in p_rel..history_len {
+				tokens_spare[tok_written] = MaybeUninit::new(Token::Literal(history[i]));
+				tok_written += 1;
 			}
 		}
+
+		// SAFETY:
+		// The loop above wrote `MaybeUninit::new(..)` into indices
+		// `0..tok_written` of `tokens.spare_capacity_mut()`, so those
+		// `tok_written` slots beyond the previous `tokens.len()` are
+		// initialized. All writes went through safe slice indexing on
+		// `tokens_spare`, so any OOB would have panicked before reaching
+		// here. Setting `len = tok_written` therefore exposes only
+		// initialized `Token` values.
+		unsafe { tokens.set_len(tok_written) };
 
 		self.trim_history();
 	}
@@ -174,38 +212,53 @@ impl MatchFinder {
 	/// expensive byte-extension work on the current one. That's a poor
 	/// man's software-prefetch: the memory subsystem gets a head start on
 	/// the random-access chain link while the CPU is busy comparing bytes.
-	fn find_best_match(&self, p_abs: u64, p_rel: usize, hash: usize, end_abs: u64) -> BestMatch {
+	///
+	/// Takes slices rather than `&self` so the caller can hoist the borrow
+	/// once per chunk, letting the compiler prove the slices don't alias and
+	/// drop the per-iteration slice-header reloads that otherwise show up as
+	/// the dominant hotspot on Apple Silicon.
+	fn find_best_match(
+		history: &[u8],
+		head: &[u32],
+		prev: &[u32],
+		base: u64,
+		p_abs: u64,
+		p_rel: usize,
+		hash: usize,
+		end_abs: u64,
+		max_offset: usize,
+	) -> BestMatch {
 		let max_possible = MAX_MATCH.min((end_abs - p_abs) as usize);
 		let mut best = BestMatch { length: 0, offset: 0 };
-		let mut candidate_abs = self.head[hash] as u64;
+		let mut candidate_abs = head[hash] as u64;
 		let mut depth = 0;
 		while depth < MAX_CHAIN_DEPTH && candidate_abs != u32::MAX as u64 {
 			// Reject stale (pre-base) or too-far (out-of-window) entries.
-			if candidate_abs < self.base || candidate_abs >= p_abs {
+			if candidate_abs < base || candidate_abs >= p_abs {
 				break;
 			}
 			let offset = p_abs - candidate_abs;
-			if offset > self.max_offset as u64 || offset == 0 {
+			if offset > max_offset as u64 || offset == 0 {
 				break;
 			}
-			let c_rel = (candidate_abs - self.base) as usize;
+			let c_rel = (candidate_abs - base) as usize;
 
 			// Kick off the fetch for the next chain link up front. By the
 			// time we're done with quick-reject + byte extension below, this
 			// load is (ideally) already served from cache.
-			let next_candidate_abs = self.prev[c_rel] as u64;
+			let next_candidate_abs = prev[c_rel] as u64;
 
 			// Quick-reject: for a candidate to beat the current best, the
 			// byte at `best.length` must already match. Skip scanning entirely
 			// when it doesn't -- this cuts out the ~90% of chain entries that
 			// can't improve our answer, on typical inputs.
-			if best.length > 0 && self.history[c_rel + best.length] != self.history[p_rel + best.length] {
+			if best.length > 0 && history[c_rel + best.length] != history[p_rel + best.length] {
 				candidate_abs = next_candidate_abs;
 				depth += 1;
 				continue;
 			}
 
-			let len = common_prefix_len(&self.history[c_rel..], &self.history[p_rel..], max_possible);
+			let len = common_prefix_len(&history[c_rel..], &history[p_rel..], max_possible);
 			if len > best.length && len >= MIN_MATCH {
 				best = BestMatch { length: len, offset: offset as u32 };
 				if len >= max_possible {
@@ -276,7 +329,7 @@ mod tests {
 			if let Token::Match { offset, length } = t {
 				seen_match = true;
 				assert_eq!(*offset, 4);
-				assert_eq!(*length, 4);
+				assert_eq!(length.get(), 4);
 			}
 		}
 		assert!(seen_match);
@@ -304,10 +357,10 @@ mod tests {
 			match t {
 				Token::Literal(_) => pos += 1,
 				Token::Match { offset, length } => {
-					if *length >= 4 && (*offset as usize) > pos {
+					if length.get() >= 4 && (*offset as usize) > pos {
 						found_cross_chunk = true;
 					}
-					pos += *length as usize;
+					pos += length.get() as usize;
 				}
 			}
 		}
