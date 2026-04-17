@@ -51,6 +51,9 @@ pub struct Xex2Builder {
 	version: Version,
 	base_version: Version,
 	entry_point: Option<VirtualAddress>,
+	/// If `Some(window_size_bytes)`, the builder LZX-compresses `pe` and emits
+	/// a Normal-compressed stream. Otherwise the PE is written uncompressed.
+	compress_window: Option<u32>,
 }
 
 impl Xex2Builder {
@@ -65,7 +68,21 @@ impl Xex2Builder {
 			version: Version::from(0),
 			base_version: Version::from(0),
 			entry_point: None,
+			compress_window: None,
 		}
+	}
+
+	/// Emit an LZX-compressed (Normal) XEX using the default 64 KB window,
+	/// which matches what most shipping XEX files use. Call
+	/// [`Self::compress_with`] to pick a different window size.
+	pub fn compress(self) -> Self {
+		self.compress_with(lzxc::WindowSize::KB64)
+	}
+
+	/// Emit an LZX-compressed (Normal) XEX with an explicit window size.
+	pub fn compress_with(mut self, window: lzxc::WindowSize) -> Self {
+		self.compress_window = Some(window.bytes());
+		self
 	}
 
 	pub fn module_flags(mut self, flags: ModuleFlags) -> Self {
@@ -131,10 +148,21 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	//   - 0xFF:        variable-length (value is a file offset to u32 size + body)
 	//   - other:       (N * 4) bytes (value is a file offset)
 
+	// If compression is requested, compress the PE up front so we can stitch
+	// the first_block_hash into the FileFormatInfo blob. The data region
+	// written later is either `b.pe` (uncompressed) or `stream.data`.
+	let compressed_stream: Option<crate::compress::CompressedStream> = match b.compress_window {
+		Some(window) => Some(crate::compress::compress_normal(&b.pe, window)?),
+		None => None,
+	};
+
 	// Build optional-header data blobs we'll need to place in the file.
 	let exec_info = execution_info_bytes(&b);
 	let import_libs = empty_import_libraries_bytes();
-	let file_format = file_format_info_bytes();
+	let file_format = match &compressed_stream {
+		Some(stream) => crate::compress::file_format_info_blob_normal(EncryptionType::None, stream),
+		None => file_format_info_bytes(),
+	};
 
 	// Compute file layout:
 	//   0x00..0x18: main header
@@ -180,16 +208,19 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// Page descriptors: we need to know image_size = pe.len(). One descriptor
 	// covering the whole image with FLAG_HASHED.
 	let page_size: u32 = if b.image_flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
-	let (descriptors, image_hash) = page_descriptors::generate(&b.pe, page_size, None);
+	let page_descriptors::GeneratedDescriptors { descriptors, image_hash } =
+		page_descriptors::generate(&b.pe, page_size, None);
 
 	// security_info: fixed 0x184 + descriptors*24 bytes.
 	let security_offset = cursor;
 	let security_info_len = 0x184 + descriptors.len() * 24;
 	cursor += security_info_len;
 
-	// PE data at page-aligned offset.
+	// PE data at page-aligned offset. When compressed, we write the
+	// compressed stream in place of `b.pe`.
+	let data_region: &[u8] = compressed_stream.as_ref().map_or(b.pe.as_slice(), |s| s.data.as_slice());
 	let data_offset = align_up(cursor, PAGE_ALIGN);
-	let total_size = data_offset + b.pe.len();
+	let total_size = data_offset + data_region.len();
 
 	// Assemble the file.
 	let mut out = vec![0u8; total_size];
@@ -228,7 +259,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	BigEndian::write_u32(&mut out[ii_start..ii_start + 0x04], 0x174); // info_size
 	BigEndian::write_u32(&mut out[ii_start + 0x04..ii_start + 0x08], b.image_flags.bits()); // image_flags
 	BigEndian::write_u32(&mut out[ii_start + 0x08..ii_start + 0x0C], b.load_address.0); // load_address
-	out[ii_start + 0x0C..ii_start + 0x20].copy_from_slice(&image_hash);
+	out[ii_start + 0x0C..ii_start + 0x20].copy_from_slice(&*image_hash);
 	// import_table_count = 0 (we emit an empty import table)
 	// import_table_hash left zero
 	// media_id left zero
@@ -248,15 +279,15 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 		out[off..off + 24].copy_from_slice(&d.to_bytes());
 	}
 
-	// PE data.
-	out[data_offset..data_offset + b.pe.len()].copy_from_slice(&b.pe);
+	// PE data (or compressed stream, selected above).
+	out[data_offset..data_offset + data_region.len()].copy_from_slice(data_region);
 
 	// Compute header_hash now that the whole pre-PE region is finalized.
 	// We need a Xex2Header value to call compute_header_hash -- re-parse.
 	let parsed = crate::header::Xex2Header::parse(&out[..])?;
 	let parsed_sec = crate::header::SecurityInfo::parse(&out[..], parsed.security_offset as usize)?;
 	let header_hash = hashes::compute_header_hash(&out, &parsed, &parsed_sec);
-	out[ii_start + 0x5C..ii_start + 0x70].copy_from_slice(&header_hash);
+	out[ii_start + 0x5C..ii_start + 0x70].copy_from_slice(&*header_hash);
 
 	// RotSumSha + sign.
 	let image_info = &out[ii_start..ii_start + 0x74];

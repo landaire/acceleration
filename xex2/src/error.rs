@@ -18,7 +18,6 @@ pub enum Xex2Error {
 	HashMismatch { block_index: usize },
 	SigningFailed,
 	PatchOutOfBounds { offset: u64, len: usize, buf_len: usize },
-	PatchHasSplice,
 	PatchOverlap,
 	RebuildTransformNotImplemented,
 	Io(std::io::Error),
@@ -53,7 +52,6 @@ impl fmt::Display for Xex2Error {
 			Self::PatchOutOfBounds { offset, len, buf_len } => {
 				write!(f, "patch write at {:#x}+{:#x} exceeds buffer size {:#x}", offset, len, buf_len)
 			}
-			Self::PatchHasSplice => write!(f, "patch has Splice op but target requires length preservation"),
 			Self::PatchOverlap => write!(f, "patch has overlapping writes"),
 			Self::RebuildTransformNotImplemented => {
 				write!(f, "rebuild transform (compression / encryption / machine / PE replacement) is not implemented")

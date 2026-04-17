@@ -151,9 +151,7 @@ fn extract_multiple_normal_compression() {
 #[test]
 fn patch_resign_verifies_with_devkit_key() {
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
-	let mut limits = xex2::writer::RemoveLimits::default();
-	limits.region = true;
-	limits.media = true;
+	let limits = xex2::writer::RemoveLimits { region: true, media: true, ..Default::default() };
 
 	let patched_data = xex.modify(&data, &limits).unwrap();
 
@@ -178,10 +176,7 @@ fn patch_resign_verifies_with_devkit_key() {
 
 #[test]
 fn rebuild_fast_path_matches_modify() {
-	let mut limits = xex2::writer::RemoveLimits::default();
-	limits.region = true;
-	limits.media = true;
-	limits.zero_media_id = true;
+	let limits = xex2::writer::RemoveLimits { region: true, media: true, zero_media_id: true, ..Default::default() };
 
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
 	let via_modify = xex.modify(&data, &limits).unwrap();
@@ -266,8 +261,7 @@ fn bounding_path_clears_module_flag() {
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
 	let original = xex.header.module_flags;
 
-	let mut limits = xex2::writer::RemoveLimits::default();
-	limits.bounding_path = true;
+	let limits = xex2::writer::RemoveLimits { bounding_path: true, ..Default::default() };
 	let patched = xex.modify(&data, &limits).unwrap();
 
 	let new_flags = u32::from_be_bytes(patched[0x04..0x08].try_into().unwrap());
@@ -283,8 +277,7 @@ fn device_id_clears_module_flag() {
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
 	let original = xex.header.module_flags;
 
-	let mut limits = xex2::writer::RemoveLimits::default();
-	limits.device_id = true;
+	let limits = xex2::writer::RemoveLimits { device_id: true, ..Default::default() };
 	let patched = xex.modify(&data, &limits).unwrap();
 
 	let new_flags = u32::from_be_bytes(patched[0x04..0x08].try_into().unwrap());
@@ -299,10 +292,12 @@ fn image_flag_limits_re_sign() {
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
 	// Combine with `region` to guarantee image_info changes and thus a re-sign,
 	// regardless of whether this XEX has the keyvault bits originally set.
-	let mut limits = xex2::writer::RemoveLimits::default();
-	limits.region = true;
-	limits.keyvault_privileges = true;
-	limits.signed_keyvault_only = true;
+	let limits = xex2::writer::RemoveLimits {
+		region: true,
+		keyvault_privileges: true,
+		signed_keyvault_only: true,
+		..Default::default()
+	};
 
 	let patched = xex.modify(&data, &limits).unwrap();
 
@@ -354,8 +349,7 @@ fn console_id_zeroes_serial_list_and_reverifies() {
 		{
 			continue;
 		}
-		let mut limits = xex2::writer::RemoveLimits::default();
-		limits.console_id = true;
+		let limits = xex2::writer::RemoveLimits { console_id: true, ..Default::default() };
 		let patched = xex.modify(&data, &limits).unwrap();
 		verify_devkit_signature(&patched);
 		verify_header_hash(&patched);
@@ -373,8 +367,7 @@ fn dates_limit_sets_max_filetime_and_reverifies() {
 	};
 	let off = span.offset.as_usize();
 
-	let mut limits = xex2::writer::RemoveLimits::default();
-	limits.dates = true;
+	let limits = xex2::writer::RemoveLimits { dates: true, ..Default::default() };
 	let patched = xex.modify(&data, &limits).unwrap();
 
 	assert_eq!(&patched[off..off + 8], &[0u8; 8], "not_before should be 0");
@@ -388,8 +381,7 @@ fn dates_limit_sets_max_filetime_and_reverifies() {
 #[test]
 fn library_versions_zeroes_version_min_and_reverifies() {
 	let (data, xex) = load_xex("haloreach-powerhouse.xex");
-	let mut limits = xex2::writer::RemoveLimits::default();
-	limits.library_versions = true;
+	let limits = xex2::writer::RemoveLimits { library_versions: true, ..Default::default() };
 	let patched = xex.modify(&data, &limits).unwrap();
 
 	// Re-parse and confirm every library's version_min is 0.
@@ -534,36 +526,39 @@ fn setting_target_matching_current_state_is_noop() {
 }
 
 #[test]
-fn replace_pe_requires_uncompressed_source() {
-	// afplayer.xex is basic-compressed; replace_pe should error.
+fn replace_pe_rejects_basic_compression() {
+	// Basic-compressed sources aren't handled by the full rebuild path yet.
 	let (data, xex) = load_xex("afplayer.xex");
 	let mut sink = Vec::new();
 	let mut pe = vec![0u8; 1024];
 	pe[0] = b'M';
 	pe[1] = b'Z';
 	let result = xex.rebuild(&data).replace_pe(pe).write_to(&mut sink);
-	assert!(result.is_err(), "replace_pe on compressed XEX should error");
+	assert!(result.is_err(), "replace_pe on Basic-compressed XEX isn't supported yet");
 }
 
 #[test]
-fn replace_pe_rewrites_data_and_descriptors() {
-	// xshell twi.xex is normal-compressed; first decompress, then replace PE.
+fn replace_pe_on_normal_compressed_source() {
+	// xshell twi.xex is Normal-compressed. With the full-rebuild path we can
+	// decompress under the hood, swap the PE, and recompress transparently.
 	let (data, xex) = load_xex("xshell twi.xex");
+	let image_size = xex.security_info.image_size as usize;
 
-	// Step 1: decrypt+decompress to produce an uncompressed version we can edit.
-	let mut decompressed = Vec::new();
-	xex.rebuild(&data)
-		.target_compression(xex2::writer::TargetCompression::Uncompressed)
-		.write_to(&mut decompressed)
-		.ok(); // If compression transform isn't implemented, skip this test.
+	// Craft a replacement PE that matches the original image_size (page
+	// descriptors cover the decompressed bytes).
+	let mut pe = vec![0u8; image_size];
+	pe[0] = b'M';
+	pe[1] = b'Z';
+	for (i, b) in pe.iter_mut().enumerate().skip(2) {
+		*b = ((i * 17) & 0xFF) as u8;
+	}
 
-	// We don't have uncompressed transform yet, so just construct a minimal
-	// uncompressed fixture inline by using afplayer's security layout and
-	// verifying replace_pe on a basic-compressed file errors cleanly.
-	let _ = decompressed;
+	let mut sink = Vec::new();
+	xex.rebuild(&data).replace_pe(pe.clone()).write_to(&mut sink).unwrap();
 
-	// End-to-end replace_pe verification against a real uncompressed XEX is
-	// deferred until we have a fixture or an uncompressed-compression transform.
+	let rebuilt = Xex2::parse(&sink).unwrap();
+	let extracted = rebuilt.extract_basefile(&sink).unwrap();
+	assert_eq!(extracted, pe, "replace_pe on Normal-compressed source must round-trip the replacement");
 }
 
 #[test]
@@ -606,10 +601,100 @@ fn builder_produces_parseable_xex() {
 }
 
 #[test]
-fn compression_transform_not_implemented() {
+fn builder_produces_compressed_xex() {
+	use xex2::builder::Xex2Builder;
+
+	// 128 KB PE so we get multiple LZX chunks.
+	let mut pe = vec![0u8; 128 * 1024];
+	pe[0] = b'M';
+	pe[1] = b'Z';
+	for (i, b) in pe.iter_mut().enumerate().skip(64) {
+		*b = (i & 0xFF) as u8;
+	}
+
+	let bytes = Xex2Builder::new(pe.clone())
+		.title_id(xenon_types::TitleId(0x4D530914))
+		.entry_point(xenon_types::VirtualAddress(0x82001000))
+		.load_address(xenon_types::VirtualAddress(0x82000000))
+		.compress()
+		.build()
+		.unwrap();
+
+	let parsed = xex2::Xex2::parse(&bytes).unwrap();
+	let fmt = parsed.header.file_format_info().unwrap();
+	assert_eq!(fmt.compression_type, CompressionType::Normal);
+	assert_eq!(fmt.window_size, Some(0x10000));
+	assert_eq!(parsed.security_info.image_size as usize, pe.len());
+
+	let extracted = parsed.extract_basefile(&bytes).unwrap();
+	assert_eq!(extracted, pe, "compressed builder output must round-trip the PE");
+}
+
+#[test]
+fn basic_compression_transform_not_implemented() {
+	// afplayer.xex is Basic-compressed. Basic ↔ anything isn't wired up yet;
+	// confirm we still bail cleanly rather than produce garbage.
 	let (data, xex) = load_xex("afplayer.xex");
 	let mut sink = Vec::new();
 	let result =
 		xex.rebuild(&data).target_compression(xex2::writer::TargetCompression::Uncompressed).write_to(&mut sink);
-	assert!(result.is_err(), "compression transforms are not yet implemented");
+	assert!(result.is_err(), "basic → uncompressed transform shouldn't be supported yet");
+}
+
+#[test]
+fn rebuild_decompresses_normal_xex() {
+	// xshell twi.xex is Normal-compressed, unencrypted. Rebuild it as
+	// uncompressed and verify the extracted PE matches direct extraction.
+	let (data, xex) = load_xex("xshell twi.xex");
+	assert_eq!(xex.header.file_format_info().unwrap().compression_type, CompressionType::Normal);
+
+	let original_pe = xex.extract_basefile(&data).unwrap();
+
+	let mut sink = Vec::new();
+	Xex2::parse(&data)
+		.unwrap()
+		.rebuild(&data)
+		.target_compression(xex2::writer::TargetCompression::Uncompressed)
+		.write_to(&mut sink)
+		.unwrap();
+
+	let rebuilt = Xex2::parse(&sink).unwrap();
+	let fmt = rebuilt.header.file_format_info().unwrap();
+	assert_eq!(fmt.compression_type, CompressionType::None);
+	let rebuilt_pe = rebuilt.extract_basefile(&sink).unwrap();
+	assert_eq!(rebuilt_pe, original_pe, "uncompressed rebuild must round-trip the PE");
+}
+
+#[test]
+fn rebuild_compresses_uncompressed_xex() {
+	// Start from a Normal XEX → decompress → compress. The compressed
+	// rebuild must round-trip back to the same PE bytes.
+	let (data, xex) = load_xex("xshell twi.xex");
+	let original_pe = xex.extract_basefile(&data).unwrap();
+
+	// Step 1: decompress the source.
+	let mut decompressed = Vec::new();
+	Xex2::parse(&data)
+		.unwrap()
+		.rebuild(&data)
+		.target_compression(xex2::writer::TargetCompression::Uncompressed)
+		.write_to(&mut decompressed)
+		.unwrap();
+
+	// Step 2: recompress the now-uncompressed output.
+	let uncompressed = Xex2::parse(&decompressed).unwrap();
+	let mut recompressed = Vec::new();
+	Xex2::parse(&decompressed)
+		.unwrap()
+		.rebuild(&decompressed)
+		.target_compression(xex2::writer::TargetCompression::Normal)
+		.write_to(&mut recompressed)
+		.unwrap();
+	let _ = uncompressed;
+
+	let rebuilt = Xex2::parse(&recompressed).unwrap();
+	let fmt = rebuilt.header.file_format_info().unwrap();
+	assert_eq!(fmt.compression_type, CompressionType::Normal);
+	let rebuilt_pe = rebuilt.extract_basefile(&recompressed).unwrap();
+	assert_eq!(rebuilt_pe, original_pe, "compressed rebuild must round-trip the PE");
 }

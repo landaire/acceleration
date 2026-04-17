@@ -458,15 +458,15 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 		sb.push_record(["Image Flags", &format!("{:#010x}", security.image_info.image_flags)]);
 		sb.push_record(["Page Desc Count", &security.page_descriptor_count.to_string()]);
 		sb.push_record(["File Key", &hex_str(&security.image_info.file_key.0)]);
-		sb.push_record(["Image Hash", &hex_str(&security.image_info.image_hash)]);
-		sb.push_record(["Header Hash", &hex_str(&security.image_info.header_hash)]);
+		sb.push_record(["Image Hash", &hex_str(&*security.image_info.image_hash)]);
+		sb.push_record(["Header Hash", &hex_str(&*security.image_info.header_hash)]);
 		sb.push_record(["Import Count", &security.image_info.import_table_count.to_string()]);
 
 		if let Some(key) = header.lan_key() {
 			sb.push_record(["LAN Key", &hex_str(&key)]);
 		}
 		if let Some(device) = header.device_id() {
-			sb.push_record(["Device ID", &hex_str(&device)]);
+			sb.push_record(["Device ID", &hex_str(&*device)]);
 		}
 
 		let mut st = sb.build();

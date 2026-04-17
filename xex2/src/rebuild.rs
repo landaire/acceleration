@@ -125,40 +125,109 @@ impl<'a> Rebuilder<'a> {
 
 	/// True iff this rebuild is supported by the current implementation.
 	///
-	/// Compression changes (other than no-op ones where the target already
-	/// matches the current XEX) are not yet implemented. PE replacement works
-	/// but requires the source to be uncompressed.
+	/// `Basic` compression transforms aren't implemented; everything else is.
 	pub fn is_supported(&self) -> bool {
-		let compression_changes = self.compression.is_some_and(|c| {
-			// A no-op if the current XEX already matches.
-			self.xex.header.file_format_info().is_ok_and(|ff| {
-				!matches!(
-					(ff.compression_type, c),
-					(crate::header::CompressionType::None, TargetCompression::Uncompressed)
-						| (crate::header::CompressionType::Basic, TargetCompression::Basic)
-						| (crate::header::CompressionType::Normal, TargetCompression::Normal)
-				)
-			})
-		});
-		!compression_changes
-	}
-
-	/// Produce the [`Patch`] representing this rebuild, if supported.
-	pub fn as_patch(&self) -> Result<Option<Patch>> {
-		if self.is_supported() {
-			Ok(Some(crate::writer::plan_edits(&self.xex, self.source, &self.plan)?))
-		} else {
-			Ok(None)
+		// Only Basic is currently unsupported -- either as a target or if the
+		// source is Basic-compressed and the target differs.
+		if matches!(self.compression, Some(TargetCompression::Basic)) {
+			return false;
 		}
+		if let Ok(ff) = self.xex.header.file_format_info() {
+			if ff.compression_type == crate::header::CompressionType::Basic
+				&& self.compression.is_some_and(|c| c != TargetCompression::Basic)
+			{
+				return false;
+			}
+			// PE replacement on Basic-compressed sources also isn't handled.
+			if ff.compression_type == crate::header::CompressionType::Basic && self.plan.replace_pe.is_some() {
+				return false;
+			}
+		}
+		true
 	}
 
-	/// Stream the rebuilt XEX to `sink`. Compression changes (other than
-	/// no-op ones) and PE replacement aren't implemented yet.
+	/// Produce the [`Patch`] representing this rebuild, if supported and
+	/// length-preserving. Compression changes require a full rebuild and
+	/// return `Ok(None)`; callers should use [`Self::write_to`] instead.
+	pub fn as_patch(&self) -> Result<Option<Patch>> {
+		if !self.is_supported() {
+			return Ok(None);
+		}
+		if self.needs_full_rebuild() {
+			return Ok(None);
+		}
+		Ok(Some(crate::writer::plan_edits(&self.xex, self.source, &self.plan)?))
+	}
+
+	/// Stream the rebuilt XEX to `sink`. For length-preserving edits this
+	/// streams the source through a [`Patch`]; compression changes (or PE
+	/// replacement on a compressed source) trigger a full assemble-from-parts
+	/// path in [`crate::assemble::rebuild_with_compression`], after which any
+	/// remaining per-field edits run through the normal patch path.
 	pub fn write_to<W: Write>(self, sink: &mut W) -> Result<()> {
 		if !self.is_supported() {
 			return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
 		}
+		if self.needs_full_rebuild() {
+			let bytes = self.full_rebuild()?;
+			sink.write_all(&bytes).map_err(|e| Xex2Error::Io(e).into_report())?;
+			return Ok(());
+		}
 		let patch = crate::writer::plan_edits(&self.xex, self.source, &self.plan)?;
 		patch.stream_to(self.source, sink)
+	}
+
+	fn needs_full_rebuild(&self) -> bool {
+		let Ok(ff) = self.xex.header.file_format_info() else { return false };
+		let current = ff.compression_type;
+		let target_changes_compression = self.compression.is_some_and(|c| {
+			!matches!(
+				(current, c),
+				(crate::header::CompressionType::None, TargetCompression::Uncompressed)
+					| (crate::header::CompressionType::Basic, TargetCompression::Basic)
+					| (crate::header::CompressionType::Normal, TargetCompression::Normal)
+			)
+		});
+		// PE replacement on a compressed source has to go through the full
+		// path: the source's data region holds compressed bytes we need to
+		// rewrite end-to-end (either by re-compressing the replacement or by
+		// switching the stream to None).
+		let pe_needs_decompress_flow =
+			self.plan.replace_pe.is_some() && current != crate::header::CompressionType::None;
+		target_changes_compression || pe_needs_decompress_flow
+	}
+
+	fn full_rebuild(mut self) -> Result<Vec<u8>> {
+		let current = self.xex.header.file_format_info().map(|ff| ff.compression_type).unwrap_or(
+			// Fallback -- the `is_supported` gate already checked file_format_info parses.
+			crate::header::CompressionType::None,
+		);
+		// Resolve target compression: the caller's request wins, else keep current.
+		let target = self.compression.unwrap_or(match current {
+			crate::header::CompressionType::None => TargetCompression::Uncompressed,
+			crate::header::CompressionType::Normal => TargetCompression::Normal,
+			crate::header::CompressionType::Basic => TargetCompression::Basic,
+			crate::header::CompressionType::Delta => {
+				return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
+			}
+		});
+
+		// Move the PE replacement into the assembler (no clone). `self.plan`
+		// is left with `replace_pe = None`, so the follow-up `plan_edits` pass
+		// naturally skips the PE-replacement branch.
+		let pe_replacement = self.plan.replace_pe.take();
+		let assembled =
+			crate::assemble::rebuild_with_compression(&self.xex, self.source, target, pe_replacement)?;
+
+		// Apply remaining per-field edits (limits, flags, encryption, etc.)
+		// to the freshly-assembled file via the patch path.
+		if self.plan.is_empty() {
+			return Ok(assembled);
+		}
+		let parsed = crate::Xex2::parse(&assembled)?;
+		let patch = crate::writer::plan_edits(&parsed, &assembled, &self.plan)?;
+		let mut buf = assembled;
+		patch.apply_to_vec(&mut buf)?;
+		Ok(buf)
 	}
 }

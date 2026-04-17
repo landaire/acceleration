@@ -17,6 +17,7 @@ bitflags = { workspace = true }
 sha-1 = { workspace = true }
 num_enum = { workspace = true }
 lzxd = "0.2"
+lzxc = { version = "0.1", path = "../lzxc" }
 rootcause = "0.12"
 xecrypt = { version = "0.1", path = "../xecrypt" }
 xenon_types = { version = "0.1", path = "../xenon_types" }

@@ -219,7 +219,7 @@ impl DateRangeEdit {
 /// [`RemoveLimits`] lowers into this via [`From`]; [`crate::rebuild::Rebuilder`]
 /// exposes per-field setters that also populate it directly.
 #[derive(Debug, Default, Clone)]
-pub struct EditPlan {
+pub(crate) struct EditPlan {
 	pub limits: RemoveLimits,
 	pub module_flags: Option<ModuleFlags>,
 	pub image_flags: Option<ImageFlags>,
@@ -274,38 +274,6 @@ impl From<&RemoveLimits> for EditPlan {
 	}
 }
 
-#[cfg(test)]
-mod date_range_tests {
-	use super::*;
-
-	#[test]
-	fn unlimited_window() {
-		let r = DateRangeEdit::unlimited();
-		assert_eq!(r.not_before, 0);
-		assert_eq!(r.not_after, u64::MAX);
-	}
-
-	#[cfg(feature = "jiff")]
-	#[test]
-	fn from_timestamps_round_trips_through_filetime() {
-		let nb = jiff::Timestamp::from_second(1_700_000_000).unwrap();
-		let na = jiff::Timestamp::from_second(1_800_000_000).unwrap();
-		let r = DateRangeEdit::from_timestamps(nb, na).unwrap();
-		let parsed_nb = xenon_types::filetime_to_timestamp(r.not_before).unwrap();
-		let parsed_na = xenon_types::filetime_to_timestamp(r.not_after).unwrap();
-		assert_eq!(parsed_nb.as_second(), 1_700_000_000);
-		assert_eq!(parsed_na.as_second(), 1_800_000_000);
-	}
-
-	#[cfg(feature = "jiff")]
-	#[test]
-	fn from_timestamps_rejects_pre_unix_epoch() {
-		let nb = jiff::Timestamp::from_second(-1).unwrap();
-		let na = jiff::Timestamp::from_second(100).unwrap();
-		assert!(DateRangeEdit::from_timestamps(nb, na).is_none());
-	}
-}
-
 /// Build a [`Patch`] describing the requested edits plus re-hashing/re-signing.
 ///
 /// Pure function -- reads `source` only. Covers every edit the writer knows
@@ -315,7 +283,7 @@ mod date_range_tests {
 /// the header-hash coverage region trigger a `header_hash` recomputation;
 /// import-table edits also recompute `import_table_hash` and the digest
 /// chain.
-pub fn plan_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<Patch> {
+pub(crate) fn plan_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<Patch> {
 	let mut patch = Patch::new();
 	let sec: FileOffset = xex.header.security_offset.into();
 
@@ -474,7 +442,7 @@ fn apply_field_overrides(plan: &EditPlan, patch: &mut Patch, editor: &mut ImageI
 		editor.overwrite(patch, ImageInfoOffset::MEDIA_ID, id.to_vec());
 	}
 	if let Some(k) = plan.file_key {
-		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, k.0.to_vec());
+		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, k.to_vec());
 	}
 	if let Some(addr) = plan.load_address {
 		editor.overwrite(patch, ImageInfoOffset::LOAD_ADDRESS, addr.0.to_be_bytes().to_vec());
@@ -559,7 +527,8 @@ fn apply_pe_replacement(
 	let page_size =
 		if xex.security_info.image_info.image_flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
 	let template = read_page_descriptor_template(source, editor.sec, xex.security_info.page_descriptor_count);
-	let (descriptors, image_hash) = crate::page_descriptors::generate(new_pe, page_size, template.as_deref());
+	let crate::page_descriptors::GeneratedDescriptors { descriptors, image_hash } =
+		crate::page_descriptors::generate(new_pe, page_size, template.as_deref());
 
 	// Stage the new image_hash.
 	editor.overwrite(patch, ImageInfoOffset::IMAGE_HASH, image_hash.to_vec());
@@ -582,14 +551,18 @@ fn apply_pe_replacement(
 	Ok(())
 }
 
-fn read_page_descriptor_template(source: &[u8], sec: FileOffset, count: u32) -> Option<Vec<(u32, u32)>> {
+fn read_page_descriptor_template(
+	source: &[u8],
+	sec: FileOffset,
+	count: u32,
+) -> Option<Vec<crate::page_descriptors::DescriptorSlot>> {
 	let base = (sec + SecurityOffset::PAGE_DESCRIPTORS.0 as usize).as_usize();
 	let mut out = Vec::with_capacity(count as usize);
 	for i in 0..count as usize {
 		let off = base + i * 24;
 		let bytes: &[u8; 4] = source.get(off..off + 4)?.try_into().ok()?;
 		let info = u32::from_be_bytes(*bytes);
-		out.push((info >> 4, info & 0xF));
+		out.push(crate::page_descriptors::DescriptorSlot { page_count: info >> 4, flags: info & 0xF });
 	}
 	Some(out)
 }
@@ -676,7 +649,7 @@ fn apply_encryption_transforms(
 	{
 		let master = master_key_for(resolved_machine);
 		let new_file_key = crate::crypto::wrap_file_key(&session_key, &master);
-		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, new_file_key.0.to_vec());
+		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, new_file_key.to_vec());
 	}
 
 	if let Some(target) = plan.target_encryption {
@@ -697,7 +670,7 @@ fn apply_encryption_transforms(
 				patch.write(data_off.get(), ciphertext);
 				let master = master_key_for(resolved_machine);
 				let wrapped = crate::crypto::wrap_file_key(&session_key, &master);
-				editor.overwrite(patch, ImageInfoOffset::FILE_KEY, wrapped.0.to_vec());
+				editor.overwrite(patch, ImageInfoOffset::FILE_KEY, wrapped.to_vec());
 				stage_file_format_encryption(xex, source, EncryptionType::Normal, blob_edits)?;
 			}
 			// Already in target state.
@@ -774,4 +747,36 @@ fn stage_file_format_encryption(
 		blob_edits.push(BlobEdit { offset: span.offset, bytes: blob });
 	}
 	Ok(())
+}
+
+#[cfg(test)]
+mod date_range_tests {
+	use super::*;
+
+	#[test]
+	fn unlimited_window() {
+		let r = DateRangeEdit::unlimited();
+		assert_eq!(r.not_before, 0);
+		assert_eq!(r.not_after, u64::MAX);
+	}
+
+	#[cfg(feature = "jiff")]
+	#[test]
+	fn from_timestamps_round_trips_through_filetime() {
+		let nb = jiff::Timestamp::from_second(1_700_000_000).unwrap();
+		let na = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+		let r = DateRangeEdit::from_timestamps(nb, na).unwrap();
+		let parsed_nb = xenon_types::filetime_to_timestamp(r.not_before).unwrap();
+		let parsed_na = xenon_types::filetime_to_timestamp(r.not_after).unwrap();
+		assert_eq!(parsed_nb.as_second(), 1_700_000_000);
+		assert_eq!(parsed_na.as_second(), 1_800_000_000);
+	}
+
+	#[cfg(feature = "jiff")]
+	#[test]
+	fn from_timestamps_rejects_pre_unix_epoch() {
+		let nb = jiff::Timestamp::from_second(-1).unwrap();
+		let na = jiff::Timestamp::from_second(100).unwrap();
+		assert!(DateRangeEdit::from_timestamps(nb, na).is_none());
+	}
 }

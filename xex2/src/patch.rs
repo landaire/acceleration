@@ -1,14 +1,14 @@
 //! Binary patches for describing modifications to an XEX file.
 //!
-//! A [`Patch`] is a list of byte-level edits: [`Write`][PatchOp::Write] replaces
-//! a same-length region, [`Splice`][PatchOp::Splice] replaces a region with
-//! bytes of a different length. Patches are storage-agnostic -- the same
-//! `Patch` can be applied to a `Vec<u8>`, a slice, or streamed through any
-//! `Write` sink alongside the source bytes.
+//! A [`Patch`] is a list of length-preserving byte writes (each
+//! [`PatchOp::Write`] overwrites `bytes.len()` bytes at a fixed offset).
+//! Patches are storage-agnostic: the same patch can be applied to a
+//! `Vec<u8>`, a slice, or streamed through any `Write` sink alongside the
+//! source bytes.
 //!
-//! Patches are the small-edit branch of the modification story. Full rebuilds
-//! (recompression, re-encryption, replacing the inner PE) go through
-//! [`crate::rebuild::Rebuilder`] instead.
+//! Patches are the small-edit branch of the modification story. Full
+//! rebuilds (recompression, re-encryption, replacing the inner PE) go
+//! through [`crate::rebuild::Rebuilder`] and produce a whole new file.
 
 use std::io::Write;
 
@@ -16,23 +16,11 @@ use crate::error::Result;
 use crate::error::Xex2Error;
 use rootcause::IntoReport;
 
-/// A single byte-level edit.
+/// A single byte-level edit. Always length-preserving.
 #[derive(Debug, Clone)]
-pub enum PatchOp {
-	/// Overwrite `bytes.len()` bytes starting at `offset`. Length-preserving.
-	Write { offset: u64, bytes: Vec<u8> },
-	/// Remove `remove_len` bytes at `offset`, insert `insert` in their place.
-	/// Shifts everything after.
-	Splice { offset: u64, remove_len: u64, insert: Vec<u8> },
-}
-
-impl PatchOp {
-	fn offset(&self) -> u64 {
-		match self {
-			PatchOp::Write { offset, .. } => *offset,
-			PatchOp::Splice { offset, .. } => *offset,
-		}
-	}
+pub(crate) struct PatchOp {
+	pub offset: u64,
+	pub bytes: Vec<u8>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -41,7 +29,7 @@ pub struct Patch {
 }
 
 impl Patch {
-	pub fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self::default()
 	}
 
@@ -49,95 +37,51 @@ impl Patch {
 		self.ops.is_empty()
 	}
 
-	pub fn ops(&self) -> &[PatchOp] {
-		&self.ops
+	pub(crate) fn write(&mut self, offset: u64, bytes: impl Into<Vec<u8>>) {
+		self.ops.push(PatchOp { offset, bytes: bytes.into() });
 	}
 
-	pub fn write(&mut self, offset: u64, bytes: impl Into<Vec<u8>>) {
-		self.ops.push(PatchOp::Write { offset, bytes: bytes.into() });
-	}
-
-	pub fn splice(&mut self, offset: u64, remove_len: u64, insert: impl Into<Vec<u8>>) {
-		self.ops.push(PatchOp::Splice { offset, remove_len, insert: insert.into() });
-	}
-
-	/// Apply all ops (Write + Splice) to an owned buffer.
+	/// Apply the patch to an owned buffer.
 	pub fn apply_to_vec(&self, buf: &mut Vec<u8>) -> Result<()> {
-		let mut sorted = self.sorted_ops()?;
-		// Apply in reverse offset order so earlier splices don't shift later offsets.
-		sorted.sort_by_key(|op| std::cmp::Reverse(op.offset()));
-		for op in sorted {
-			match op {
-				PatchOp::Write { offset, bytes } => {
-					let start = offset as usize;
-					let end = start + bytes.len();
-					if end > buf.len() {
-						return Err(
-							Xex2Error::PatchOutOfBounds { offset, len: bytes.len(), buf_len: buf.len() }.into_report()
-						);
-					}
-					buf[start..end].copy_from_slice(&bytes);
-				}
-				PatchOp::Splice { offset, remove_len, insert } => {
-					let start = offset as usize;
-					let end = start + remove_len as usize;
-					if end > buf.len() {
-						return Err(Xex2Error::PatchOutOfBounds {
-							offset,
-							len: remove_len as usize,
-							buf_len: buf.len(),
-						}
-						.into_report());
-					}
-					buf.splice(start..end, insert.into_iter());
-				}
-			}
-		}
-		Ok(())
+		self.apply_to_slice(buf.as_mut_slice())
 	}
 
-	/// Apply Write ops to a fixed-size slice. Errors on Splice.
+	/// Apply the patch to a fixed-size slice.
 	pub fn apply_to_slice(&self, buf: &mut [u8]) -> Result<()> {
 		for op in &self.ops {
-			match op {
-				PatchOp::Write { offset, bytes } => {
-					let start = *offset as usize;
-					let end = start + bytes.len();
-					if end > buf.len() {
-						return Err(Xex2Error::PatchOutOfBounds {
-							offset: *offset,
-							len: bytes.len(),
-							buf_len: buf.len(),
-						}
-						.into_report());
-					}
-					buf[start..end].copy_from_slice(bytes);
+			let start = op.offset as usize;
+			let end = start + op.bytes.len();
+			if end > buf.len() {
+				return Err(Xex2Error::PatchOutOfBounds {
+					offset: op.offset,
+					len: op.bytes.len(),
+					buf_len: buf.len(),
 				}
-				PatchOp::Splice { .. } => {
-					return Err(Xex2Error::PatchHasSplice.into_report());
-				}
+				.into_report());
 			}
+			buf[start..end].copy_from_slice(&op.bytes);
 		}
 		Ok(())
 	}
 
-	/// Stream `source` to `sink` in one forward pass, substituting bytes from
-	/// Write ops as they pass under the cursor. Length-preserving only --
-	/// errors on Splice.
+	/// Stream `source` to `sink` in one forward pass, substituting bytes
+	/// from the patch as they pass under the cursor.
 	pub fn stream_to<W: Write>(&self, source: &[u8], sink: &mut W) -> Result<()> {
-		let ops = self.sorted_writes_only()?;
+		let ops = self.sorted_non_overlapping()?;
 		let mut cursor = 0usize;
-		for (offset, bytes) in &ops {
-			let start = *offset as usize;
-			let end = start + bytes.len();
+		for op in &ops {
+			let start = op.offset as usize;
+			let end = start + op.bytes.len();
 			if end > source.len() {
-				return Err(Xex2Error::PatchOutOfBounds { offset: *offset, len: bytes.len(), buf_len: source.len() }
-					.into_report());
+				return Err(
+					Xex2Error::PatchOutOfBounds { offset: op.offset, len: op.bytes.len(), buf_len: source.len() }
+						.into_report(),
+				);
 			}
 			if cursor < start {
 				sink.write_all(&source[cursor..start]).map_err(|e| Xex2Error::Io(e).into_report())?;
 			}
-			sink.write_all(bytes).map_err(|e| Xex2Error::Io(e).into_report())?;
+			sink.write_all(&op.bytes).map_err(|e| Xex2Error::Io(e).into_report())?;
 			cursor = end;
 		}
 		if cursor < source.len() {
@@ -146,27 +90,13 @@ impl Patch {
 		Ok(())
 	}
 
-	fn sorted_ops(&self) -> Result<Vec<PatchOp>> {
-		let mut sorted = self.ops.clone();
-		sorted.sort_by_key(|op| op.offset());
-		Ok(sorted)
-	}
-
-	fn sorted_writes_only(&self) -> Result<Vec<(u64, &[u8])>> {
-		let mut ops: Vec<(u64, &[u8])> = Vec::with_capacity(self.ops.len());
-		for op in &self.ops {
-			match op {
-				PatchOp::Write { offset, bytes } => ops.push((*offset, bytes.as_slice())),
-				PatchOp::Splice { .. } => {
-					return Err(Xex2Error::PatchHasSplice.into_report());
-				}
-			}
-		}
-		ops.sort_by_key(|(o, _)| *o);
+	fn sorted_non_overlapping(&self) -> Result<Vec<&PatchOp>> {
+		let mut ops: Vec<&PatchOp> = self.ops.iter().collect();
+		ops.sort_by_key(|op| op.offset);
 		for pair in ops.windows(2) {
-			let (a_off, a_bytes) = &pair[0];
-			let (b_off, _) = &pair[1];
-			if a_off + a_bytes.len() as u64 > *b_off {
+			let a = pair[0];
+			let b = pair[1];
+			if a.offset + a.bytes.len() as u64 > b.offset {
 				return Err(Xex2Error::PatchOverlap.into_report());
 			}
 		}
@@ -185,15 +115,6 @@ mod tests {
 		p.write(2, vec![0xAA, 0xBB]);
 		p.apply_to_vec(&mut buf).unwrap();
 		assert_eq!(buf, vec![0, 0, 0xAA, 0xBB, 0, 0, 0, 0]);
-	}
-
-	#[test]
-	fn apply_to_vec_splice_grows() {
-		let mut buf = vec![1, 2, 3, 4];
-		let mut p = Patch::new();
-		p.splice(1, 2, vec![9, 9, 9]);
-		p.apply_to_vec(&mut buf).unwrap();
-		assert_eq!(buf, vec![1, 9, 9, 9, 4]);
 	}
 
 	#[test]

@@ -38,9 +38,11 @@
 //!
 //! - `serde` (default off) -- enables `Serialize` on all public types.
 
-pub mod basefile;
+pub(crate) mod assemble;
+pub(crate) mod basefile;
 pub mod builder;
-pub mod crypto;
+pub(crate) mod compress;
+pub(crate) mod crypto;
 pub mod error;
 pub mod hashes;
 pub mod header;
