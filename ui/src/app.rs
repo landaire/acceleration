@@ -38,6 +38,9 @@ extern "C" {
 
 #[derive(Debug)]
 struct XContentPackageReference {
+	/// Held so the memory backing `parsed` / `fs` stays alive for the VFS's
+	/// lifetime. The field is never read directly.
+	#[allow(dead_code)]
 	data: Arc<Vec<u8>>,
 	parsed: XContentPackage,
 	fs: VfsPath,

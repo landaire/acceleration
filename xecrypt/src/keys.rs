@@ -1,3 +1,8 @@
+// Key-material reference constants. Only a subset is wired into signers /
+// verifiers today, but we keep the full table on-hand for future use and
+// RE cross-reference.
+#![allow(dead_code)]
+
 /// Manufacturing certificate verification key. Same key for retail and devkit consoles.
 ///
 /// HV key ID 0x3f. XECRYPT_RSA at HV offset 0x11428. Exponent = 3.

@@ -1,3 +1,6 @@
+// Same story as serde_bytes: only reached via `#[serde(with = ...)]` expansions.
+#![allow(dead_code)]
+
 pub mod fixed {
 	use serde::Deserializer;
 	use serde::Serializer;
