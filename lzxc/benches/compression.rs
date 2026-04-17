@@ -20,15 +20,79 @@ fn build_corpus() -> Vec<(&'static str, Vec<u8>)> {
 	// Corpora are generated deterministically from seeds so results are
 	// reproducible on any host and the bench crate has no file fixtures.
 	vec![
-		("text-256k", generate_text(256 * 1024)),
+		("text-256k", generate_text(256 * 1024, 0xA17B_CD03)),
+		("text-256k-pathological", generate_pathological_text(256 * 1024)),
 		("structured-1m", generate_structured(1024 * 1024)),
 		("random-256k", generate_random(256 * 1024, 0xCAFE_F00D)),
 	]
 }
 
-/// Repetitive English-ish text. Small alphabet + phrase-level repetition
-/// exercises both the Huffman side (literal bias) and the match finder.
-fn generate_text(len: usize) -> Vec<u8> {
+/// Realistic-ish English text: emits words drawn by LCG from a vocabulary
+/// of ~200 common English words, with occasional sentence boundaries.
+/// Word-level (not phrase-level) selection keeps byte-level patterns
+/// English-like (common bigrams, realistic letter frequencies) while
+/// eliminating the degenerate long-periodicity of the pathological
+/// variant, so the match finder lands on medium-distance matches
+/// comparable to what it gets on real prose. Target ratio is the 2-3x
+/// range typical of LZ77+Huffman on natural-language text.
+fn generate_text(len: usize, seed: u32) -> Vec<u8> {
+	// Frequency-weighted-ish common English words. Ordering matters less
+	// than having enough variety that no single word dominates; ~200 words
+	// is enough to approximate real token distribution at this scale.
+	let words: &[&[u8]] = &[
+		b"the", b"be", b"to", b"of", b"and", b"a", b"in", b"that", b"have", b"it",
+		b"for", b"not", b"on", b"with", b"he", b"as", b"you", b"do", b"at", b"this",
+		b"but", b"his", b"by", b"from", b"they", b"we", b"say", b"her", b"she", b"or",
+		b"an", b"will", b"my", b"one", b"all", b"would", b"there", b"their", b"what", b"so",
+		b"up", b"out", b"if", b"about", b"who", b"get", b"which", b"go", b"me", b"when",
+		b"make", b"can", b"like", b"time", b"no", b"just", b"him", b"know", b"take", b"people",
+		b"into", b"year", b"your", b"good", b"some", b"could", b"them", b"see", b"other", b"than",
+		b"then", b"now", b"look", b"only", b"come", b"its", b"over", b"think", b"also", b"back",
+		b"after", b"use", b"two", b"how", b"our", b"work", b"first", b"well", b"way", b"even",
+		b"new", b"want", b"any", b"these", b"give", b"day", b"most", b"us", b"is", b"was",
+		b"are", b"were", b"been", b"has", b"had", b"did", b"does", b"here", b"more", b"very",
+		b"still", b"should", b"through", b"where", b"before", b"because", b"while", b"around", b"small", b"large",
+		b"open", b"close", b"begin", b"end", b"stand", b"walk", b"run", b"write", b"read", b"speak",
+		b"house", b"world", b"school", b"night", b"light", b"water", b"fire", b"earth", b"hand", b"eye",
+		b"face", b"door", b"room", b"place", b"name", b"word", b"book", b"thing", b"part", b"life",
+		b"story", b"idea", b"case", b"fact", b"point", b"group", b"state", b"family", b"number", b"side",
+		b"child", b"mother", b"father", b"friend", b"woman", b"man", b"body", b"head", b"heart", b"mind",
+		b"tree", b"river", b"road", b"field", b"city", b"street", b"country", b"hill", b"sea", b"sky",
+		b"old", b"young", b"long", b"short", b"high", b"low", b"right", b"left", b"far", b"near",
+		b"hot", b"cold", b"dark", b"bright", b"red", b"green", b"blue", b"white", b"black", b"gold",
+	];
+	let mut out = Vec::with_capacity(len);
+	let mut state = seed;
+	let mut words_this_sentence: u32 = 0;
+	while out.len() < len {
+		state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+		let word = words[(state as usize >> 16) % words.len()];
+		out.extend_from_slice(word);
+		if out.len() >= len {
+			break;
+		}
+		words_this_sentence += 1;
+		// Roughly every ~12 words, end a sentence with ". " and capitalize
+		// the next word's first letter for variety. Uses another LCG draw.
+		state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+		if words_this_sentence >= 8 && (state >> 16) as u32 % 5 == 0 {
+			out.push(b'.');
+			out.push(b' ');
+			words_this_sentence = 0;
+		} else {
+			out.push(b' ');
+		}
+	}
+	out.truncate(len);
+	out
+}
+
+/// Degenerate best case: a single 107-byte phrase repeated to fill `len`.
+/// After chunk 1 every position matches back at offset 107 with length
+/// MAX_MATCH, and every match encodes to the same main-tree symbol, so
+/// this compresses to the LZ77+Huffman best case (~270x). Kept as a
+/// sanity-check ceiling; it is **not** representative of realistic text.
+fn generate_pathological_text(len: usize) -> Vec<u8> {
 	let phrase = b"The quick brown fox jumps over the lazy dog. \
 	               Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
 	let mut out = Vec::with_capacity(len);

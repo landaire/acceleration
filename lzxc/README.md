@@ -57,8 +57,13 @@ reproduce on any host without shipping real executables.
 
 Corpora:
 
-- `text-256k`: 256 KB of repeating English-ish prose (small alphabet,
-  phrase-level repetition).
+- `text-256k`: 256 KB of English-ish prose built word-at-a-time from a
+  ~200-word vocabulary via LCG. Byte distribution and bigram frequencies
+  look like natural language; no phrase-level periodicity.
+- `text-256k-pathological`: 256 KB of a single 107-byte phrase repeated
+  end-to-end. Kept as a sanity-check ceiling on what LZ77+Huffman can do
+  on a perfectly periodic signal — it is **not** representative of
+  realistic text.
 - `structured-1m`: 1 MB mix of zero-runs, a repeating 64-byte "jump table"
   template, biased opcode-like bytes, and LCG random. Roughly mirrors the
   compressibility profile of a typical executable without impersonating
@@ -69,46 +74,49 @@ Compression ratio is `input_len / compressed_len` (higher is better).
 
 ### Strategy comparison (64 KB window)
 
-| Strategy     | Corpus          |   Ratio |   Throughput |
-|--------------|-----------------|--------:|-------------:|
-| Greedy       | text-256k       | 271.93x | 2.87 GiB/s   |
-| Greedy       | structured-1m   |   2.90x |  124 MiB/s   |
-| Greedy       | random-256k     |   1.00x |   62 MiB/s   |
-| LiteralOnly  | text-256k       |   1.78x |  243 MiB/s   |
-| LiteralOnly  | structured-1m   |   1.39x |  306 MiB/s   |
-| LiteralOnly  | random-256k     |   1.00x |  258 MiB/s   |
-| Uncompressed | text-256k       |   1.00x | 39.3 GiB/s   |
-| Uncompressed | structured-1m   |   1.00x | 50.0 GiB/s   |
-| Uncompressed | random-256k     |   1.00x | 38.7 GiB/s   |
+| Strategy     | Corpus                   |   Ratio | Throughput |
+|--------------|--------------------------|--------:|-----------:|
+| Greedy       | text-256k                |   2.50x |  94 MiB/s  |
+| Greedy       | text-256k-pathological   | 271.93x | 2.74 GiB/s |
+| Greedy       | structured-1m            |   2.90x | 107 MiB/s  |
+| Greedy       | random-256k              |   1.00x |  57 MiB/s  |
+| LiteralOnly  | text-256k                |   1.92x | 256 MiB/s  |
+| LiteralOnly  | text-256k-pathological   |   1.78x | 254 MiB/s  |
+| LiteralOnly  | structured-1m            |   1.39x | 313 MiB/s  |
+| LiteralOnly  | random-256k              |   1.00x | 260 MiB/s  |
+| Uncompressed | text-256k                |   1.00x | 38.2 GiB/s |
+| Uncompressed | structured-1m            |   1.00x | 45.6 GiB/s |
+| Uncompressed | random-256k              |   1.00x | 37.0 GiB/s |
 
 Notes:
 
+- `Greedy` on realistic English prose (`text-256k`) lands at 2.50x, within
+  the 2-3x range typical of LZ77+Huffman on natural language.
 - `Greedy` on binary-shaped data (`structured-1m`) reaches 2.90x; this is
   the workload `lzxc` was tuned for.
-- Repetitive text reaches 272x under `Greedy` because the match finder
-  collapses the whole phrase structure into a handful of long matches.
-  `LiteralOnly` can't exploit phrase-level repetition, so its 1.78x ratio
-  on the same input is far behind.
+- `text-256k-pathological` — one 107-byte phrase repeated for 256 KB —
+  shows the theoretical ceiling: 272x because every match collapses to
+  the same main-tree symbol. Useful as a bound, not a headline.
 - Random input triggers the encoder's uncompressed-block fallback inside
   `Greedy`, and compresses to 1.00x under every strategy.
 - `Uncompressed` is essentially `memcpy` with a 28-byte block header per
   32 KB chunk.
 
-### Window-size sweep (Greedy, `structured-1m`)
+### Window-size sweep (Greedy)
 
-Window controls how far back matches can reach. On the synthetic
-structured corpus the match finder saturates well under 32 KB, so ratio
-stays flat as the window grows and throughput drops from cache pressure on
-the widening hash-chain / history buffers.
+Window controls how far back matches can reach. Ratio plateaus quickly on
+these corpora because the dominant match distances are well under 32 KB;
+larger windows then pay throughput for bigger hash-chain / history
+buffers that don't find new work.
 
-| Window | Ratio | Throughput |
-|--------|------:|-----------:|
-| 32 KB  | 2.90x | 149 MiB/s  |
-| 64 KB  | 2.90x | 124 MiB/s  |
-| 128 KB | 2.90x | 106 MiB/s  |
-| 512 KB | 2.90x |  86 MiB/s  |
-| 1 MB   | 2.90x |  91 MiB/s  |
-| 2 MB   | 2.90x |  92 MiB/s  |
+| Window |  text-256k |  structured-1m |
+|--------|-----------:|---------------:|
+| 32 KB  | 2.51x / 97 MiB/s | 2.90x / 146 MiB/s |
+| 64 KB  | 2.50x / 94 MiB/s | 2.90x / 107 MiB/s |
+| 128 KB | 2.50x / 96 MiB/s | 2.90x /  99 MiB/s |
+| 512 KB | 2.51x / 96 MiB/s | 2.90x /  85 MiB/s |
+| 1 MB   | 2.51x / 95 MiB/s | 2.90x /  91 MiB/s |
+| 2 MB   | 2.51x / 93 MiB/s | 2.90x /  91 MiB/s |
 
 Payloads with long-range repetition (e.g. multi-megabyte binaries with
 duplicated data sections) are where larger windows earn their cost; see
