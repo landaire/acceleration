@@ -69,25 +69,26 @@ Compression ratio is `input_len / compressed_len` (higher is better).
 
 ### Strategy comparison (64 KB window)
 
-| Strategy     | Corpus          | Ratio | Throughput |
-|--------------|-----------------|------:|-----------:|
-| Greedy       | text-256k       | 1.14x |   816 MB/s |
-| Greedy       | structured-1m   | 1.81x |    82 MB/s |
-| Greedy       | random-256k     | 1.00x |    54 MB/s |
-| LiteralOnly  | text-256k       | 1.78x |   238 MB/s |
-| LiteralOnly  | structured-1m   | 1.39x |   295 MB/s |
-| LiteralOnly  | random-256k     | 1.00x |   258 MB/s |
-| Uncompressed | text-256k       | 1.00x |    42 GB/s |
-| Uncompressed | structured-1m   | 1.00x |    54 GB/s |
-| Uncompressed | random-256k     | 1.00x |    42 GB/s |
+| Strategy     | Corpus          |   Ratio |   Throughput |
+|--------------|-----------------|--------:|-------------:|
+| Greedy       | text-256k       | 271.93x | 2.87 GiB/s   |
+| Greedy       | structured-1m   |   2.90x |  124 MiB/s   |
+| Greedy       | random-256k     |   1.00x |   62 MiB/s   |
+| LiteralOnly  | text-256k       |   1.78x |  243 MiB/s   |
+| LiteralOnly  | structured-1m   |   1.39x |  306 MiB/s   |
+| LiteralOnly  | random-256k     |   1.00x |  258 MiB/s   |
+| Uncompressed | text-256k       |   1.00x | 39.3 GiB/s   |
+| Uncompressed | structured-1m   |   1.00x | 50.0 GiB/s   |
+| Uncompressed | random-256k     |   1.00x | 38.7 GiB/s   |
 
 Notes:
 
-- `Greedy` on binary-shaped data (`structured-1m`) reaches 1.81x; this is
+- `Greedy` on binary-shaped data (`structured-1m`) reaches 2.90x; this is
   the workload `lzxc` was tuned for.
-- Repetitive text lands a better ratio under `LiteralOnly` than `Greedy`
-  because the alphabet is tight enough that Huffman on raw literals beats
-  the main-tree overhead the match encoding adds.
+- Repetitive text reaches 272x under `Greedy` because the match finder
+  collapses the whole phrase structure into a handful of long matches.
+  `LiteralOnly` can't exploit phrase-level repetition, so its 1.78x ratio
+  on the same input is far behind.
 - Random input triggers the encoder's uncompressed-block fallback inside
   `Greedy`, and compresses to 1.00x under every strategy.
 - `Uncompressed` is essentially `memcpy` with a 28-byte block header per
@@ -102,12 +103,12 @@ the widening hash-chain / history buffers.
 
 | Window | Ratio | Throughput |
 |--------|------:|-----------:|
-| 32 KB  | 1.81x |    88 MB/s |
-| 64 KB  | 1.81x |    82 MB/s |
-| 128 KB | 1.81x |    74 MB/s |
-| 512 KB | 1.81x |    67 MB/s |
-| 1 MB   | 1.81x |    65 MB/s |
-| 2 MB   | 1.81x |    66 MB/s |
+| 32 KB  | 2.90x | 149 MiB/s  |
+| 64 KB  | 2.90x | 124 MiB/s  |
+| 128 KB | 2.90x | 106 MiB/s  |
+| 512 KB | 2.90x |  86 MiB/s  |
+| 1 MB   | 2.90x |  91 MiB/s  |
+| 2 MB   | 2.90x |  92 MiB/s  |
 
 Payloads with long-range repetition (e.g. multi-megabyte binaries with
 duplicated data sections) are where larger windows earn their cost; see
