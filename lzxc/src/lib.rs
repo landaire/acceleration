@@ -144,7 +144,13 @@ impl WindowSize {
 		//   BASE[s] = BASE[s-1] + (1 << FOOTER_BITS[s-1])
 		//   FOOTER_BITS[s] = 0 for s < 4, 17 for s >= 36, else (s-2)/2.
 		const fn footer_bits(s: usize) -> u32 {
-			if s < 4 { 0 } else if s >= 36 { 17 } else { (s as u32 - 2) / 2 }
+			if s < 4 {
+				0
+			} else if s >= 36 {
+				17
+			} else {
+				(s as u32 - 2) / 2
+			}
 		}
 		const BASE: [u32; 291] = {
 			let mut t = [0u32; 291];
@@ -466,11 +472,7 @@ impl<W: std::io::Write> EncoderWriter<W> {
 	/// Wrap `inner`, compressing every byte written to this `EncoderWriter`
 	/// before forwarding it.
 	pub fn new(inner: W, window_size: WindowSize) -> Self {
-		Self {
-			inner: Some(inner),
-			encoder: Encoder::new(window_size),
-			buf: Vec::with_capacity(MAX_CHUNK_SIZE),
-		}
+		Self { inner: Some(inner), encoder: Encoder::new(window_size), buf: Vec::with_capacity(MAX_CHUNK_SIZE) }
 	}
 
 	/// Enable E8 preprocessing with the given translation bound. See
@@ -648,8 +650,7 @@ mod tests {
 
 		// Now check actual compression size.
 		let mut enc = Encoder::new(WindowSize::KB32);
-		let compressed: usize =
-			input.chunks(MAX_CHUNK_SIZE).map(|c| enc.encode_chunk(c).len()).sum();
+		let compressed: usize = input.chunks(MAX_CHUNK_SIZE).map(|c| enc.encode_chunk(c).len()).sum();
 		assert!(
 			compressed < input.len() / 4,
 			"expected at least 4x compression, got {} -> {}",

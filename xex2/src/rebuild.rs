@@ -216,8 +216,7 @@ impl<'a> Rebuilder<'a> {
 		// is left with `replace_pe = None`, so the follow-up `plan_edits` pass
 		// naturally skips the PE-replacement branch.
 		let pe_replacement = self.plan.replace_pe.take();
-		let assembled =
-			crate::assemble::rebuild_with_compression(&self.xex, self.source, target, pe_replacement)?;
+		let assembled = crate::assemble::rebuild_with_compression(&self.xex, self.source, target, pe_replacement)?;
 
 		// Apply remaining per-field edits (limits, flags, encryption, etc.)
 		// to the freshly-assembled file via the patch path.

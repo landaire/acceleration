@@ -116,13 +116,7 @@ impl MatchFinder {
 	/// KB32 -> 32765, KB64 -> 65533, ..., MB32 -> window_bytes - 3. See
 	/// `WindowSize::max_match_offset` in `lib.rs` for the mapping.
 	pub fn new(max_offset: usize) -> Self {
-		Self {
-			max_offset,
-			history: Vec::new(),
-			base: 0,
-			head: vec![u32::MAX; HASH_SIZE],
-			prev: Vec::new(),
-		}
+		Self { max_offset, history: Vec::new(), base: 0, head: vec![u32::MAX; HASH_SIZE], prev: Vec::new() }
 	}
 
 	/// Feed a chunk of input through the match finder, writing the
@@ -198,8 +192,7 @@ impl MatchFinder {
 					// structured data improves sharply (2.90x vs 1.76x on
 					// the 1 MB corpus) and throughput is neutral-to-slightly-
 					// better.
-					let length =
-						core::num::NonZeroU32::new(best.length as u32).expect("best.length >= MIN_MATCH >= 3");
+					let length = core::num::NonZeroU32::new(best.length as u32).expect("best.length >= MIN_MATCH >= 3");
 					tokens_spare[tok_written] = MaybeUninit::new(Token::Match { offset: best.offset, length });
 					prev[p_rel] = head[h];
 					head[h] = p_abs as u32;
@@ -216,8 +209,8 @@ impl MatchFinder {
 
 			// Tail literals: the last <4 bytes can't participate in a 4-byte
 			// hash lookup, so emit them as literals.
-			for i in p_rel..history_len {
-				tokens_spare[tok_written] = MaybeUninit::new(Token::Literal(history[i]));
+			for &byte in &history[p_rel..history_len] {
+				tokens_spare[tok_written] = MaybeUninit::new(Token::Literal(byte));
 				tok_written += 1;
 			}
 		}
@@ -249,7 +242,10 @@ impl MatchFinder {
 	/// Takes slices rather than `&self` so the caller can hoist the borrow
 	/// once per chunk, letting the compiler prove the slices don't alias and
 	/// drop the per-iteration slice-header reloads that otherwise show up as
-	/// the dominant hotspot on Apple Silicon.
+	/// the dominant hotspot on Apple Silicon. The decomposed parameter list
+	/// is intentional for that reason -- grouping them back into a struct
+	/// would hide the disjoint-borrow structure from the optimiser.
+	#[allow(clippy::too_many_arguments)]
 	fn find_best_match(
 		history: &[u8],
 		head: &[u32],

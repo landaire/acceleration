@@ -57,16 +57,10 @@ pub fn compress_normal(pe: &[u8], window_size: u32) -> Result<CompressedStream> 
 	}
 	block.extend_from_slice(&0u16.to_be_bytes());
 
-	let first_block_size = u32::try_from(block.len())
-		.map_err(|_| Xex2Error::DecompressionFailed.into_report())?;
+	let first_block_size = u32::try_from(block.len()).map_err(|_| Xex2Error::DecompressionFailed.into_report())?;
 	let first_block_hash = sha1_of(&block);
 
-	Ok(CompressedStream {
-		data: block,
-		first_block_size,
-		first_block_hash,
-		window_size,
-	})
+	Ok(CompressedStream { data: block, first_block_size, first_block_hash, window_size })
 }
 
 /// Synthesize the FileFormatInfo optional-header blob for a Normal-compressed

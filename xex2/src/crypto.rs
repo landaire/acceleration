@@ -75,4 +75,3 @@ mod tests {
 		assert_eq!(dec, plaintext);
 	}
 }
-

@@ -52,12 +52,8 @@ impl Patch {
 			let start = op.offset as usize;
 			let end = start + op.bytes.len();
 			if end > buf.len() {
-				return Err(Xex2Error::PatchOutOfBounds {
-					offset: op.offset,
-					len: op.bytes.len(),
-					buf_len: buf.len(),
-				}
-				.into_report());
+				return Err(Xex2Error::PatchOutOfBounds { offset: op.offset, len: op.bytes.len(), buf_len: buf.len() }
+					.into_report());
 			}
 			buf[start..end].copy_from_slice(&op.bytes);
 		}
@@ -73,10 +69,12 @@ impl Patch {
 			let start = op.offset as usize;
 			let end = start + op.bytes.len();
 			if end > source.len() {
-				return Err(
-					Xex2Error::PatchOutOfBounds { offset: op.offset, len: op.bytes.len(), buf_len: source.len() }
-						.into_report(),
-				);
+				return Err(Xex2Error::PatchOutOfBounds {
+					offset: op.offset,
+					len: op.bytes.len(),
+					buf_len: source.len(),
+				}
+				.into_report());
 			}
 			if cursor < start {
 				sink.write_all(&source[cursor..start]).map_err(|e| Xex2Error::Io(e).into_report())?;

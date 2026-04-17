@@ -185,8 +185,7 @@ impl Layout {
 			let OptionalHeaderValue::Data(bytes) = value else {
 				continue;
 			};
-			let blob_len =
-				if key == OptionalHeaderKey::FileFormatInfo as u32 { ff_blob.len() } else { bytes.len() };
+			let blob_len = if key == OptionalHeaderKey::FileFormatInfo as u32 { ff_blob.len() } else { bytes.len() };
 			blob_offset_by_key.insert(key, cursor);
 			cursor += blob_len;
 			cursor = align_up(cursor, 4);
@@ -238,11 +237,7 @@ fn write_blobs(out: &mut [u8], header: &Xex2Header, layout: &Layout, ff_blob: &[
 		let OptionalHeaderValue::Data(bytes) = value else {
 			continue;
 		};
-		let off = layout
-			.blob_offset_by_key
-			.get(&key)
-			.copied()
-			.expect("blob placement missing");
+		let off = layout.blob_offset_by_key.get(&key).copied().expect("blob placement missing");
 		let src = if key == OptionalHeaderKey::FileFormatInfo as u32 { ff_blob } else { bytes.as_slice() };
 		out[off..off + src.len()].copy_from_slice(src);
 	}
