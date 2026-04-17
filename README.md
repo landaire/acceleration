@@ -1,18 +1,18 @@
 # acceleration
 
-Rust toolkit for Xbox 360 file formats and reverse-engineering workflows.
+Libraries / utilities for Xbox 360 file formats.
 
 ## Crates
 
-| Crate | What it does |
-| --- | --- |
-| [`xex2`](xex2/) | XEX2 executable parser, rebuilder, and signer |
-| [`xex2ool`](xex2ool/) | CLI for inspecting and modifying XEX files |
-| [`lzxc`](lzxc/) | LZX compression encoder (round-trips with `lzxd`) |
-| [`xecrypt`](xecrypt/) | AES, RSA, and RotSumSha primitives from the Xbox 360 kernel |
-| [`xcontent`](xcontent/) | XContent package (`.xex`/`.000000000...`) parser |
-| [`stfs`](stfs/) | STFS/LIVE/PIRS package reader |
-| [`xenon_types`](xenon_types/) | Shared newtypes (`TitleId`, `Sha1Hash`, `AesKey`, ...) |
+| Crate                         | What it does                                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| [`xex2`](xex2/)               | XEX2 executable parser, rebuilder, and signer                                                                                    |
+| [`xex2ool`](xex2ool/)         | CLI for inspecting and modifying XEX files                                                                                       |
+| [`lzxc`](lzxc/)               | LZX compression encoder (round-trips with `lzxd`)                                                                                |
+| [`xecrypt`](xecrypt/)         | AES, RSA, and RotSumSha primitives from the Xbox 360 kernel                                                                      |
+| [`xcontent`](xcontent/)       | "STFS" package (CON/LIVE/PIRS) parser                                                                                            |
+| [`stfs`](stfs/)               | STFS filesystem/VFS handler. Allows for reading the inner filesystem of an XContent package when it's STFS and validating hashes |
+| [`xenon_types`](xenon_types/) | Shared newtypes (`TitleId`, `Sha1Hash`, `AesKey`, ...)                                                                           |
 
 ## xex2ool
 
