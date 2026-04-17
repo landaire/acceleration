@@ -192,7 +192,13 @@ impl MatchFinder {
 					// structured data improves sharply (2.90x vs 1.76x on
 					// the 1 MB corpus) and throughput is neutral-to-slightly-
 					// better.
-					let length = core::num::NonZeroU32::new(best.length as u32).expect("best.length >= MIN_MATCH >= 3");
+					// SAFETY:
+					// Control-flow guarantees `best.length >= MIN_MATCH` (= 3)
+					// at this point. `best.length` is also bounded above by
+					// `MAX_MATCH` (= 257, assigned in `find_best_match`), so
+					// the `as u32` cast cannot truncate a large `usize` to
+					// zero. The `NonZeroU32` invariant is therefore met.
+					let length = unsafe { core::num::NonZeroU32::new_unchecked(best.length as u32) };
 					tokens_spare[tok_written] = MaybeUninit::new(Token::Match { offset: best.offset, length });
 					prev[p_rel] = head[h];
 					head[h] = p_abs as u32;

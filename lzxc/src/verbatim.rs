@@ -60,15 +60,29 @@ impl RepeatOffsets {
 /// BASE_POSITION table -- the slot is the index `s` such that
 /// `BASE_POSITION[s] <= formatted_offset < BASE_POSITION[s+1]`, where
 /// `formatted_offset = offset + 2`.
+///
+/// The naive linear scan over `BASE_POSITION` shows up at ~5% of hot-path
+/// samples on structured input, so we compute the slot directly from the
+/// bit pattern of `formatted`:
+///
+/// - Slots 0..=3 are `formatted` itself (BASE[s] = s for s < 4).
+/// - For `formatted` in `[4, 2^18)`, `FOOTER_BITS[s]` = `(s-2)/2`, so slot
+///   sizes double at every pair of slots. That gives
+///   `slot = 2 * floor(log2(formatted)) + (bit below msb)`.
+/// - For `formatted >= 2^18`, `FOOTER_BITS` caps at 17 and every slot
+///   spans a fixed 131072 values starting at slot 36.
 fn position_slot_for(offset: u32) -> u32 {
 	let formatted = offset + 2;
-	for (s, &base) in BASE_POSITION.iter().enumerate().take(BASE_POSITION.len() - 1) {
-		if formatted < BASE_POSITION[s + 1] {
-			return s as u32;
-		}
-		let _ = base;
+	if formatted < 4 {
+		return formatted;
 	}
-	(BASE_POSITION.len() - 1) as u32
+	// leading_zeros on a nonzero u32 returns 0..=31, and `formatted >= 4`
+	// so `l >= 2` (and therefore `l - 1 >= 1`; the shift is always safe).
+	let l = 31 - formatted.leading_zeros();
+	if l < 18 {
+		return 2 * l + ((formatted >> (l - 1)) & 1);
+	}
+	36 + ((formatted - 262_144) >> 17)
 }
 
 /// Derive (main_symbol, length_symbol, length_footer_bits, extra_length_bits,
