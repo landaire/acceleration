@@ -2,6 +2,11 @@
 resolver = "2"
 members = ['cli', 'lzxc', 'stfs', 'ui', "xcontent", "xecrypt", "xex2", "xex2ool", "xenon_types"]
 
+[workspace.package]
+# Shared version for all workspace crates *except* `lzxc`, which is
+# released independently so its version drifts on its own cadence.
+version = "0.1.0"
+
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0"

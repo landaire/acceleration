@@ -1,6 +1,6 @@
 [package]
 name = "acceleration_ui"
-version = "0.1.0"
+version.workspace = true
 authors = ["Lander Brandt <landerbrandt@gmail.com>"]
 edition = "2024"
 publish = false
