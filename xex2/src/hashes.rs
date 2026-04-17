@@ -20,6 +20,7 @@ use sha1::Sha1;
 use crate::header::OptionalHeaderKey;
 use crate::header::OptionalHeaderValue;
 use crate::header::SecurityInfo;
+use crate::header::Sha1Hash;
 use crate::header::Xex2Header;
 
 /// Compute `image_info.header_hash` from `source`.
@@ -31,13 +32,13 @@ use crate::header::Xex2Header;
 /// 2. `[0, security_offset + 8)` -- the outer XEX header (including the
 ///    optional-header index) plus the first two fields of SecurityInfo
 ///    (`header_size` and `image_size`).
-pub fn compute_header_hash(source: &[u8], header: &Xex2Header, _security_info: &SecurityInfo) -> [u8; 20] {
+pub fn compute_header_hash(source: &[u8], header: &Xex2Header, _security_info: &SecurityInfo) -> Sha1Hash {
 	let sec = header.security_offset as usize;
 	let data_off = header.data_offset as usize;
 	let mut hasher = Sha1::new();
 	hasher.update(&source[sec + 0x17c..data_off]);
 	hasher.update(&source[0..sec + 8]);
-	hasher.finalize().into()
+	Sha1Hash(hasher.finalize().into())
 }
 
 /// Compute `image_info.import_table_hash` from the `ImportLibraries` optional
@@ -53,7 +54,7 @@ pub fn compute_header_hash(source: &[u8], header: &Xex2Header, _security_info: &
 /// [`rewrite_import_table_hashes`].
 ///
 /// Returns `None` if the XEX has no import table.
-pub fn compute_import_table_hash(header: &Xex2Header) -> Option<[u8; 20]> {
+pub fn compute_import_table_hash(header: &Xex2Header) -> Option<Sha1Hash> {
 	let blob = match header.get_optional_header(OptionalHeaderKey::ImportLibraries)? {
 		OptionalHeaderValue::Data(d) => d,
 		OptionalHeaderValue::Inline(_) => return None,
@@ -64,7 +65,7 @@ pub fn compute_import_table_hash(header: &Xex2Header) -> Option<[u8; 20]> {
 
 /// Position of one library entry within the ImportLibraries blob.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LibraryEntrySpan {
+pub(crate) struct LibraryEntrySpan {
 	/// Blob-relative offset of the entry's first byte (the entry_size u32).
 	pub offset: usize,
 	/// Total size of the entry in bytes (including the entry_size prefix).
@@ -79,7 +80,7 @@ impl LibraryEntrySpan {
 
 /// Walk the ImportLibraries blob and return the span of each library entry
 /// in on-disk order.
-pub fn library_entry_offsets(blob: &[u8]) -> Option<Vec<LibraryEntrySpan>> {
+pub(crate) fn library_entry_offsets(blob: &[u8]) -> Option<Vec<LibraryEntrySpan>> {
 	if blob.len() < 12 {
 		return None;
 	}
@@ -112,10 +113,10 @@ fn first_library_entry(blob: &[u8]) -> Option<&[u8]> {
 }
 
 /// SHA-1 of a library entry's body (bytes 4..entry_size, skipping the size prefix).
-pub fn hash_entry_body(entry: &[u8]) -> [u8; 20] {
+pub(crate) fn hash_entry_body(entry: &[u8]) -> Sha1Hash {
 	let mut hasher = Sha1::new();
 	hasher.update(&entry[4..]);
-	hasher.finalize().into()
+	Sha1Hash(hasher.finalize().into())
 }
 
 /// Rewrite the digest chain of a modified import-libraries blob in place and
@@ -126,14 +127,14 @@ pub fn hash_entry_body(entry: &[u8]) -> [u8; 20] {
 /// overwritten with the SHA-1 of the *next* library's entry body. The final
 /// library's digest is left as-is (it's already consistent with whatever
 /// follows it, typically zero). Returns `None` if the blob is malformed.
-pub fn rewrite_import_table_hashes(blob: &mut [u8]) -> Option<[u8; 20]> {
+pub(crate) fn rewrite_import_table_hashes(blob: &mut [u8]) -> Option<Sha1Hash> {
 	let spans = library_entry_offsets(blob)?;
 	// Walk backwards: compute each library's "next-hash" and store it in the
 	// preceding library's digest field.
 	for pair in spans.windows(2).rev() {
 		let next_hash = hash_entry_body(&blob[pair[1].range()]);
 		let digest_off = pair[0].offset + 4;
-		blob[digest_off..digest_off + 20].copy_from_slice(&next_hash);
+		blob[digest_off..digest_off + 20].copy_from_slice(&*next_hash);
 	}
 	let first = *spans.first()?;
 	Some(hash_entry_body(&blob[first.range()]))

@@ -690,14 +690,14 @@ impl Xex2Header {
 		Some(String::from_utf8_lossy(&str_data[..end]).into_owned())
 	}
 
-	pub fn device_id(&self) -> Option<[u8; 20]> {
+	pub fn device_id(&self) -> Option<xenon_types::DeviceId> {
 		let data = self.get_optional_data(OptionalHeaderKey::DeviceId)?;
 		if data.len() < 20 {
 			return None;
 		}
 		let mut id = [0u8; 20];
 		id.copy_from_slice(&data[..20]);
-		Some(id)
+		Some(xenon_types::DeviceId(id))
 	}
 
 	pub fn default_fs_cache_size(&self) -> Option<u32> {

@@ -4,12 +4,7 @@
 //! encrypted with either the retail or devkit master key. Decrypting the
 //! image key yields the session key used to decrypt the payload.
 
-use crate::error::Result;
-use crate::error::Xex2Error;
 use crate::header::AesKey;
-use rootcause::IntoReport;
-
-pub use xecrypt::symmetric::xe_crypt_sha as sha1_hash;
 
 pub const RETAIL_KEY: AesKey =
 	AesKey([0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3, 0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91]);
@@ -27,15 +22,15 @@ pub fn decrypt_file_key(file_key: &AesKey) -> DecryptedKeys {
 
 fn decrypt_key_with(file_key: &AesKey, key: &AesKey) -> AesKey {
 	let iv = [0u8; 16];
-	let mut buf = file_key.0;
-	xecrypt::symmetric::xe_crypt_aes_cbc_decrypt(&key.0, &iv, &mut buf);
+	let mut buf = **file_key;
+	xecrypt::symmetric::xe_crypt_aes_cbc_decrypt(key, &iv, &mut buf);
 	AesKey(buf)
 }
 
 pub fn decrypt_data(data: &[u8], session_key: &AesKey) -> Vec<u8> {
 	let iv = [0u8; 16];
 	let mut buf = data.to_vec();
-	xecrypt::symmetric::xe_crypt_aes_cbc_decrypt(&session_key.0, &iv, &mut buf);
+	xecrypt::symmetric::xe_crypt_aes_cbc_decrypt(session_key, &iv, &mut buf);
 	buf
 }
 
@@ -45,8 +40,8 @@ pub fn decrypt_data(data: &[u8], session_key: &AesKey) -> Vec<u8> {
 /// Inverse of [`decrypt_file_key`] + session-key selection.
 pub fn wrap_file_key(session_key: &AesKey, master_key: &AesKey) -> AesKey {
 	let iv = [0u8; 16];
-	let mut buf = session_key.0;
-	xecrypt::symmetric::xe_crypt_aes_cbc_encrypt(&master_key.0, &iv, &mut buf);
+	let mut buf = **session_key;
+	xecrypt::symmetric::xe_crypt_aes_cbc_encrypt(master_key, &iv, &mut buf);
 	AesKey(buf)
 }
 
@@ -54,7 +49,7 @@ pub fn wrap_file_key(session_key: &AesKey, master_key: &AesKey) -> AesKey {
 pub fn encrypt_data(data: &[u8], session_key: &AesKey) -> Vec<u8> {
 	let iv = [0u8; 16];
 	let mut buf = data.to_vec();
-	xecrypt::symmetric::xe_crypt_aes_cbc_encrypt(&session_key.0, &iv, &mut buf);
+	xecrypt::symmetric::xe_crypt_aes_cbc_encrypt(session_key, &iv, &mut buf);
 	buf
 }
 
@@ -67,7 +62,7 @@ mod tests {
 		let session = AesKey([0x42; 16]);
 		let wrapped = wrap_file_key(&session, &RETAIL_KEY);
 		let unwrapped = decrypt_file_key(&wrapped);
-		assert_eq!(unwrapped.retail.0, session.0);
+		assert_eq!(*unwrapped.retail, *session);
 	}
 
 	#[test]
@@ -81,10 +76,3 @@ mod tests {
 	}
 }
 
-pub fn verify_block_hash(block_data: &[u8], expected_hash: &[u8; 20]) -> Result<()> {
-	let calculated = sha1_hash(block_data);
-	if calculated != *expected_hash {
-		return Err(Xex2Error::HashMismatch { block_index: 0 }.into_report());
-	}
-	Ok(())
-}

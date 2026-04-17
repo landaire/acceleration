@@ -40,6 +40,7 @@ use rootcause::IntoReport;
 pub use xenon_types::AesKey;
 pub use xenon_types::FileOffset;
 pub use xenon_types::MediaId;
+pub use xenon_types::Sha1Hash;
 pub use xenon_types::TitleId;
 pub use xenon_types::VirtualAddress;
 
@@ -141,7 +142,7 @@ pub struct NormalCompressionInfo {
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct NormalCompressionBlock {
 	pub block_size: u32,
-	pub hash: [u8; 20],
+	pub hash: Sha1Hash,
 }
 
 #[derive(Debug)]
@@ -161,13 +162,13 @@ pub struct ImageInfo {
 	pub info_size: u32,
 	pub image_flags: ImageFlags,
 	pub load_address: VirtualAddress,
-	pub image_hash: [u8; 20],
+	pub image_hash: Sha1Hash,
 	pub import_table_count: u32,
-	pub import_table_hash: [u8; 20],
+	pub import_table_hash: Sha1Hash,
 	pub media_id: [u8; 16],
 	pub file_key: AesKey,
 	pub export_table_address: u32,
-	pub header_hash: [u8; 20],
+	pub header_hash: Sha1Hash,
 	pub game_regions: u32,
 	pub allowed_media_types: AllowedMediaTypes,
 }
@@ -511,17 +512,17 @@ impl SecurityInfo {
 			info_size,
 			image_flags: ImageFlags::from_bits_retain(c.read_u32::<BigEndian>().io()?),
 			load_address: VirtualAddress(c.read_u32::<BigEndian>().io()?),
-			image_hash: {
+			image_hash: Sha1Hash({
 				let mut h = [0u8; 20];
 				c.read_exact(&mut h).io()?;
 				h
-			},
+			}),
 			import_table_count: c.read_u32::<BigEndian>().io()?,
-			import_table_hash: {
+			import_table_hash: Sha1Hash({
 				let mut h = [0u8; 20];
 				c.read_exact(&mut h).io()?;
 				h
-			},
+			}),
 			media_id: {
 				let mut m = [0u8; 16];
 				c.read_exact(&mut m).io()?;
@@ -533,11 +534,11 @@ impl SecurityInfo {
 				k
 			}),
 			export_table_address: c.read_u32::<BigEndian>().io()?,
-			header_hash: {
+			header_hash: Sha1Hash({
 				let mut h = [0u8; 20];
 				c.read_exact(&mut h).io()?;
 				h
-			},
+			}),
 			game_regions: c.read_u32::<BigEndian>().io()?,
 			allowed_media_types: AllowedMediaTypes::from_bits_retain(c.read_u32::<BigEndian>().io()?),
 		};

@@ -18,13 +18,14 @@ use std::io::Read;
 
 use crate::header::OptionalHeaderKey;
 use crate::header::Xex2Header;
+use xenon_types::Sha1Hash;
 use xenon_types::Version;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ImportLibrary {
 	pub name: String,
-	pub digest: [u8; 20],
+	pub digest: Sha1Hash,
 	pub import_id: u32,
 	pub version: Version,
 	pub version_min: Version,
@@ -74,8 +75,9 @@ fn parse_import_table(data: &[u8]) -> Option<ImportTable> {
 		}
 		let mut c = Cursor::new(&data[lib_offset..]);
 		let entry_size = c.read_u32::<BigEndian>().ok()? as usize;
-		let mut digest = [0u8; 20];
-		c.read_exact(&mut digest).ok()?;
+		let mut digest_bytes = [0u8; 20];
+		c.read_exact(&mut digest_bytes).ok()?;
+		let digest = Sha1Hash(digest_bytes);
 		let import_id = c.read_u32::<BigEndian>().ok()?;
 		let version = Version::from(c.read_u32::<BigEndian>().ok()?);
 		let version_min = Version::from(c.read_u32::<BigEndian>().ok()?);
