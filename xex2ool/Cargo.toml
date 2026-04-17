@@ -2,7 +2,13 @@
 name = "xex2ool"
 version = "0.1.0"
 edition = "2024"
-publish = false
+license = "MIT OR Apache-2.0"
+authors = ["Lander Brandt"]
+description = "Command-line tool for inspecting and modifying Xbox 360 XEX2 executables"
+repository = "https://github.com/landaire/acceleration"
+readme = "README.md"
+keywords = ["xbox360", "xex", "xbox", "cli"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "xex2ool"
