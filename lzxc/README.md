@@ -76,17 +76,17 @@ Compression ratio is `input_len / compressed_len` (higher is better).
 
 | Strategy     | Corpus                   |   Ratio | Throughput |
 |--------------|--------------------------|--------:|-----------:|
-| Greedy       | text-256k                |   2.50x |  94 MiB/s  |
-| Greedy       | text-256k-pathological   | 271.93x | 2.74 GiB/s |
-| Greedy       | structured-1m            |   2.90x | 107 MiB/s  |
-| Greedy       | random-256k              |   1.00x |  57 MiB/s  |
-| LiteralOnly  | text-256k                |   1.92x | 256 MiB/s  |
-| LiteralOnly  | text-256k-pathological   |   1.78x | 254 MiB/s  |
-| LiteralOnly  | structured-1m            |   1.39x | 313 MiB/s  |
-| LiteralOnly  | random-256k              |   1.00x | 260 MiB/s  |
-| Uncompressed | text-256k                |   1.00x | 38.2 GiB/s |
-| Uncompressed | structured-1m            |   1.00x | 45.6 GiB/s |
-| Uncompressed | random-256k              |   1.00x | 37.0 GiB/s |
+| Greedy       | text-256k                |   2.50x |  127 MiB/s |
+| Greedy       | text-256k-pathological   | 271.93x | 2.93 GiB/s |
+| Greedy       | structured-1m            |   2.90x |  129 MiB/s |
+| Greedy       | random-256k              |   1.00x |   59 MiB/s |
+| LiteralOnly  | text-256k                |   1.92x |  216 MiB/s |
+| LiteralOnly  | text-256k-pathological   |   1.78x |  212 MiB/s |
+| LiteralOnly  | structured-1m            |   1.39x |  283 MiB/s |
+| LiteralOnly  | random-256k              |   1.00x |  236 MiB/s |
+| Uncompressed | text-256k                |   1.00x | 35.4 GiB/s |
+| Uncompressed | structured-1m            |   1.00x | 42.5 GiB/s |
+| Uncompressed | random-256k              |   1.00x | 34.0 GiB/s |
 
 Notes:
 
@@ -109,14 +109,14 @@ these corpora because the dominant match distances are well under 32 KB;
 larger windows then pay throughput for bigger hash-chain / history
 buffers that don't find new work.
 
-| Window |  text-256k |  structured-1m |
-|--------|-----------:|---------------:|
-| 32 KB  | 2.51x / 97 MiB/s | 2.90x / 146 MiB/s |
-| 64 KB  | 2.50x / 94 MiB/s | 2.90x / 107 MiB/s |
-| 128 KB | 2.50x / 96 MiB/s | 2.90x /  99 MiB/s |
-| 512 KB | 2.51x / 96 MiB/s | 2.90x /  85 MiB/s |
-| 1 MB   | 2.51x / 95 MiB/s | 2.90x /  91 MiB/s |
-| 2 MB   | 2.51x / 93 MiB/s | 2.90x /  91 MiB/s |
+| Window |          text-256k |       structured-1m |
+|--------|-------------------:|--------------------:|
+| 32 KB  | 2.51x / 130 MiB/s  | 2.90x / 155 MiB/s   |
+| 64 KB  | 2.50x / 127 MiB/s  | 2.90x / 129 MiB/s   |
+| 128 KB | 2.50x / 117 MiB/s  | 2.90x / 106 MiB/s   |
+| 512 KB | 2.51x / 114 MiB/s  | 2.90x /  93 MiB/s   |
+| 1 MB   | 2.51x / 115 MiB/s  | 2.90x /  92 MiB/s   |
+| 2 MB   | 2.51x / 107 MiB/s  | 2.90x /  88 MiB/s   |
 
 Payloads with long-range repetition (e.g. multi-megabyte binaries with
 duplicated data sections) are where larger windows earn their cost; see
