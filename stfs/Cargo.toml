@@ -26,7 +26,7 @@ bitflags = { workspace = true }
 byteorder = { workspace = true }
 num_enum = { workspace = true }
 serde = { workspace = true }
-xenon_types = { version = "0.1", path = "../xenon_types" }
+xenon_types = { version = "0.2", path = "../xenon_types" }
 base64 = { workspace = true, optional = true }
 fskit = { workspace = true, optional = true }
 vfs = { workspace = true, optional = true }

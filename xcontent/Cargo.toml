@@ -17,11 +17,11 @@ thiserror = { workspace = true }
 byteorder = { workspace = true }
 num_enum = { workspace = true }
 serde = { workspace = true }
-stfs = { version = "0.1", path = "../stfs", features = ["vfs"] }
-xecrypt = { version = "0.1", path = "../xecrypt", features = ["serde"] }
-xenon_types = { version = "0.1", path = "../xenon_types" }
+stfs = { version = "0.2", path = "../stfs", features = ["vfs"] }
+xecrypt = { version = "0.2", path = "../xecrypt", features = ["serde"] }
+xenon_types = { version = "0.2", path = "../xenon_types" }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
 serde_json = "1.0"
-xenon_types = { version = "0.1", path = "../xenon_types" }
+xenon_types = { version = "0.2", path = "../xenon_types" }
