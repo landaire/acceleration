@@ -2,7 +2,7 @@ use xex2::Xex2;
 use xex2::header::CompressionType;
 
 fn load_xex(name: &str) -> (Vec<u8>, Xex2) {
-	let path = format!("../xex_files/{}", name);
+	let path = format!("../../xex_files/{}", name);
 	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
 	let xex = Xex2::parse(&data).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e));
 	(data, xex)
