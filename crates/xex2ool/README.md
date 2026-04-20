@@ -6,7 +6,7 @@ Built on top of the [`xex2`](../xex2) parser/rebuilder crate.
 ## Install
 
 ```
-cargo install --path xex2ool
+cargo install --path crates/xex2ool
 ```
 
 or from the workspace:

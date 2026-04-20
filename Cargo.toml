@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
-members = ['cli', 'lzxc', 'stfs', 'ui', "xcontent", "xecrypt", "xex2", "xex2ool", "xenon_types"]
+members = [
+	"crates/cli",
+	"crates/lzxc",
+	"crates/stfs",
+	"crates/ui",
+	"crates/xcontent",
+	"crates/xecrypt",
+	"crates/xex2",
+	"crates/xex2ool",
+	"crates/xenon_types",
+]
 
 [workspace.package]
 # Shared version for all workspace crates *except* `lzxc`, which is
