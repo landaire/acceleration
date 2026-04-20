@@ -1,3 +1,15 @@
 /target
 Cargo.lock
 xex_files/
+
+# Generated Diplomat FFI bindings (regenerate with diplomat-tool)
+crates/xex2-ffi/bindings/
+
+# Python build artifacts
+bindings/python/.venv/
+bindings/python/build/
+bindings/python/dist/
+bindings/python/*.egg-info/
+bindings/python/uv.lock
+bindings/python/.pytest_cache/
+**/__pycache__/

@@ -8,6 +8,7 @@ members = [
 	"crates/xcontent",
 	"crates/xecrypt",
 	"crates/xex2",
+	"crates/xex2-ffi",
 	"crates/xex2ool",
 	"crates/xenon_types",
 ]

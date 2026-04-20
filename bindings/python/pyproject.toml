@@ -1,0 +1,20 @@
+[project]
+name = "xex2"
+version = "0.2.0"
+description = "Python bindings for the xex2 crate via diplomat + nanobind"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.scikit-build]
+# Release build by default; override with `--config-settings=cmake.build-type=Debug`.
+cmake.build-type = "Release"
+minimum-version = "build-system.requires"
+# Only ship the native extension module in the wheel.
+wheel.packages = []

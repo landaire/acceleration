@@ -1,0 +1,14 @@
+[package]
+name = "xex2-ffi"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+xex2 = { version = "0.2", path = "../xex2" }
+diplomat = "0.15"
+diplomat-runtime = "0.15"
