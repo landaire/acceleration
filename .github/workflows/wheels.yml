@@ -163,7 +163,7 @@ jobs:
           ls crates/xex2-ffi/bindings/cpp/ | head
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v2.21.0
+        uses: pypa/cibuildwheel@v4.1.0
         with:
           package-dir: bindings/python
           output-dir: wheelhouse

@@ -43,7 +43,7 @@ pip install xex2
 uv add xex2
 ```
 
-Pre-built wheels cover CPython 3.10–3.13 on Linux (manylinux_2_28 x86_64),
+Pre-built wheels cover CPython 3.10–3.14 on Linux (manylinux_2_28 x86_64),
 macOS (arm64 + x86_64), and Windows x86_64. The extension is statically
 linked to `libxex2_ffi.a`, so wheels have no dependency on a separately
 installed native library.
