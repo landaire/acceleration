@@ -33,25 +33,34 @@ glue file is auto-generated or stock tooling.
 └─────────────────────────────┘
 ```
 
-## One-time setup
+## Install
 
-From the workspace root:
+From PyPI (once published):
 
 ```sh
-# 1. Build the Rust FFI shared library. Produces target/release/libxex2_ffi.dylib.
-cargo build -p xex2-ffi --release
-
-# 2. Regenerate the diplomat C++ headers. Only needed when
-#    crates/xex2-ffi/src/lib.rs changes.
-diplomat-tool cpp crates/xex2-ffi/bindings/cpp \
-    --entry crates/xex2-ffi/src/lib.rs
+pip install xex2
+# or
+uv add xex2
 ```
 
-## Install (editable)
+Pre-built wheels cover CPython 3.10–3.13 on Linux (manylinux_2_28 x86_64),
+macOS (arm64 + x86_64), and Windows x86_64. The extension is statically
+linked to `libxex2_ffi.a`, so wheels have no dependency on a separately
+installed native library.
+
+## Building from source
+
+Source builds need the full Rust workspace available; they're only
+intended for local development.
 
 ```sh
+# From the workspace root:
+cargo build -p xex2-ffi --release
+diplomat-tool cpp crates/xex2-ffi/bindings/cpp \
+    --entry crates/xex2-ffi/src/lib.rs
+
+# Then:
 cd bindings/python
-uv sync
 uv pip install -e . --no-build-isolation
 ```
 

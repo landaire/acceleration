@@ -1,9 +1,33 @@
 [project]
 name = "xex2"
 version = "0.2.0"
-description = "Python bindings for the xex2 crate via diplomat + nanobind"
+description = "Python bindings for the xex2 crate: parse, inspect, and patch Xbox 360 XEX2 executables."
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Lander Brandt", email = "landerbrandt@gmail.com" }]
 requires-python = ">=3.10"
 dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Disassemblers",
+    "Topic :: System :: Emulators",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.urls]
+Homepage   = "https://github.com/landaire/acceleration"
+Repository = "https://github.com/landaire/acceleration"
+Issues     = "https://github.com/landaire/acceleration/issues"
 
 [build-system]
 requires = ["scikit-build-core>=0.10", "nanobind>=2.0"]
@@ -13,8 +37,9 @@ build-backend = "scikit_build_core.build"
 dev = ["pytest"]
 
 [tool.scikit-build]
-# Release build by default; override with `--config-settings=cmake.build-type=Debug`.
 cmake.build-type = "Release"
 minimum-version = "build-system.requires"
-# Only ship the native extension module in the wheel.
 wheel.packages = []
+# Ship the workspace licenses alongside the wheel so PyPI's
+# license-scanning tooling sees them. Paths are relative to pyproject.
+wheel.license-files = ["../../LICENSE-APACHE", "../../LICENSE-MIT"]

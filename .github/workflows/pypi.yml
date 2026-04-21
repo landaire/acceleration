@@ -1,0 +1,61 @@
+name: PyPI release
+
+# Tag-triggered: when a `v*` tag is pushed (e.g. `v0.2.0`), builds the
+# full wheel matrix via the Wheels workflow, then uploads every wheel
+# to PyPI using trusted publishing (OIDC — no API token in CI secrets).
+#
+# One-time PyPI setup required:
+#   1. Create the project at https://pypi.org/manage/project/xex2/ (or
+#      use TestPyPI first at https://test.pypi.org/).
+#   2. Add a "Trusted Publisher" pointing at this repo + this workflow
+#      file name (`pypi.yml`) + the `publish` job below.
+#   3. Push a tag: `git tag v0.2.0 && git push --tags`.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      test_pypi:
+        description: "Upload to TestPyPI instead of PyPI"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Call the wheels workflow to build artifacts for every platform.
+  build:
+    uses: ./.github/workflows/wheels.yml
+
+  # Collect everything into one directory and upload via pypa/gh-action-
+  # pypi-publish, which uses the OIDC token from `id-token: write`.
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/xex2
+    permissions:
+      id-token: write
+    steps:
+      - name: Collect wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist/
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Publish to TestPyPI
+        if: inputs.test_pypi
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: "!inputs.test_pypi"
+        uses: pypa/gh-action-pypi-publish@release/v1
