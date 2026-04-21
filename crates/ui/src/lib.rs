@@ -9,11 +9,9 @@ pub const APP_NAME: &str = "Acceleration";
 // When compiling for web:
 
 #[cfg(target_arch = "wasm32")]
-use eframe::wasm_bindgen::prelude::*;
+use eframe::wasm_bindgen;
 #[cfg(target_arch = "wasm32")]
-use eframe::wasm_bindgen::{
-	self,
-};
+use eframe::wasm_bindgen::prelude::*;
 
 /// This is the entry-point for all the web-assembly.
 /// This is called once from the HTML.

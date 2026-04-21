@@ -23,11 +23,10 @@ use vfs::VfsPath;
 use xcontent::XContentPackage;
 
 #[cfg(target_arch = "wasm32")]
-use eframe::wasm_bindgen::prelude::*;
+use eframe::wasm_bindgen;
 #[cfg(target_arch = "wasm32")]
-use eframe::wasm_bindgen::{
-	self,
-};
+use eframe::wasm_bindgen::prelude::*;
+
 use zip::write::SimpleFileOptions;
 
 #[cfg(target_arch = "wasm32")]
