@@ -55,7 +55,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Install diplomat-tool
-        run: cargo install diplomat-tool --version 0.15 --locked
+        run: cargo install diplomat-tool --version ^0.15 --locked
 
       - name: Build xex2-ffi (static)
         run: cargo build -p xex2-ffi --release
@@ -115,7 +115,7 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Install diplomat-tool
-        run: cargo install diplomat-tool --version 0.15 --locked
+        run: cargo install diplomat-tool --version ^0.15 --locked
 
       - name: Build xex2-ffi (static)
         run: cargo build -p xex2-ffi --release
@@ -170,7 +170,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Install diplomat-tool
-        run: cargo install diplomat-tool --version 0.15 --locked
+        run: cargo install diplomat-tool --version ^0.15 --locked
 
       - name: Build xex2-ffi (static)
         run: cargo build -p xex2-ffi --release
