@@ -43,3 +43,26 @@ wheel.packages = []
 # Ship the workspace licenses alongside the wheel so PyPI's
 # license-scanning tooling sees them. Paths are relative to pyproject.
 wheel.license-files = ["../../LICENSE-APACHE", "../../LICENSE-MIT"]
+
+# ──────────────────────────────────────────────────────────────────────────
+# cibuildwheel driven by `.github/workflows/wheels.yml` (the Stage 2 jobs).
+# The Rust static lib + diplomat-generated C++ headers are produced by the
+# Stage 1 `rust-build` job and dropped into the workspace before this runs,
+# so no Rust toolchain is needed inside cibuildwheel's containers.
+# ──────────────────────────────────────────────────────────────────────────
+[tool.cibuildwheel]
+build = "cp310-* cp311-* cp312-* cp313-*"
+# Skip: musl builds, 32-bit Linux, win32, PyPy. Keep the matrix to the
+# places we actually support.
+skip = "*-musllinux_* *_i686 *-win32 pp*"
+build-verbosity = 1
+# Smoke-import the module after each wheel install to catch link / missing-
+# symbol issues at build time rather than on a user's machine.
+test-command = 'python -c "import xex2; print(xex2.__file__)"'
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64"
+
+[tool.cibuildwheel.macos]
+# `macos-14` / `macos-13` runners pick native arches automatically.
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }

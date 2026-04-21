@@ -1,7 +1,13 @@
 name: Wheels
 
-# Runs on every push / PR to catch build regressions, and on tag push to
-# build the release artifacts that get uploaded to PyPI by release.yml.
+# Two-stage pipeline:
+#   1. `rust-build`  — per-target static lib + diplomat-generated C++
+#                       headers. Python-version-agnostic; cacheable.
+#   2. `wheels`      — per-target cibuildwheel run. Fans out to every
+#                       supported Python version internally. Downloads
+#                       the Stage 1 artifact for its target so no Rust
+#                       toolchain is needed in this job.
+
 on:
   push:
     branches: [main]
@@ -13,7 +19,6 @@ on:
       - "crates/xex2/**"
       - ".github/workflows/wheels.yml"
   workflow_dispatch:
-  # Allow pypi.yml to call this workflow as a subroutine for releases.
   workflow_call:
 
 permissions:
@@ -21,30 +26,43 @@ permissions:
 
 jobs:
   # ────────────────────────────────────────────────────────────────────
-  # Linux wheels (manylinux_2_28)
+  # Stage 1: Build Rust artifacts (static lib + generated headers).
+  # One job per target. Output is packaged into an artifact Stage 2
+  # can drop into place.
   # ────────────────────────────────────────────────────────────────────
-  #
-  # Built inside the manylinux_2_28 container so the resulting wheels
-  # are compatible with every distro from RHEL 8 onward. Rust + diplomat
-  # are installed per-run since the image doesn't ship them. The matrix
-  # covers CPython 3.10–3.13 on x86_64.
-  linux:
-    runs-on: ubuntu-latest
-    container:
-      image: quay.io/pypa/manylinux_2_28_x86_64
+  rust-build:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            artifact: linux_x86_64
+          - os: macos-14
+            artifact: macos_arm64
+          - os: macos-13
+            artifact: macos_x86_64
+          - os: windows-2022
+            artifact: windows_x86_64
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (stable)
+      # manylinux images ship without Rust; install it in-container.
+      # macOS/Windows use the action for hosted runners.
+      - name: Install Rust (manylinux container)
+        if: matrix.container != ''
+        shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
               sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
+      - name: Install Rust (hosted runner)
+        if: matrix.container == ''
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -52,147 +70,83 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: rust-${{ matrix.artifact }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Install diplomat-tool
-        run: cargo install diplomat-tool --version ^0.15 --locked
+        run: cargo install diplomat-tool --version '^0.15' --locked
 
       - name: Build xex2-ffi (static)
         run: cargo build -p xex2-ffi --release
 
       - name: Generate C++ bindings
-        run: diplomat-tool cpp crates/xex2-ffi/bindings/cpp --entry crates/xex2-ffi/src/lib.rs
-
-      - name: Build wheel
         shell: bash
         run: |
-          PYBIN="/opt/python/cp${{ matrix.python }}/bin"
-          PYBIN="${PYBIN//./}"
-          "$PYBIN/python" -m pip install --upgrade pip build auditwheel
-          "$PYBIN/python" -m build --wheel --no-isolation bindings/python
-          auditwheel repair --plat manylinux_2_28_x86_64 \
-              -w bindings/python/dist/ \
-              bindings/python/dist/*-linux_x86_64.whl
-          rm -f bindings/python/dist/*-linux_x86_64.whl
+          diplomat-tool cpp crates/xex2-ffi/bindings/cpp \
+              --entry crates/xex2-ffi/src/lib.rs
+
+      - name: Stage artifact directory
+        shell: bash
+        run: |
+          mkdir -p rust-artifacts/target/release
+          mkdir -p rust-artifacts/crates/xex2-ffi/bindings
+          # .a on unix, .lib on windows — just glob what cargo emits.
+          cp target/release/*xex2_ffi* rust-artifacts/target/release/ 2>/dev/null || true
+          cp -r crates/xex2-ffi/bindings/cpp rust-artifacts/crates/xex2-ffi/bindings/cpp
+          ls -la rust-artifacts/target/release/
+          ls rust-artifacts/crates/xex2-ffi/bindings/cpp/ | head
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-linux-cp${{ matrix.python }}
-          path: bindings/python/dist/*.whl
+          name: rust-${{ matrix.artifact }}
+          path: rust-artifacts/
+          retention-days: 1
 
   # ────────────────────────────────────────────────────────────────────
-  # macOS wheels (arm64 native on macos-14; x86_64 native on macos-13)
+  # Stage 2: cibuildwheel per target, iterating Python versions.
+  # No Rust toolchain needed in this job — artifacts from Stage 1 are
+  # dropped into their workspace-relative locations before cibuildwheel
+  # runs.
   # ────────────────────────────────────────────────────────────────────
-  macos:
+  wheels:
+    needs: rust-build
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14 # Apple Silicon
-            arch: arm64
-          - os: macos-13 # Intel
-            arch: x86_64
-        python: ["3.10", "3.11", "3.12", "3.13"]
+          - os: ubuntu-latest
+            artifact: linux_x86_64
+          - os: macos-14
+            artifact: macos_arm64
+          - os: macos-13
+            artifact: macos_x86_64
+          - os: windows-2022
+            artifact: windows_x86_64
     runs-on: ${{ matrix.os }}
-    env:
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Restore Rust artifacts
+        uses: actions/download-artifact@v4
         with:
-          python-version: ${{ matrix.python }}
+          name: rust-${{ matrix.artifact }}
+          # Extract at the workspace root so target/release/libxex2_ffi.a
+          # and crates/xex2-ffi/bindings/cpp/ land where CMakeLists.txt
+          # expects them.
+          path: .
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-${{ hashFiles('Cargo.lock') }}
-
-      - name: Install diplomat-tool
-        run: cargo install diplomat-tool --version ^0.15 --locked
-
-      - name: Build xex2-ffi (static)
-        run: cargo build -p xex2-ffi --release
-
-      - name: Generate C++ bindings
-        run: diplomat-tool cpp crates/xex2-ffi/bindings/cpp --entry crates/xex2-ffi/src/lib.rs
-
-      - name: Build wheel
-        run: |
-          python -m pip install --upgrade pip build delocate
-          python -m build --wheel --no-isolation bindings/python
-          # Rewrite the wheel's dylib references so the wheel only depends
-          # on macOS system libraries. For a statically-linked extension
-          # this is typically a no-op but cheap insurance.
-          delocate-wheel -w bindings/python/dist/repaired \
-              bindings/python/dist/*.whl
-          rm bindings/python/dist/*.whl
-          mv bindings/python/dist/repaired/*.whl bindings/python/dist/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheel-macos-${{ matrix.arch }}-cp${{ matrix.python }}
-          path: bindings/python/dist/*.whl
-
-  # ────────────────────────────────────────────────────────────────────
-  # Windows wheels (x86_64 MSVC)
-  # ────────────────────────────────────────────────────────────────────
-  windows:
-    runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.10", "3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-
-      - name: Install diplomat-tool
-        run: cargo install diplomat-tool --version ^0.15 --locked
-
-      - name: Build xex2-ffi (static)
-        run: cargo build -p xex2-ffi --release
-
-      - name: Generate C++ bindings
-        run: diplomat-tool cpp crates/xex2-ffi/bindings/cpp --entry crates/xex2-ffi/src/lib.rs
-
-      - name: Build wheel
+      - name: Verify artifacts in place
         shell: bash
         run: |
-          python -m pip install --upgrade pip build delvewheel
-          python -m build --wheel --no-isolation bindings/python
-          # Windows wheels don't need repair for a statically-linked
-          # extension, but run delvewheel anyway so any accidental DLL
-          # dependency is caught.
-          for whl in bindings/python/dist/*.whl; do
-              delvewheel repair -w bindings/python/dist/repaired "$whl"
-          done
-          rm bindings/python/dist/*.whl
-          mv bindings/python/dist/repaired/*.whl bindings/python/dist/
+          ls -la target/release/ | head
+          ls crates/xex2-ffi/bindings/cpp/ | head
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v2.21.0
+        with:
+          package-dir: bindings/python
+          output-dir: wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheel-windows-cp${{ matrix.python }}
-          path: bindings/python/dist/*.whl
+          name: wheel-${{ matrix.artifact }}
+          path: wheelhouse/*.whl
