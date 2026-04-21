@@ -140,9 +140,7 @@ jobs:
           - os: ubuntu-latest
             artifact: linux_x86_64
           - os: macos-14
-            artifact: macos_arm64
-          - os: macos-13
-            artifact: macos_x86_64
+            artifact: macos_universal2
           - os: windows-2022
             artifact: windows_x86_64
     runs-on: ${{ matrix.os }}
