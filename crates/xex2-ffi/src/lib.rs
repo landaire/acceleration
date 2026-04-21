@@ -76,9 +76,7 @@ mod ffi {
 		/// Parse an XEX2 file from its raw bytes.
 		#[diplomat::attr(auto, named_constructor = "parse")]
 		pub fn parse(bytes: &[u8]) -> Result<Box<Xex2>, Box<Xex2Error>> {
-			crate::inner::parse(bytes)
-				.map(|inner| Box::new(Xex2(inner)))
-				.map_err(|msg| Box::new(Xex2Error(msg)))
+			crate::inner::parse(bytes).map(|inner| Box::new(Xex2(inner))).map_err(|msg| Box::new(Xex2Error(msg)))
 		}
 
 		// ── SecurityInfo fields (always present) ───────────────────────
@@ -357,7 +355,9 @@ mod ffi {
 				.file_format
 				.as_ref()
 				.ok_or_else(|| Box::new(Xex2Error("no FileFormatInfo optional header".into())))
-				.and_then(|f| f.window_size.ok_or_else(|| Box::new(Xex2Error("FileFormatInfo has no window_size".into()))))
+				.and_then(|f| {
+					f.window_size.ok_or_else(|| Box::new(Xex2Error("FileFormatInfo has no window_size".into())))
+				})
 		}
 
 		// ── Fixed-size byte fields: copy-into-slice accessors ──────────
@@ -449,11 +449,7 @@ mod ffi {
 			if idx < self.0.len() {
 				Ok(Box::new(Xex2ImportLibrary { table: self.0.clone(), idx }))
 			} else {
-				Err(Box::new(Xex2Error(format!(
-					"import library index {} out of range (len={})",
-					idx,
-					self.0.len()
-				))))
+				Err(Box::new(Xex2Error(format!("import library index {} out of range (len={})", idx, self.0.len()))))
 			}
 		}
 	}
@@ -532,11 +528,7 @@ mod ffi {
 			if idx < self.0.len() {
 				Ok(Box::new(Xex2Resource { table: self.0.clone(), idx }))
 			} else {
-				Err(Box::new(Xex2Error(format!(
-					"resource index {} out of range (len={})",
-					idx,
-					self.0.len()
-				))))
+				Err(Box::new(Xex2Error(format!("resource index {} out of range (len={})", idx, self.0.len()))))
 			}
 		}
 	}
@@ -595,25 +587,45 @@ mod ffi {
 		}
 
 		/// Remove media-type restriction.
-		pub fn set_media(&mut self, v: bool) { self.0.media = v; }
+		pub fn set_media(&mut self, v: bool) {
+			self.0.media = v;
+		}
 		/// Remove region restriction.
-		pub fn set_region(&mut self, v: bool) { self.0.region = v; }
+		pub fn set_region(&mut self, v: bool) {
+			self.0.region = v;
+		}
 		/// Remove bounding-path restriction.
-		pub fn set_bounding_path(&mut self, v: bool) { self.0.bounding_path = v; }
+		pub fn set_bounding_path(&mut self, v: bool) {
+			self.0.bounding_path = v;
+		}
 		/// Remove device-id restriction.
-		pub fn set_device_id(&mut self, v: bool) { self.0.device_id = v; }
+		pub fn set_device_id(&mut self, v: bool) {
+			self.0.device_id = v;
+		}
 		/// Remove console-id restriction.
-		pub fn set_console_id(&mut self, v: bool) { self.0.console_id = v; }
+		pub fn set_console_id(&mut self, v: bool) {
+			self.0.console_id = v;
+		}
 		/// Remove date-range restriction.
-		pub fn set_dates(&mut self, v: bool) { self.0.dates = v; }
+		pub fn set_dates(&mut self, v: bool) {
+			self.0.dates = v;
+		}
 		/// Remove keyvault-privilege restriction.
-		pub fn set_keyvault_privileges(&mut self, v: bool) { self.0.keyvault_privileges = v; }
+		pub fn set_keyvault_privileges(&mut self, v: bool) {
+			self.0.keyvault_privileges = v;
+		}
 		/// Remove signed-keyvault-only restriction.
-		pub fn set_signed_keyvault_only(&mut self, v: bool) { self.0.signed_keyvault_only = v; }
+		pub fn set_signed_keyvault_only(&mut self, v: bool) {
+			self.0.signed_keyvault_only = v;
+		}
 		/// Remove minimum library-version restrictions.
-		pub fn set_library_versions(&mut self, v: bool) { self.0.library_versions = v; }
+		pub fn set_library_versions(&mut self, v: bool) {
+			self.0.library_versions = v;
+		}
 		/// Zero the media id field.
-		pub fn set_zero_media_id(&mut self, v: bool) { self.0.zero_media_id = v; }
+		pub fn set_zero_media_id(&mut self, v: bool) {
+			self.0.zero_media_id = v;
+		}
 	}
 
 	// ──────────────────────────────────────────────────────────────────

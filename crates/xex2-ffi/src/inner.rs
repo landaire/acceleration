@@ -5,7 +5,8 @@
 
 use std::sync::Arc;
 use xex2::Xex2;
-use xex2::header::{ExecutionInfo, FileFormatInfo};
+use xex2::header::ExecutionInfo;
+use xex2::header::FileFormatInfo;
 use xex2::imports::ImportLibrary;
 use xex2::opt::ResourceEntry;
 use xex2::writer::RemoveLimits;
