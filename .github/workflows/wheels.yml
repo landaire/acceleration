@@ -38,10 +38,13 @@ jobs:
           - os: ubuntu-latest
             container: quay.io/pypa/manylinux_2_28_x86_64
             artifact: linux_x86_64
+          # Single macos-14 (arm64 host) cross-compiles for both
+          # aarch64 and x86_64, lipo's the result into a fat static
+          # archive, and feeds it into a universal2 wheel. macos-13
+          # (Intel) hosted runners have been effectively deprecated
+          # and reliably fail to pick up jobs.
           - os: macos-14
-            artifact: macos_arm64
-          - os: macos-13
-            artifact: macos_x86_64
+            artifact: macos_universal2
           - os: windows-2022
             artifact: windows_x86_64
     runs-on: ${{ matrix.os }}
@@ -64,19 +67,40 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-${{ matrix.artifact }}-${{ hashFiles('Cargo.lock') }}
+          # Segment the cache per target so the linux-manylinux,
+          # macos-arm, macos-x86, and windows archives don't fight over
+          # the same key.
+          shared-key: ${{ matrix.artifact }}
 
       - name: Install diplomat-tool
         run: cargo install diplomat-tool --version '^0.15' --locked
 
-      - name: Build xex2-ffi (static)
-        run: cargo build -p xex2-ffi --release
+      # On macOS we cross-compile to both aarch64 and x86_64, then
+      # merge the two thin static archives into one universal (fat)
+      # archive. The wheel stage produces a single universal2 wheel
+      # covering Apple Silicon and Intel Macs with one artifact.
+      # Other platforms use cargo's default host-target build.
+      - name: Add macOS x86_64 target
+        if: matrix.os == 'macos-14'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Build xex2-ffi (static, universal on macOS)
+        shell: bash
+        run: |
+          if [[ "${{ matrix.os }}" == "macos-14" ]]; then
+              cargo build -p xex2-ffi --release --target aarch64-apple-darwin
+              cargo build -p xex2-ffi --release --target x86_64-apple-darwin
+              mkdir -p target/release
+              lipo -create \
+                  target/aarch64-apple-darwin/release/libxex2_ffi.a \
+                  target/x86_64-apple-darwin/release/libxex2_ffi.a \
+                  -output target/release/libxex2_ffi.a
+              lipo -info target/release/libxex2_ffi.a
+          else
+              cargo build -p xex2-ffi --release
+          fi
 
       - name: Generate C++ bindings
         shell: bash

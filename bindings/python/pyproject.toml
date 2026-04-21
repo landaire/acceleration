@@ -64,5 +64,9 @@ test-command = 'python -c "import xex2; print(xex2.__file__)"'
 manylinux-x86_64-image = "quay.io/pypa/manylinux_2_28_x86_64"
 
 [tool.cibuildwheel.macos]
-# `macos-14` / `macos-13` runners pick native arches automatically.
+# Single universal2 wheel per Python version covers both arm64 and
+# x86_64. Requires the static Rust archive to be a universal (fat)
+# library — the wheels.yml `rust-build` step does the cross-compile
+# + `lipo -create` to produce it.
+archs = ["universal2"]
 environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
