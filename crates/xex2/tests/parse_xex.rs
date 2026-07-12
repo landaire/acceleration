@@ -1,16 +1,38 @@
 use xex2::Xex2;
 use xex2::header::CompressionType;
 
-fn load_xex(name: &str) -> (Vec<u8>, Xex2) {
+/// Load a XEX fixture from the local `xex_files/` corpus. Returns `None`
+/// when the file is absent — that directory is gitignored (it holds real
+/// console executables that can't be committed), so CI and fresh clones
+/// don't have it. Tests use `load_or_skip!` to skip cleanly in that case.
+fn load_xex(name: &str) -> Option<(Vec<u8>, Xex2)> {
 	let path = format!("../../xex_files/{}", name);
-	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
+	let data = match std::fs::read(&path) {
+		Ok(data) => data,
+		Err(_) => return None,
+	};
 	let xex = Xex2::parse(&data).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e));
-	(data, xex)
+	Some((data, xex))
+}
+
+/// Unwrap a fixture load, or return early from the test when the corpus is
+/// missing — mirrors the Python suite's "skip when the fixture isn't
+/// present" behaviour so a fresh clone and CI still run green.
+macro_rules! load_or_skip {
+	($name:expr) => {
+		match load_xex($name) {
+			Some(pair) => pair,
+			None => {
+				eprintln!("skipping: fixture {:?} not present (xex_files/ is gitignored)", $name);
+				return;
+			}
+		}
+	};
 }
 
 #[test]
 fn parse_devkit_basic() {
-	let (_data, xex) = load_xex("afplayer.xex");
+	let (_data, xex) = load_or_skip!("afplayer.xex");
 	assert_eq!(xex.header.module_flags.bits(), 0x09);
 	assert_eq!(xex.security_info.image_info.load_address, xex2::header::VirtualAddress(0x9ef30000));
 	assert!(xex.header.entry_point().is_some());
@@ -22,7 +44,7 @@ fn parse_devkit_basic() {
 
 #[test]
 fn parse_encrypted_basic() {
-	let (_data, xex) = load_xex("AntiPiracyUI.xex");
+	let (_data, xex) = load_or_skip!("AntiPiracyUI.xex");
 	let fmt = xex.header.file_format_info().unwrap();
 	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::Normal);
 	assert_eq!(fmt.compression_type, CompressionType::Basic);
@@ -30,7 +52,7 @@ fn parse_encrypted_basic() {
 
 #[test]
 fn extract_devkit_basic_produces_pe() {
-	let (data, xex) = load_xex("afplayer.xex");
+	let (data, xex) = load_or_skip!("afplayer.xex");
 	let basefile = xex.extract_basefile(&data).unwrap();
 	assert_eq!(&basefile[0..2], b"MZ");
 	assert_eq!(basefile.len(), xex.security_info.image_size as usize);
@@ -38,7 +60,7 @@ fn extract_devkit_basic_produces_pe() {
 
 #[test]
 fn extract_encrypted_basic_produces_pe() {
-	let (data, xex) = load_xex("AntiPiracyUI.xex");
+	let (data, xex) = load_or_skip!("AntiPiracyUI.xex");
 	let basefile = xex.extract_basefile(&data).unwrap();
 	assert_eq!(&basefile[0..2], b"MZ");
 }
@@ -46,7 +68,7 @@ fn extract_encrypted_basic_produces_pe() {
 #[test]
 fn extract_multiple_encrypted_basic() {
 	for name in &["Portal 2.xex", "xlaunch.xex", "HvxDump.xex"] {
-		let (data, xex) = load_xex(name);
+		let (data, xex) = load_or_skip!(name);
 		let fmt = xex.header.file_format_info().unwrap();
 		if fmt.compression_type == CompressionType::Basic {
 			let basefile = xex.extract_basefile(&data).unwrap();
@@ -57,7 +79,7 @@ fn extract_multiple_encrypted_basic() {
 
 #[test]
 fn execution_info_parsed() {
-	let (_data, xex) = load_xex("afplayer.xex");
+	let (_data, xex) = load_or_skip!("afplayer.xex");
 	let exec = xex.header.execution_info();
 	assert!(exec.is_some());
 }
@@ -90,8 +112,8 @@ fn ratings_are_ordered_by_age() {
 	assert!(unknown < unrated);
 
 	// Cross-check with actual game data
-	let (_pd, portal) = load_xex("Portal 2.xex");
-	let (_dd, deus_ex) = load_xex("Deus Ex.xex");
+	let (_pd, portal) = load_or_skip!("Portal 2.xex");
+	let (_dd, deus_ex) = load_or_skip!("Deus Ex.xex");
 	let p_ratings = portal.header.game_ratings().unwrap();
 	let d_ratings = deus_ex.header.game_ratings().unwrap();
 	// Portal 2 (E10+) is rated lower than Deus Ex HR (M)
@@ -102,13 +124,13 @@ fn ratings_are_ordered_by_age() {
 
 #[test]
 fn security_info_file_key_not_all_zeros_for_encrypted() {
-	let (_data, xex) = load_xex("AntiPiracyUI.xex");
+	let (_data, xex) = load_or_skip!("AntiPiracyUI.xex");
 	assert_ne!(xex.security_info.image_info.file_key, xex2::header::AesKey([0u8; 16]));
 }
 
 #[test]
 fn extract_unencrypted_normal_produces_pe() {
-	let (data, xex) = load_xex("xshell twi.xex");
+	let (data, xex) = load_or_skip!("xshell twi.xex");
 	let fmt = xex.header.file_format_info().unwrap();
 	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::None);
 	assert_eq!(fmt.compression_type, CompressionType::Normal);
@@ -118,7 +140,7 @@ fn extract_unencrypted_normal_produces_pe() {
 
 #[test]
 fn extract_encrypted_normal_produces_pe() {
-	let (data, xex) = load_xex("ArchEngine.xex");
+	let (data, xex) = load_or_skip!("ArchEngine.xex");
 	let fmt = xex.header.file_format_info().unwrap();
 	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::Normal);
 	assert_eq!(fmt.compression_type, CompressionType::Normal);
@@ -128,7 +150,7 @@ fn extract_encrypted_normal_produces_pe() {
 
 #[test]
 fn extract_large_window_normal() {
-	let (data, xex) = load_xex("xshell - Copy.xex");
+	let (data, xex) = load_or_skip!("xshell - Copy.xex");
 	let fmt = xex.header.file_format_info().unwrap();
 	assert_eq!(fmt.compression_type, CompressionType::Normal);
 	assert_eq!(fmt.window_size, Some(0x100000));
@@ -139,7 +161,7 @@ fn extract_large_window_normal() {
 #[test]
 fn extract_multiple_normal_compression() {
 	for name in &["xbdm.xex", "mfgbootlauncher.xex", "BBNeo!_0424.xex"] {
-		let (data, xex) = load_xex(name);
+		let (data, xex) = load_or_skip!(name);
 		let fmt = xex.header.file_format_info().unwrap();
 		if fmt.compression_type == CompressionType::Normal {
 			let basefile = xex.extract_basefile(&data).unwrap();
@@ -150,7 +172,7 @@ fn extract_multiple_normal_compression() {
 
 #[test]
 fn patch_resign_verifies_with_devkit_key() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	let limits = xex2::writer::RemoveLimits { region: true, media: true, ..Default::default() };
 
 	let patched_data = xex.modify(&data, &limits).unwrap();
@@ -178,10 +200,10 @@ fn patch_resign_verifies_with_devkit_key() {
 fn rebuild_fast_path_matches_modify() {
 	let limits = xex2::writer::RemoveLimits { region: true, media: true, zero_media_id: true, ..Default::default() };
 
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	let via_modify = xex.modify(&data, &limits).unwrap();
 
-	let (data2, xex2) = load_xex("haloreach-powerhouse.xex");
+	let (data2, xex2) = load_or_skip!("haloreach-powerhouse.xex");
 	let mut via_stream = Vec::new();
 	xex2.rebuild(&data2).remove_limits(limits).write_to(&mut via_stream).unwrap();
 
@@ -201,7 +223,7 @@ fn page_descriptor_chain_matches_fixtures() {
 		"ArchEngine.xex",
 		"xbdm.xex",
 	] {
-		let (data, xex) = load_xex(name);
+		let (data, xex) = load_or_skip!(name);
 		let basefile = xex.extract_basefile(&data).unwrap();
 		match xex2::page_descriptors::verify_chain(&basefile, &xex.header, &xex.security_info, &data) {
 			Ok(()) => eprintln!("{}: OK", name),
@@ -226,7 +248,7 @@ fn header_hash_formula_matches_fixtures() {
 		"ArchEngine.xex",
 		"xbdm.xex",
 	] {
-		let (data, xex) = load_xex(name);
+		let (data, xex) = load_or_skip!(name);
 		let computed = xex2::hashes::compute_header_hash(&data, &xex.header, &xex.security_info);
 		assert_eq!(computed, xex.security_info.image_info.header_hash, "header_hash mismatch for {}", name);
 	}
@@ -244,7 +266,7 @@ fn import_table_hash_formula_matches_fixtures() {
 		"ArchEngine.xex",
 		"xbdm.xex",
 	] {
-		let (_data, xex) = load_xex(name);
+		let (_data, xex) = load_or_skip!(name);
 		let Some(computed) = xex2::hashes::compute_import_table_hash(&xex.header) else {
 			continue;
 		};
@@ -258,7 +280,7 @@ fn import_table_hash_formula_matches_fixtures() {
 
 #[test]
 fn bounding_path_clears_module_flag() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	let original = xex.header.module_flags;
 
 	let limits = xex2::writer::RemoveLimits { bounding_path: true, ..Default::default() };
@@ -274,7 +296,7 @@ fn bounding_path_clears_module_flag() {
 
 #[test]
 fn device_id_clears_module_flag() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	let original = xex.header.module_flags;
 
 	let limits = xex2::writer::RemoveLimits { device_id: true, ..Default::default() };
@@ -289,7 +311,7 @@ fn device_id_clears_module_flag() {
 
 #[test]
 fn image_flag_limits_re_sign() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	// Combine with `region` to guarantee image_info changes and thus a re-sign,
 	// regardless of whether this XEX has the keyvault bits originally set.
 	let limits = xex2::writer::RemoveLimits {
@@ -344,7 +366,7 @@ fn verify_header_hash(patched: &[u8]) {
 fn console_id_zeroes_serial_list_and_reverifies() {
 	// Find any fixture with a ConsoleSerialList to exercise this path.
 	for name in &["haloreach-powerhouse.xex", "afplayer.xex", "Portal 2.xex", "Deus Ex.xex"] {
-		let (data, xex) = load_xex(name);
+		let (data, xex) = load_or_skip!(name);
 		if xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::ConsoleSerialList).is_none()
 		{
 			continue;
@@ -360,7 +382,7 @@ fn console_id_zeroes_serial_list_and_reverifies() {
 
 #[test]
 fn dates_limit_sets_max_filetime_and_reverifies() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	let Some(span) = xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange) else {
 		eprintln!("skipping: no DateRange in fixture");
 		return;
@@ -380,7 +402,7 @@ fn dates_limit_sets_max_filetime_and_reverifies() {
 
 #[test]
 fn library_versions_zeroes_version_min_and_reverifies() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	let limits = xex2::writer::RemoveLimits { library_versions: true, ..Default::default() };
 	let patched = xex.modify(&data, &limits).unwrap();
 
@@ -401,7 +423,7 @@ fn library_versions_zeroes_version_min_and_reverifies() {
 
 #[test]
 fn rebuild_field_setters_apply_specific_values() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 
 	let mut sink = Vec::new();
 	xex.rebuild(&data)
@@ -423,7 +445,7 @@ fn rebuild_field_setters_apply_specific_values() {
 
 #[test]
 fn rebuild_set_date_range_recomputes_header_hash() {
-	let (data, xex) = load_xex("haloreach-powerhouse.xex");
+	let (data, xex) = load_or_skip!("haloreach-powerhouse.xex");
 	if xex.header.optional_header_source_range(&data, xex2::header::OptionalHeaderKey::DateRange).is_none() {
 		eprintln!("skipping: no DateRange");
 		return;
@@ -445,7 +467,7 @@ fn rebuild_set_date_range_recomputes_header_hash() {
 fn decrypt_encrypted_xex_roundtrip() {
 	// Start from an encrypted fixture, decrypt, re-parse, verify PE extraction
 	// yields the same basefile.
-	let (data, xex) = load_xex("AntiPiracyUI.xex");
+	let (data, xex) = load_or_skip!("AntiPiracyUI.xex");
 	let original_basefile = xex.extract_basefile(&data).unwrap();
 
 	let mut sink = Vec::new();
@@ -465,7 +487,7 @@ fn decrypt_encrypted_xex_roundtrip() {
 #[test]
 fn encrypt_decrypted_xex_roundtrip() {
 	// First decrypt a known XEX, then re-encrypt, then verify basefile matches.
-	let (data, xex) = load_xex("AntiPiracyUI.xex");
+	let (data, xex) = load_or_skip!("AntiPiracyUI.xex");
 	let original_basefile = xex.extract_basefile(&data).unwrap();
 
 	let mut decrypted = Vec::new();
@@ -494,7 +516,7 @@ fn encrypt_decrypted_xex_roundtrip() {
 fn machine_switch_rewraps_file_key() {
 	// Portal 2 is retail-signed/encrypted; switching to devkit should re-wrap
 	// the file_key under the devkit master key.
-	let (data, xex) = load_xex("Portal 2.xex");
+	let (data, xex) = load_or_skip!("Portal 2.xex");
 	let original_basefile = xex.extract_basefile(&data).unwrap();
 	let original_file_key = xex.security_info.image_info.file_key;
 
@@ -516,7 +538,7 @@ fn machine_switch_rewraps_file_key() {
 fn setting_target_matching_current_state_is_noop() {
 	// AntiPiracyUI is already encrypted; setting target_encryption=Encrypted
 	// should be a no-op (no re-encryption, output equals input modulo unrelated edits).
-	let (data, xex) = load_xex("AntiPiracyUI.xex");
+	let (data, xex) = load_or_skip!("AntiPiracyUI.xex");
 
 	let mut sink = Vec::new();
 	xex.rebuild(&data).target_encryption(xex2::writer::TargetEncryption::Encrypted).write_to(&mut sink).unwrap();
@@ -528,7 +550,7 @@ fn setting_target_matching_current_state_is_noop() {
 #[test]
 fn replace_pe_rejects_basic_compression() {
 	// Basic-compressed sources aren't handled by the full rebuild path yet.
-	let (data, xex) = load_xex("afplayer.xex");
+	let (data, xex) = load_or_skip!("afplayer.xex");
 	let mut sink = Vec::new();
 	let mut pe = vec![0u8; 1024];
 	pe[0] = b'M';
@@ -541,7 +563,7 @@ fn replace_pe_rejects_basic_compression() {
 fn replace_pe_on_normal_compressed_source() {
 	// xshell twi.xex is Normal-compressed. With the full-rebuild path we can
 	// decompress under the hood, swap the PE, and recompress transparently.
-	let (data, xex) = load_xex("xshell twi.xex");
+	let (data, xex) = load_or_skip!("xshell twi.xex");
 	let image_size = xex.security_info.image_size as usize;
 
 	// Craft a replacement PE that matches the original image_size (page
@@ -634,7 +656,7 @@ fn builder_produces_compressed_xex() {
 fn basic_compression_transform_not_implemented() {
 	// afplayer.xex is Basic-compressed. Basic ↔ anything isn't wired up yet;
 	// confirm we still bail cleanly rather than produce garbage.
-	let (data, xex) = load_xex("afplayer.xex");
+	let (data, xex) = load_or_skip!("afplayer.xex");
 	let mut sink = Vec::new();
 	let result =
 		xex.rebuild(&data).target_compression(xex2::writer::TargetCompression::Uncompressed).write_to(&mut sink);
@@ -645,7 +667,7 @@ fn basic_compression_transform_not_implemented() {
 fn rebuild_decompresses_normal_xex() {
 	// xshell twi.xex is Normal-compressed, unencrypted. Rebuild it as
 	// uncompressed and verify the extracted PE matches direct extraction.
-	let (data, xex) = load_xex("xshell twi.xex");
+	let (data, xex) = load_or_skip!("xshell twi.xex");
 	assert_eq!(xex.header.file_format_info().unwrap().compression_type, CompressionType::Normal);
 
 	let original_pe = xex.extract_basefile(&data).unwrap();
@@ -669,7 +691,7 @@ fn rebuild_decompresses_normal_xex() {
 fn rebuild_compresses_uncompressed_xex() {
 	// Start from a Normal XEX → decompress → compress. The compressed
 	// rebuild must round-trip back to the same PE bytes.
-	let (data, xex) = load_xex("xshell twi.xex");
+	let (data, xex) = load_or_skip!("xshell twi.xex");
 	let original_pe = xex.extract_basefile(&data).unwrap();
 
 	// Step 1: decompress the source.
