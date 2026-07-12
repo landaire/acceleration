@@ -27,9 +27,14 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      # Report every OS instead of cancelling the rest on the first failure.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all
+      # Exclude the GUI app crate: it's a publish=false eframe/egui frontend
+      # with no tests, and linking its cdylib drags in system libs (libxcb, …)
+      # that headless CI runners don't have. clippy still compile-checks it.
+      - run: cargo test --workspace --exclude acceleration_ui
