@@ -110,13 +110,15 @@ fn parse_import_table(data: &[u8]) -> Option<ImportTable> {
 /// name table padded to 4 bytes, then one variable-length record per library.
 /// Each library's `name_index` is its position in `libraries`.
 pub fn serialize_import_libraries(libraries: &[ImportLibrary]) -> Vec<u8> {
+	// Each name is NUL-terminated and padded to a 4-byte boundary; the loader
+	// advances by `strlen + 1` then rounds up to 4, so names must start aligned.
 	let mut strings: Vec<u8> = Vec::new();
 	for lib in libraries {
 		strings.extend_from_slice(lib.name.as_bytes());
 		strings.push(0);
-	}
-	while !strings.len().is_multiple_of(4) {
-		strings.push(0);
+		while !strings.len().is_multiple_of(4) {
+			strings.push(0);
+		}
 	}
 
 	let mut lib_blobs: Vec<u8> = Vec::new();
