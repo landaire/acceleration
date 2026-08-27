@@ -11,6 +11,7 @@
 
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
+use byteorder::WriteBytesExt;
 #[cfg(feature = "serde")]
 use serde::Serialize;
 use std::io::Cursor;
@@ -100,4 +101,45 @@ fn parse_import_table(data: &[u8]) -> Option<ImportTable> {
 	}
 
 	Some(ImportTable { libraries })
+}
+
+/// Serialize an `ImportLibraries` optional-header blob (key `0x000103FF`).
+///
+/// Layout is the inverse of [`parse_import_table`]: a 12-byte header
+/// (`total_size`, `string_table_size`, `library_count`), a NUL-terminated
+/// name table padded to 4 bytes, then one variable-length record per library.
+/// Each library's `name_index` is its position in `libraries`.
+pub fn serialize_import_libraries(libraries: &[ImportLibrary]) -> Vec<u8> {
+	let mut strings: Vec<u8> = Vec::new();
+	for lib in libraries {
+		strings.extend_from_slice(lib.name.as_bytes());
+		strings.push(0);
+	}
+	while !strings.len().is_multiple_of(4) {
+		strings.push(0);
+	}
+
+	let mut lib_blobs: Vec<u8> = Vec::new();
+	for (index, lib) in libraries.iter().enumerate() {
+		let entry_size = 0x28 + lib.records.len() * 4;
+		lib_blobs.write_u32::<BigEndian>(entry_size as u32).unwrap();
+		lib_blobs.extend_from_slice(&lib.digest.0);
+		lib_blobs.write_u32::<BigEndian>(lib.import_id).unwrap();
+		lib_blobs.write_u32::<BigEndian>(u32::from(lib.version)).unwrap();
+		lib_blobs.write_u32::<BigEndian>(u32::from(lib.version_min)).unwrap();
+		lib_blobs.write_u16::<BigEndian>(index as u16).unwrap();
+		lib_blobs.write_u16::<BigEndian>(lib.records.len() as u16).unwrap();
+		for &record in &lib.records {
+			lib_blobs.write_u32::<BigEndian>(record).unwrap();
+		}
+	}
+
+	let total_size = 12 + strings.len() + lib_blobs.len();
+	let mut out: Vec<u8> = Vec::with_capacity(total_size);
+	out.write_u32::<BigEndian>(total_size as u32).unwrap();
+	out.write_u32::<BigEndian>(strings.len() as u32).unwrap();
+	out.write_u32::<BigEndian>(libraries.len() as u32).unwrap();
+	out.extend_from_slice(&strings);
+	out.extend_from_slice(&lib_blobs);
+	out
 }

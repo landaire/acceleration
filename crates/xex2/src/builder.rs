@@ -29,6 +29,8 @@ use crate::error::Xex2Error;
 use crate::hashes;
 use crate::header::EncryptionType;
 use crate::header::OptionalHeaderKey;
+use crate::imports::ImportLibrary;
+use crate::imports::serialize_import_libraries;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
 use crate::page_descriptors;
@@ -54,6 +56,9 @@ pub struct Xex2Builder {
 	/// If `Some(window_size_bytes)`, the builder LZX-compresses `pe` and emits
 	/// a Normal-compressed stream. Otherwise the PE is written uncompressed.
 	compress_window: Option<u32>,
+	/// Import libraries to emit in the `ImportLibraries` optional header. Empty
+	/// yields the minimal empty table.
+	imports: Vec<ImportLibrary>,
 }
 
 impl Xex2Builder {
@@ -69,7 +74,15 @@ impl Xex2Builder {
 			base_version: Version::from(0),
 			entry_point: None,
 			compress_window: None,
+			imports: Vec::new(),
 		}
+	}
+
+	/// Set the import libraries emitted in the `ImportLibraries` header. Each
+	/// library's records are VAs of import descriptors inside the PE image.
+	pub fn imports(mut self, imports: Vec<ImportLibrary>) -> Self {
+		self.imports = imports;
+		self
 	}
 
 	/// Emit an LZX-compressed (Normal) XEX using the default 64 KB window,
@@ -158,7 +171,11 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 
 	// Build optional-header data blobs we'll need to place in the file.
 	let exec_info = execution_info_bytes(&b);
-	let import_libs = empty_import_libraries_bytes();
+	let import_libs = if b.imports.is_empty() {
+		empty_import_libraries_bytes()
+	} else {
+		serialize_import_libraries(&b.imports)
+	};
 	let file_format = match &compressed_stream {
 		Some(stream) => crate::compress::file_format_info_blob_normal(EncryptionType::None, stream),
 		None => file_format_info_bytes(),
@@ -260,8 +277,9 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	BigEndian::write_u32(&mut out[ii_start + 0x04..ii_start + 0x08], b.image_flags.bits()); // image_flags
 	BigEndian::write_u32(&mut out[ii_start + 0x08..ii_start + 0x0C], b.load_address.0); // load_address
 	out[ii_start + 0x0C..ii_start + 0x20].copy_from_slice(&*image_hash);
-	// import_table_count = 0 (we emit an empty import table)
-	// import_table_hash left zero
+	// import_table_count = number of import libraries.
+	BigEndian::write_u32(&mut out[ii_start + 0x20..ii_start + 0x24], b.imports.len() as u32);
+	// import_table_hash left zero (Xenia does not verify it)
 	// media_id left zero
 	// file_key left zero (encryption None)
 	// export_table_address left zero
