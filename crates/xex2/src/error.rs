@@ -20,7 +20,28 @@ pub enum Xex2Error {
 	PatchOutOfBounds { offset: u64, len: usize, buf_len: usize },
 	PatchOverlap,
 	RebuildTransformNotImplemented,
+	MalformedBasefilePe(BasefileDefect),
 	Io(std::io::Error),
+}
+
+/// A structural defect in a basefile PE that prevents deriving its page
+/// section types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BasefileDefect {
+	TruncatedDosHeader,
+	TruncatedCoffHeader,
+	TruncatedSectionHeader,
+}
+
+impl fmt::Display for BasefileDefect {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		let text = match self {
+			Self::TruncatedDosHeader => "truncated DOS header",
+			Self::TruncatedCoffHeader => "truncated COFF header",
+			Self::TruncatedSectionHeader => "truncated section header",
+		};
+		f.write_str(text)
+	}
 }
 
 impl fmt::Display for Xex2Error {
@@ -56,6 +77,7 @@ impl fmt::Display for Xex2Error {
 			Self::RebuildTransformNotImplemented => {
 				write!(f, "rebuild transform (compression / encryption / machine / PE replacement) is not implemented")
 			}
+			Self::MalformedBasefilePe(defect) => write!(f, "malformed basefile PE: {}", defect),
 			Self::Io(e) => write!(f, "I/O error: {}", e),
 		}
 	}

@@ -562,7 +562,10 @@ fn read_page_descriptor_template(
 		let off = base + i * 24;
 		let bytes: &[u8; 4] = source.get(off..off + 4)?.try_into().ok()?;
 		let info = u32::from_be_bytes(*bytes);
-		out.push(crate::page_descriptors::DescriptorSlot { page_count: info >> 4, flags: info & 0xF });
+		out.push(crate::page_descriptors::DescriptorSlot {
+			page_count: info >> 4,
+			section_type: crate::page_descriptors::SectionType::from_nibble(info),
+		});
 	}
 	Some(out)
 }
