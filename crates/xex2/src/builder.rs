@@ -24,6 +24,7 @@
 //! ```
 
 use crate::crypto;
+use crate::error::BasefileDefect;
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::hashes;
@@ -34,6 +35,7 @@ use crate::imports::serialize_import_libraries;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
 use crate::page_descriptors;
+use crate::page_descriptors::SectionType;
 use byteorder::BigEndian;
 use byteorder::ByteOrder;
 use rootcause::IntoReport;
@@ -178,7 +180,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	};
 	let file_format = match &compressed_stream {
 		Some(stream) => crate::compress::file_format_info_blob_normal(EncryptionType::None, stream),
-		None => file_format_info_bytes(),
+		None => file_format_info_bytes(EncryptionType::None),
 	};
 
 	// Compute file layout:
@@ -222,11 +224,19 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 		entries.push(OptEntry::Inline { key: OptionalHeaderKey::EntryPoint as u32, value: entry.0 });
 	}
 
-	// Page descriptors: we need to know image_size = pe.len(). One descriptor
-	// covering the whole image with FLAG_HASHED.
+	// Page descriptors: one per page, each recording the page's section type.
+	// The kernel and hypervisor read this to protect memory: a page that is not
+	// marked as code is not added to the executable range, so code placed there
+	// cannot run. Derive each page's type from the PE section covering it. The
+	// hash chain applies to every page regardless of type.
 	let page_size: u32 = if b.image_flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
+	let page_count_total = (b.pe.len() as u32).div_ceil(page_size);
+	let template: Vec<page_descriptors::DescriptorSlot> = page_section_types(&b.pe, page_size, page_count_total)?
+		.into_iter()
+		.map(|section_type| page_descriptors::DescriptorSlot { page_count: 1, section_type })
+		.collect();
 	let page_descriptors::GeneratedDescriptors { descriptors, image_hash } =
-		page_descriptors::generate(&b.pe, page_size, None);
+		page_descriptors::generate(&b.pe, page_size, Some(&template));
 
 	// security_info: fixed 0x184 + descriptors*24 bytes.
 	let security_offset = cursor;
@@ -300,6 +310,16 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// PE data (or compressed stream, selected above).
 	out[data_offset..data_offset + data_region.len()].copy_from_slice(data_region);
 
+	// Chain the import-library digests and record image_info.import_table_hash.
+	// The real kernel recomputes this chain and rejects a non-empty import
+	// table whose hash is zero, so it must be set before header_hash + signing.
+	if !b.imports.is_empty() {
+		let blob = &mut out[import_libs_off..import_libs_off + import_libs.len()];
+		if let Some(hash) = hashes::rewrite_import_table_hashes(blob) {
+			out[ii_start + 0x24..ii_start + 0x38].copy_from_slice(&*hash);
+		}
+	}
+
 	// Compute header_hash now that the whole pre-PE region is finalized.
 	// We need a Xex2Header value to call compute_header_hash -- re-parse.
 	let parsed = crate::header::Xex2Header::parse(&out[..])?;
@@ -307,17 +327,15 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	let header_hash = hashes::compute_header_hash(&out, &parsed, &parsed_sec);
 	out[ii_start + 0x5C..ii_start + 0x70].copy_from_slice(&*header_hash);
 
-	// RotSumSha + sign.
+	// RotSumSha + sign. NOTE: PKCS#1 here is accepted by Xenia only; real
+	// devkit hardware needs XeCryptBnQwBeSig (see xecrypt::xex_sig) and an
+	// encrypted payload. Hardware XEXs currently go through imagexex instead.
 	let image_info = &out[ii_start..ii_start + 0x74];
 	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
 	let sig = xecrypt::RsaKeyKind::Pirs
 		.sign(xecrypt::ConsoleKind::Devkit, &digest)
 		.map_err(|_| Xex2Error::SigningFailed.into_report())?;
 	out[security_offset + 0x08..security_offset + 0x108].copy_from_slice(&sig);
-
-	// Silence unused warnings for fields we may wire up later.
-	let _ = crypto::DEVKIT_KEY;
-	let _ = EncryptionType::None;
 
 	Ok(out)
 }
@@ -334,6 +352,72 @@ struct BlobPlacement {
 
 fn align_up(x: usize, align: usize) -> usize {
 	x.div_ceil(align) * align
+}
+
+// PE section header characteristics bits.
+const SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+const SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+/// Determine the section type of each page from the PE sections that cover it.
+///
+/// A page may span sections with different protections when the linker packs
+/// code and data together. A page descriptor records one section type, not a
+/// set, so the type is chosen by precedence: a page covered by any executable
+/// section is code; otherwise a page covered by any writable section is data;
+/// otherwise it is read-only data. A page that holds both code and writable
+/// data is therefore mapped read-only, so writable data must occupy a separate
+/// page to remain writable. Pages that no section covers, such as the PE
+/// headers, are read-only data.
+///
+/// A parse failure returns an error rather than a default, because typing every
+/// page as read-only data would yield a XEX with no executable page whose entry
+/// point cannot run.
+fn page_section_types(pe: &[u8], page_size: u32, page_count: u32) -> Result<Vec<SectionType>> {
+	let rd_u32 = |off: usize| -> Option<u32> {
+		pe.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+	};
+	let rd_u16 = |off: usize| -> Option<u16> {
+		pe.get(off..off + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()))
+	};
+	let defect = |d: BasefileDefect| Xex2Error::MalformedBasefilePe(d).into_report();
+
+	let lfanew = rd_u32(0x3C).map(|v| v as usize).ok_or_else(|| defect(BasefileDefect::TruncatedDosHeader))?;
+	// COFF header at lfanew + 4: NumberOfSections at + 2, SizeOfOptionalHeader at + 16.
+	let num_sections = rd_u16(lfanew + 6).ok_or_else(|| defect(BasefileDefect::TruncatedCoffHeader))?;
+	let opt_size = rd_u16(lfanew + 20).map(|v| v as usize).ok_or_else(|| defect(BasefileDefect::TruncatedCoffHeader))?;
+	let sec_table = lfanew + 4 + 20 + opt_size;
+
+	let mut any_exec = vec![false; page_count as usize];
+	let mut any_write = vec![false; page_count as usize];
+	for i in 0..num_sections as usize {
+		let hdr = sec_table + i * 40;
+		let (Some(vsize), Some(vaddr), Some(chars)) =
+			(rd_u32(hdr + 8), rd_u32(hdr + 12), rd_u32(hdr + 36))
+		else {
+			return Err(defect(BasefileDefect::TruncatedSectionHeader));
+		};
+		let first_page = vaddr / page_size;
+		let last_page = vaddr.saturating_add(vsize).div_ceil(page_size).min(page_count);
+		for p in first_page..last_page {
+			if chars & SCN_MEM_EXECUTE != 0 {
+				any_exec[p as usize] = true;
+			}
+			if chars & SCN_MEM_WRITE != 0 {
+				any_write[p as usize] = true;
+			}
+		}
+	}
+	Ok((0..page_count as usize)
+		.map(|p| {
+			if any_exec[p] {
+				SectionType::Code
+			} else if any_write[p] {
+				SectionType::Data
+			} else {
+				SectionType::ReadOnlyData
+			}
+		})
+		.collect())
 }
 
 fn execution_info_bytes(b: &Xex2Builder) -> Vec<u8> {
@@ -362,10 +446,78 @@ fn empty_import_libraries_bytes() -> Vec<u8> {
 	out
 }
 
-fn file_format_info_bytes() -> Vec<u8> {
-	// u32 info_size, u16 encryption_type=None, u16 compression_type=None
+fn file_format_info_bytes(encryption: EncryptionType) -> Vec<u8> {
+	// u32 info_size, u16 encryption_type, u16 compression_type=None
 	let mut out = vec![0u8; 8];
 	BigEndian::write_u32(&mut out[0..4], 8);
-	// encryption_type + compression_type = 0
+	BigEndian::write_u16(&mut out[4..6], encryption as u16);
+	// compression_type = 0 (None)
 	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// Build a little-endian PE that populates only the header fields
+	/// [`page_section_types`] reads. Each section is `(virtual_address,
+	/// virtual_size, characteristics)`.
+	fn synthetic_pe(sections: &[(u32, u32, u32)]) -> Vec<u8> {
+		let lfanew = 0x40usize;
+		let opt_size = 0xE0usize;
+		let sec_table = lfanew + 24 + opt_size;
+		let mut pe = vec![0u8; sec_table + sections.len() * 40];
+		pe[0x3C..0x40].copy_from_slice(&(lfanew as u32).to_le_bytes());
+		pe[lfanew..lfanew + 4].copy_from_slice(b"PE\0\0");
+		pe[lfanew + 6..lfanew + 8].copy_from_slice(&(sections.len() as u16).to_le_bytes());
+		pe[lfanew + 20..lfanew + 22].copy_from_slice(&(opt_size as u16).to_le_bytes());
+		for (i, (vaddr, vsize, chars)) in sections.iter().enumerate() {
+			let h = sec_table + i * 40;
+			pe[h + 8..h + 12].copy_from_slice(&vsize.to_le_bytes());
+			pe[h + 12..h + 16].copy_from_slice(&vaddr.to_le_bytes());
+			pe[h + 36..h + 40].copy_from_slice(&chars.to_le_bytes());
+		}
+		pe
+	}
+
+	#[test]
+	fn page_type_follows_section_protection() {
+		let ps = 0x10000u32;
+		let pe = synthetic_pe(&[
+			(0x10000, ps, SCN_MEM_EXECUTE),
+			(0x20000, ps, SCN_MEM_WRITE),
+			(0x30000, ps, 0),
+		]);
+		let types = page_section_types(&pe, ps, 5).unwrap();
+		assert_eq!(
+			types,
+			vec![
+				SectionType::ReadOnlyData, // page 0: no section (PE headers)
+				SectionType::Code,         // page 1: executable
+				SectionType::Data,         // page 2: writable
+				SectionType::ReadOnlyData, // page 3: read-only
+				SectionType::ReadOnlyData, // page 4: no section
+			]
+		);
+	}
+
+	#[test]
+	fn code_takes_precedence_on_a_shared_page() {
+		let ps = 0x10000u32;
+		let pe = synthetic_pe(&[
+			(0x10000, 0x1000, SCN_MEM_EXECUTE),
+			(0x18000, 0x1000, SCN_MEM_WRITE),
+		]);
+		let types = page_section_types(&pe, ps, 2).unwrap();
+		assert_eq!(types, vec![SectionType::ReadOnlyData, SectionType::Code]);
+	}
+
+	#[test]
+	fn truncated_pe_reports_a_defect() {
+		let err = page_section_types(&[0u8; 8], 0x10000, 1).unwrap_err();
+		assert!(matches!(
+			err.current_context(),
+			Xex2Error::MalformedBasefilePe(BasefileDefect::TruncatedDosHeader)
+		));
+	}
 }
