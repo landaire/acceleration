@@ -57,6 +57,7 @@ mod error;
 mod keys;
 pub mod keyvault;
 pub mod symmetric;
+pub mod xex_sig;
 
 #[cfg(feature = "serde")]
 use serde::Serialize;
