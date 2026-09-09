@@ -85,10 +85,7 @@ fn parse_import_table(data: &[u8]) -> Option<ImportTable> {
 		let name_index = c.read_u16::<BigEndian>().ok()? as usize;
 		let record_count = c.read_u16::<BigEndian>().ok()? as usize;
 
-		let name = match names.get(name_index) {
-			Some(n) => n.clone(),
-			None => return None,
-		};
+		let name = names.get(name_index)?.clone();
 
 		let mut records = Vec::with_capacity(record_count);
 		for _ in 0..record_count {
