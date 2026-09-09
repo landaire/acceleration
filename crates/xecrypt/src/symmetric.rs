@@ -28,8 +28,8 @@ pub fn xe_crypt_sha(data: &[u8]) -> [u8; 20] {
 }
 
 pub fn xe_crypt_rot_sum(state: &mut [u64; 4], data: &[u8]) {
-	for chunk in data.chunks_exact(8) {
-		let qw = u64::from_be_bytes(chunk.try_into().unwrap());
+	for chunk in data.as_chunks::<8>().0 {
+		let qw = u64::from_be_bytes(*chunk);
 		let sum = state[1].wrapping_add(qw);
 		let carry = if sum < qw { 1u64 } else { 0 };
 		state[0] = state[0].wrapping_add(carry);

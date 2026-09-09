@@ -23,7 +23,6 @@
 //! std::fs::write("game.xex", bytes).unwrap();
 //! ```
 
-use crate::crypto;
 use crate::error::BasefileDefect;
 use crate::error::Result;
 use crate::error::Xex2Error;
