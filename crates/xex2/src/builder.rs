@@ -1,12 +1,8 @@
 //! Build an XEX file from scratch.
 //!
-//! [`Xex2Builder`] assembles a minimal, valid XEX2 layout around a user-supplied
-//! PE image. The result is uncompressed and unencrypted, signed with the devkit
-//! PIRS private key.
-//!
-//! **Scope**: the builder covers the common "devkit-style" case only --
-//! no compression, no encryption, no delta patches. Page descriptors and
-//! `image_hash` use the kernel-verified formula from [`crate::page_descriptors`].
+//! [`Xex2Builder`] assembles a valid XEX2 layout around a user-supplied PE
+//! image. It supports normal compression, devkit and retail payload encryption,
+//! import tables, and devkit executable signatures.
 //!
 //! # Example
 //!
@@ -27,8 +23,10 @@ use crate::error::BasefileDefect;
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::hashes;
+use crate::header::AesKey;
 use crate::header::EncryptionType;
 use crate::header::OptionalHeaderKey;
+use crate::header::Sha1Hash;
 use crate::imports::ImportLibrary;
 use crate::imports::serialize_import_libraries;
 use crate::opt::ImageFlags;
@@ -42,6 +40,22 @@ use xenon_types::MediaId;
 use xenon_types::TitleId;
 use xenon_types::Version;
 use xenon_types::VirtualAddress;
+
+/// Master-key domain used to wrap the payload session key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncryptionTarget {
+	Devkit,
+	Retail,
+}
+
+impl EncryptionTarget {
+	fn master_key(self) -> &'static AesKey {
+		match self {
+			Self::Devkit => &crate::crypto::DEVKIT_KEY,
+			Self::Retail => &crate::crypto::RETAIL_KEY,
+		}
+	}
+}
 
 /// Build a valid, devkit-signed XEX from a PE image + metadata.
 pub struct Xex2Builder {
@@ -57,6 +71,7 @@ pub struct Xex2Builder {
 	/// If `Some(window_size_bytes)`, the builder LZX-compresses `pe` and emits
 	/// a Normal-compressed stream. Otherwise the PE is written uncompressed.
 	compress_window: Option<u32>,
+	encryption_target: Option<EncryptionTarget>,
 	/// Import libraries to emit in the `ImportLibraries` optional header. Empty
 	/// yields the minimal empty table.
 	imports: Vec<ImportLibrary>,
@@ -75,6 +90,7 @@ impl Xex2Builder {
 			base_version: Version::from(0),
 			entry_point: None,
 			compress_window: None,
+			encryption_target: None,
 			imports: Vec::new(),
 		}
 	}
@@ -96,6 +112,13 @@ impl Xex2Builder {
 	/// Emit an LZX-compressed (Normal) XEX with an explicit window size.
 	pub fn compress_with(mut self, window: lzxc::WindowSize) -> Self {
 		self.compress_window = Some(window.bytes());
+		self
+	}
+
+	/// Encrypt the payload for the selected console key domain. The session
+	/// key is derived from the PE content so identical inputs remain reproducible.
+	pub fn encrypt(mut self, target: EncryptionTarget) -> Self {
+		self.encryption_target = Some(target);
 		self
 	}
 
@@ -162,24 +185,33 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	//   - 0xFF:        variable-length (value is a file offset to u32 size + body)
 	//   - other:       (N * 4) bytes (value is a file offset)
 
-	// If compression is requested, compress the PE up front so we can stitch
-	// the first_block_hash into the FileFormatInfo blob. The data region
-	// written later is either `b.pe` (uncompressed) or `stream.data`.
-	let compressed_stream: Option<crate::compress::CompressedStream> = match b.compress_window {
+	// If compression is requested, compress the PE before laying out headers.
+	let encryption = if b.encryption_target.is_some() { EncryptionType::Normal } else { EncryptionType::None };
+	let session_key = b.encryption_target.map(|_| {
+		let digest = xecrypt::symmetric::xe_crypt_sha(&b.pe);
+		let mut key = [0u8; 16];
+		key.copy_from_slice(&digest[..16]);
+		AesKey(key)
+	});
+	let mut compressed_stream: Option<crate::compress::CompressedStream> = match b.compress_window {
 		Some(window) => Some(crate::compress::compress_normal(&b.pe, window)?),
 		None => None,
 	};
+	if b.encryption_target.is_some()
+		&& let Some(stream) = &mut compressed_stream
+	{
+		stream.data.resize(align_up(stream.data.len(), 16), 0);
+		stream.first_block_size = stream.data.len() as u32;
+		stream.first_block_hash = Sha1Hash(xecrypt::symmetric::xe_crypt_sha(&stream.data));
+	}
 
 	// Build optional-header data blobs we'll need to place in the file.
 	let exec_info = execution_info_bytes(&b);
-	let import_libs = if b.imports.is_empty() {
-		empty_import_libraries_bytes()
-	} else {
-		serialize_import_libraries(&b.imports)
-	};
+	let import_libs =
+		if b.imports.is_empty() { empty_import_libraries_bytes() } else { serialize_import_libraries(&b.imports) };
 	let file_format = match &compressed_stream {
-		Some(stream) => crate::compress::file_format_info_blob_normal(EncryptionType::None, stream),
-		None => file_format_info_bytes(EncryptionType::None),
+		Some(stream) => crate::compress::file_format_info_blob_normal(encryption, stream),
+		None => file_format_info_bytes(encryption),
 	};
 
 	// Compute file layout:
@@ -288,9 +320,11 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	out[ii_start + 0x0C..ii_start + 0x20].copy_from_slice(&*image_hash);
 	// import_table_count = number of import libraries.
 	BigEndian::write_u32(&mut out[ii_start + 0x20..ii_start + 0x24], b.imports.len() as u32);
-	// import_table_hash left zero (Xenia does not verify it)
 	// media_id left zero
-	// file_key left zero (encryption None)
+	if let (Some(key), Some(target)) = (session_key, b.encryption_target) {
+		let wrapped = crate::crypto::wrap_file_key(&key, target.master_key());
+		out[ii_start + 0x48..ii_start + 0x58].copy_from_slice(&*wrapped);
+	}
 	// export_table_address left zero
 	// header_hash: to be computed after optional-header region is finalized.
 	// game_regions default to 0xFFFFFFFF so the game can run on any region.
@@ -308,6 +342,9 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 
 	// PE data (or compressed stream, selected above).
 	out[data_offset..data_offset + data_region.len()].copy_from_slice(data_region);
+	if let Some(key) = session_key {
+		xecrypt::symmetric::xe_crypt_aes_cbc_encrypt(&key, &[0u8; 16], &mut out[data_offset..]);
+	}
 
 	// Chain the import-library digests and record image_info.import_table_hash.
 	// The real kernel recomputes this chain and rejects a non-empty import
@@ -326,14 +363,9 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	let header_hash = hashes::compute_header_hash(&out, &parsed, &parsed_sec);
 	out[ii_start + 0x5C..ii_start + 0x70].copy_from_slice(&*header_hash);
 
-	// RotSumSha + sign. NOTE: PKCS#1 here is accepted by Xenia only; real
-	// devkit hardware needs XeCryptBnQwBeSig (see xecrypt::xex_sig) and an
-	// encrypted payload.
 	let image_info = &out[ii_start..ii_start + 0x74];
 	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
-	let sig = xecrypt::RsaKeyKind::Pirs
-		.sign(xecrypt::ConsoleKind::Devkit, &digest)
-		.map_err(|_| Xex2Error::SigningFailed.into_report())?;
+	let sig = xecrypt::xex_sig::sign_devkit(&digest).map_err(|_| Xex2Error::SigningFailed.into_report())?;
 	out[security_offset + 0x08..security_offset + 0x108].copy_from_slice(&sig);
 
 	Ok(out)
@@ -372,27 +404,24 @@ const SCN_MEM_WRITE: u32 = 0x8000_0000;
 /// page as read-only data would yield a XEX with no executable page whose entry
 /// point cannot run.
 fn page_section_types(pe: &[u8], page_size: u32, page_count: u32) -> Result<Vec<SectionType>> {
-	let rd_u32 = |off: usize| -> Option<u32> {
-		pe.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
-	};
-	let rd_u16 = |off: usize| -> Option<u16> {
-		pe.get(off..off + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap()))
-	};
+	let rd_u32 =
+		|off: usize| -> Option<u32> { pe.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())) };
+	let rd_u16 =
+		|off: usize| -> Option<u16> { pe.get(off..off + 2).map(|b| u16::from_le_bytes(b.try_into().unwrap())) };
 	let defect = |d: BasefileDefect| Xex2Error::MalformedBasefilePe(d).into_report();
 
 	let lfanew = rd_u32(0x3C).map(|v| v as usize).ok_or_else(|| defect(BasefileDefect::TruncatedDosHeader))?;
 	// COFF header at lfanew + 4: NumberOfSections at + 2, SizeOfOptionalHeader at + 16.
 	let num_sections = rd_u16(lfanew + 6).ok_or_else(|| defect(BasefileDefect::TruncatedCoffHeader))?;
-	let opt_size = rd_u16(lfanew + 20).map(|v| v as usize).ok_or_else(|| defect(BasefileDefect::TruncatedCoffHeader))?;
+	let opt_size =
+		rd_u16(lfanew + 20).map(|v| v as usize).ok_or_else(|| defect(BasefileDefect::TruncatedCoffHeader))?;
 	let sec_table = lfanew + 4 + 20 + opt_size;
 
 	let mut any_exec = vec![false; page_count as usize];
 	let mut any_write = vec![false; page_count as usize];
 	for i in 0..num_sections as usize {
 		let hdr = sec_table + i * 40;
-		let (Some(vsize), Some(vaddr), Some(chars)) =
-			(rd_u32(hdr + 8), rd_u32(hdr + 12), rd_u32(hdr + 36))
-		else {
+		let (Some(vsize), Some(vaddr), Some(chars)) = (rd_u32(hdr + 8), rd_u32(hdr + 12), rd_u32(hdr + 36)) else {
 			return Err(defect(BasefileDefect::TruncatedSectionHeader));
 		};
 		let first_page = vaddr / page_size;
@@ -482,11 +511,7 @@ mod tests {
 	#[test]
 	fn page_type_follows_section_protection() {
 		let ps = 0x10000u32;
-		let pe = synthetic_pe(&[
-			(0x10000, ps, SCN_MEM_EXECUTE),
-			(0x20000, ps, SCN_MEM_WRITE),
-			(0x30000, ps, 0),
-		]);
+		let pe = synthetic_pe(&[(0x10000, ps, SCN_MEM_EXECUTE), (0x20000, ps, SCN_MEM_WRITE), (0x30000, ps, 0)]);
 		let types = page_section_types(&pe, ps, 5).unwrap();
 		assert_eq!(
 			types,
@@ -503,10 +528,7 @@ mod tests {
 	#[test]
 	fn code_takes_precedence_on_a_shared_page() {
 		let ps = 0x10000u32;
-		let pe = synthetic_pe(&[
-			(0x10000, 0x1000, SCN_MEM_EXECUTE),
-			(0x18000, 0x1000, SCN_MEM_WRITE),
-		]);
+		let pe = synthetic_pe(&[(0x10000, 0x1000, SCN_MEM_EXECUTE), (0x18000, 0x1000, SCN_MEM_WRITE)]);
 		let types = page_section_types(&pe, ps, 2).unwrap();
 		assert_eq!(types, vec![SectionType::ReadOnlyData, SectionType::Code]);
 	}
@@ -514,9 +536,6 @@ mod tests {
 	#[test]
 	fn truncated_pe_reports_a_defect() {
 		let err = page_section_types(&[0u8; 8], 0x10000, 1).unwrap_err();
-		assert!(matches!(
-			err.current_context(),
-			Xex2Error::MalformedBasefilePe(BasefileDefect::TruncatedDosHeader)
-		));
+		assert!(matches!(err.current_context(), Xex2Error::MalformedBasefilePe(BasefileDefect::TruncatedDosHeader)));
 	}
 }

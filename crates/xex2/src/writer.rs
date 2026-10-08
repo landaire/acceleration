@@ -572,9 +572,7 @@ fn read_page_descriptor_template(
 
 fn sign_and_stage(sec: FileOffset, image_info: &[u8], patch: &mut Patch) -> Result<()> {
 	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
-	let sig = xecrypt::RsaKeyKind::Pirs
-		.sign(xecrypt::ConsoleKind::Devkit, &digest)
-		.map_err(|_| Xex2Error::SigningFailed.into_report())?;
+	let sig = xecrypt::xex_sig::sign_devkit(&digest).map_err(|_| Xex2Error::SigningFailed.into_report())?;
 	let sig_off = sec + SecurityOffset::RSA_SIG.0 as usize;
 	patch.write(sig_off.get(), sig.to_vec());
 	Ok(())

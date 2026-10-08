@@ -106,6 +106,33 @@ The build 17559 reference hypervisor was used only to identify the expansion con
 
 A console-signed expansion-install experiment entered a non-returning path twice and required console resets. It produced no hypervisor dump. Do not invoke `ExExpansionInstall` again. The read-only flash-chain procedure above supersedes this path.
 
+## Shadowboot media filename
+
+The matching live build 16547 devkit kernel contains the following strings at PE file offsets `0x474`, `0x493`, `0x4bc`, and `0x4e4`:
+
+```text
+host:\xboxromw2d.bin
+\Device\FlashFs\xboxromw2d.bin
+\Device\CdRom0\xboxromw2d.bin
+\Device\Harddisk0\Partition1\xboxromw2d.bin
+```
+
+The strings are adjacent to `INIT: failed to read shadow kernel from media.` and `INIT_SHADOWBOOT`. `\Device\Harddisk0\Partition1` is exposed by XBDM as `HDD:`, so the HDD-root destination is `HDD:\xboxromw2d.bin`. The evidence kernel is the `0x240000`-byte file with SHA-256 `bd57560a12f07eee9d5929b8f3befd93eaea54b6282b5692d165d3e933abf110`.
+
+The `xboxrom` stem and `.bin` extension are literal. The meaning of `w2d` remains unknown.
+
+### `host:\` namespace
+
+`host:\` is not a disk partition or a normal XBDM drive mapping. The live development console returned `SysCache0`, `SysCache1`, `SysCache2`, `E`, `DEVKIT`, `HDD`, `MUINT`, `INTUSB` from `drivelist`; it did not return `HOST`. The kernel lists `host:\xboxromw2d.bin` separately from the native `\Device\...` candidates and contains `host:` beside debug-loader `LDRX` diagnostics. This identifies it as a debugger-backed development-host namespace. The early-boot transport and host service protocol remain unknown.
+
+### Retail boundary
+
+The inspected retail build 17559 kernel is `0x1b0000` bytes with SHA-256 `e1d1c87dbcbec01c71c5400cc129a462fa46738d267e29151a91c5354bdf6cb8`. It contains the normal `\Device\Flash` and `\SystemRoot` startup strings but no `xboxrom`, `INIT_SHADOWBOOT`, `shadow kernel`, or corresponding HDD-root loader path. The inspected development kernel contains the complete four-path table. The development media loader is therefore absent from the inspected retail build. Other retail kernel versions have not been classified.
+
+### XEX packaging
+
+The XEX header signature computes RotSumSha over the `0x74`-byte ImageInfo, selects the `XBOX360XEX` or `XBOXREVXEX` salt, applies the `XeCryptBnQwBeSig` SHA-1 and RC4 padding, performs the qword byte-order transforms, and applies the development private exponent. The development hypervisor contains the matching public modulus. `xex2::builder::Xex2Builder` implements this signature form instead of PKCS#1 and can wrap its AES session key with either the development or retail master key. Shadowboot XBDM uses normal compression and development-key AES encryption.
+
 ## Implemented image contract
 
 The host compiler uses the exact read-only 60 MiB capture as its base. This preserves opaque and authenticated regions that cannot be reconstructed from an extracted directory. A layer can:
@@ -116,18 +143,15 @@ The host compiler uses the exact read-only 60 MiB capture as its base. This pres
 
 Missing layer entries come from the base image. A replacement SC nonce requires a corresponding re-encrypted SD because the nonce changes the SD body key. Changes to the SC and SD nonce chain rebuild SE unless a complete SE is supplied. A supplied SE is decrypted and its framing and payload are validated. The completed output is parsed again, every root allocation chain is checked for bounds, cycles, collisions, and termination, and the boot chain is checked against the declared boot region.
 
-Image generation does not establish a console loader. A safe volatile handoff still requires:
+## Hardware deployment
 
-1. A confirmed path that does not call `XapiFlashKernelImage`, `XeKeysSaveBootLoader`, NAND erase, NAND program, or filesystem mutation routines.
-2. A failure path that returns to the existing system or requires only a power cycle, never flash recovery.
+The first hardware attempt used this non-flash procedure:
 
-There is not yet a safe command sequence for loading the generated image. Presenting `flash`, `magicboot`, or an expansion install as that sequence would be incorrect.
+1. Write the generated image to `HDD:\xboxromw2d.bin`.
+2. Download it through XBDM and compare it byte-for-byte with the host image.
+3. Request a cold reboot.
+4. Query XBDM identity and the HDD file after restart.
 
-## Next read-only work
+The console accepted the `0x03c00000`-byte image. The uploaded and downloaded copies both had SHA-256 `6e5fc0d127bbf2e88feb856e3da4559561f64e820f78b51eeff360f3e15e682c`. After the cold reboot, stock XBDM returned as `deanxbox`, and `HDD:\xboxromw2d.bin` remained present. The file was then removed through stock XBDM and absence was confirmed. An ordinary XBDM cold reboot therefore does not select the HDD shadowboot image. The loader-selection precondition remains unknown.
 
-- Preserve the build 16547 hypervisor dump and matching flash capture as immutable source artifacts.
-- Establish and verify a volatile handoff for the generated host image.
-
-## Testing custom XBDM before shadowboot
-
-The host mock server permits protocol and state-machine testing now. Xbox-target execution can also use an ordinary devkit-signed title for platform API experiments that do not replace the monitor. Neither route validates monitor replacement at boot, but both avoid flash modification while backend and protocol coverage grows.
+This path did not call `XapiFlashKernelImage`, `XeKeysSaveBootLoader`, NAND erase, or NAND program. The replacement XBDM worker attempts to remove `HDD:\xboxromw2d.bin` before opening TCP port 730 and restricts its `delete` command to the same path. If the replacement module starts, a subsequent cold reboot should return to stock. If the replacement image fails before the XBDM worker starts, the HDD file remains and recovery requires booting without that HDD path or otherwise removing the file. `flash`, `magicboot`, and expansion installation are not shadowboot substitutes.

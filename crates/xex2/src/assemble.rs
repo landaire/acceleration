@@ -120,9 +120,7 @@ pub fn rebuild_with_compression(
 
 	let image_info_bytes = &out[ii_start..ii_start + 0x74];
 	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info_bytes, &[]);
-	let sig = xecrypt::RsaKeyKind::Pirs
-		.sign(xecrypt::ConsoleKind::Devkit, &digest)
-		.map_err(|_| Xex2Error::SigningFailed.into_report())?;
+	let sig = xecrypt::xex_sig::sign_devkit(&digest).map_err(|_| Xex2Error::SigningFailed.into_report())?;
 	out[layout.security_offset + 0x08..layout.security_offset + 0x108].copy_from_slice(&sig);
 
 	Ok(out)

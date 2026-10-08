@@ -39,3 +39,36 @@ cargo run -p shadowboot -- \
   --output shadowboot.bin
 ```
 
+## Console filename
+
+For the verified devkit profile, write the compiler output to the HDD root as:
+
+```text
+HDD:\xboxromw2d.bin
+```
+
+The matching build 16547 kernel contains these path strings beginning at PE file offset `0x474`:
+
+```text
+host:\xboxromw2d.bin
+\Device\FlashFs\xboxromw2d.bin
+\Device\CdRom0\xboxromw2d.bin
+\Device\Harddisk0\Partition1\xboxromw2d.bin
+```
+
+`\Device\Harddisk0\Partition1` is the device path exposed by XBDM as `HDD:`. The kernel places the strings next to `INIT: failed to read shadow kernel from media.` and `INIT_SHADOWBOOT`, which identifies them as shadowboot media paths rather than flash-update paths.
+
+The filename fields have only the following verified meaning:
+
+- `xboxrom` is the fixed image stem used by the kernel loader.
+- `w2d` is literal in the kernel string; its meaning remains unknown.
+- `.bin` is the binary image extension.
+
+The evidence is the `0x240000`-byte devkit kernel with SHA-256 `bd57560a12f07eee9d5929b8f3befd93eaea54b6282b5692d165d3e933abf110`.
+
+## Loader availability
+
+`host:\` is a development-host loader namespace, not a console disk partition. It is distinct from the native `\Device\...` paths in the same candidate list. The live development console's XBDM drive list contains `HDD`, `DEVKIT`, cache, memory-unit, and USB mappings but no `HOST` drive. The matching development kernel also labels `host:` as a debug loader path in its `LDRX` strings. The exact early-boot host transport has not been reconstructed; use `HDD:\xboxromw2d.bin` for local deployment.
+
+The inspected retail build 17559 kernel does not contain `xboxrom`, `INIT_SHADOWBOOT`, `shadow kernel`, or an equivalent HDD-root loader path. Its SHA-256 is `e1d1c87dbcbec01c71c5400cc129a462fa46738d267e29151a91c5354bdf6cb8`. This establishes that the development media loader is absent from that retail build. It does not establish behavior for every historical retail kernel.
+

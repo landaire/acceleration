@@ -1,6 +1,6 @@
 # Flash and shadowboot nuance ledger
 
-- The reference kernel and hypervisor are build 17559 artifacts, not live-devkit evidence.
+- The reference kernel and hypervisor are retail build 17559 artifacts, not live-devkit evidence.
 - The separately captured live kernel identifies itself as build 16547 through its PE export name.
 - Whole live-kernel memory captures vary in mutable data sections. Immutable sections, including `.text`, are the reproducible build evidence.
 - `dmversion` identifies XBDM. Its value `2.0.21256.0` is not the live kernel or hypervisor build.
@@ -18,3 +18,8 @@
 - XBDM can read `0x80000000..0x80040000`, but this protected alias returns ciphertext. The verified plaintext hypervisor comes from the decrypted flash boot chain.
 - `ExExpansionInstall` entered a non-returning path in two console-signed experiments. Do not invoke it again.
 - The live kernel exposes four expansion slots at `0x90001000`; all were empty when inspected. `ExExpansionCall` therefore has no existing reader to invoke.
+- The devkit HDD-root shadowboot filename is `HDD:\xboxromw2d.bin`.
+- The replacement XBDM removes the HDD-root shadowboot file before starting its listener. Failure before its worker starts leaves the file in place and requires an external recovery path.
+- An ordinary XBDM cold reboot does not select the HDD-root image. The console returned to stock XBDM and left the file in place.
+- `host:\` is a debugger-backed development-host loader namespace, not a disk partition or normal XBDM drive mapping.
+- The inspected retail build 17559 kernel has no development shadowboot media table. This result does not classify every historical retail build.

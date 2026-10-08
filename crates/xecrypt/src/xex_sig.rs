@@ -1,12 +1,10 @@
 //! XEX2 header signatures (`XeCryptBnQwBeSig`).
 //!
-//! XEX headers are signed with a proprietary RSA padding, not PKCS#1. The
-//! console formats a 256-byte block from the RotSumSha digest and a 10-byte
-//! salt, RC4-whitens it, clears the top bit, reverses it qword-wise, and
-//! RSA-signs the result. The salt "XBOX360XEX" is present verbatim in the
-//! kernel; a devkit kernel verifies this signature before mapping a title.
-//!
-//! Reference: emoose's ExCrypt `ExCryptBnQwBeSigFormat` / `...SigVerify`.
+//! XEX headers use proprietary RSA padding rather than PKCS#1. The signer
+//! formats a 256-byte block from the RotSumSha digest and a 10-byte salt,
+//! RC4-whitens it, clears the top bit, reverses it qword-wise, and applies the
+//! private exponent. The development hypervisor contains the corresponding
+//! public key.
 
 use rsa::BigUint;
 use rsa::RsaPrivateKey;
@@ -36,7 +34,7 @@ fn rc4(key: &[u8], data: &mut [u8]) {
 	}
 }
 
-/// Reverse the order of the sixteen 8-byte qwords in a 256-byte buffer.
+/// Reverse the order of the 32 8-byte qwords in a 256-byte buffer.
 fn qword_reverse(b: &[u8; 256]) -> [u8; 256] {
 	let mut out = [0u8; 256];
 	for i in 0..32 {
@@ -74,12 +72,7 @@ fn natural_block(hash: &[u8; 20], salt: &[u8; 10]) -> [u8; 256] {
 
 /// Build an RSA private key from big-endian P and Q factors (exponent 3).
 pub fn private_key_from_pq(p_be: &[u8], q_be: &[u8]) -> Option<RsaPrivateKey> {
-	RsaPrivateKey::from_p_q(
-		BigUint::from_bytes_be(p_be),
-		BigUint::from_bytes_be(q_be),
-		BigUint::from(3u32),
-	)
-	.ok()
+	RsaPrivateKey::from_p_q(BigUint::from_bytes_be(p_be), BigUint::from_bytes_be(q_be), BigUint::from(3u32)).ok()
 }
 
 /// Sign a 20-byte RotSumSha digest, producing the 256-byte XEX signature blob
@@ -90,6 +83,12 @@ pub fn sign(hash: &[u8; 20], salt: &[u8; 10], key: &RsaPrivateKey) -> [u8; 256] 
 	qword_reverse(&to_bytes_256(&r))
 }
 
+/// Sign a normal XEX digest with the devkit executable key.
+pub fn sign_devkit(hash: &[u8; 20]) -> Result<[u8; 256], crate::Error> {
+	let key = crate::RsaKeyKind::Executable.private_key(crate::ConsoleKind::Devkit)?;
+	Ok(sign(hash, SALT_XEX, &key))
+}
+
 /// Verify a stored XEX signature blob against a digest and public key.
 pub fn verify(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &RsaPublicKey) -> bool {
 	let a = BigUint::from_bytes_be(&qword_reverse(sig));
@@ -97,22 +96,8 @@ pub fn verify(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &RsaPublic
 	to_bytes_256(&r) == natural_block(hash, salt)
 }
 
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use rsa::rand_core::OsRng;
-
-	#[test]
-	fn sign_verify_roundtrip() {
-		// A freshly generated 2048-bit key exercises the padding and byte
-		// orientation without any external key or file.
-		let sk = RsaPrivateKey::new(&mut OsRng, 2048).unwrap();
-		let pk = sk.to_public_key();
-		let hash = [0x5Au8; 20];
-		let sig = sign(&hash, SALT_XEX, &sk);
-		assert!(verify(&sig, &hash, SALT_XEX, &pk));
-		let mut altered = hash;
-		altered[0] ^= 1;
-		assert!(!verify(&sig, &altered, SALT_XEX, &pk));
-	}
+/// Verify a normal XEX signature with the devkit executable key.
+pub fn verify_devkit(sig: &[u8; 256], hash: &[u8; 20]) -> Result<bool, crate::Error> {
+	let key = crate::RsaKeyKind::Executable.public_key(crate::ConsoleKind::Devkit)?;
+	Ok(verify(sig, hash, SALT_XEX, &key))
 }

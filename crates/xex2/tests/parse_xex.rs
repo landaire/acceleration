@@ -184,11 +184,8 @@ fn patch_resign_verifies_with_devkit_key() {
 	let image_info = &patched_data[info_size_off..info_size_off + image_info_len];
 
 	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
-	let sig = &patched_data[sec_off + 0x08..sec_off + 0x108];
-
-	xecrypt::RsaKeyKind::Pirs
-		.verify_signature(xecrypt::ConsoleKind::Devkit, sig, &digest)
-		.expect("devkit PIRS signature should verify after re-signing");
+	let sig: &[u8; 256] = patched_data[sec_off + 0x08..sec_off + 0x108].try_into().unwrap();
+	assert!(xecrypt::xex_sig::verify_devkit(sig, &digest).expect("devkit XEX key should be available"));
 
 	// game_regions at image_info + 0x70 (inside signed region)
 	assert_eq!(u32::from_be_bytes(patched_data[sec_off + 0x178..sec_off + 0x17C].try_into().unwrap()), 0xFFFFFFFF);
@@ -330,16 +327,7 @@ fn image_flag_limits_re_sign() {
 	assert!(!new_flags.contains(xex2::opt::ImageFlags::KV_PRIVILEGES_REQUIRED));
 	assert!(!new_flags.contains(xex2::opt::ImageFlags::SIGNED_KEYVAULT_REQUIRED));
 
-	// Signature must re-verify with the devkit key since image_info changed.
-	let info_size_off = sec_off + 0x108;
-	let info_size = u32::from_be_bytes(patched[info_size_off..info_size_off + 4].try_into().unwrap()) as usize;
-	let image_info_len = info_size - 0x100;
-	let image_info = &patched[info_size_off..info_size_off + image_info_len];
-	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
-	let sig = &patched[sec_off + 0x08..sec_off + 0x108];
-	xecrypt::RsaKeyKind::Pirs
-		.verify_signature(xecrypt::ConsoleKind::Devkit, sig, &digest)
-		.expect("devkit PIRS signature should verify after image_flags edit");
+	verify_devkit_signature(&patched);
 }
 
 fn verify_devkit_signature(patched: &[u8]) {
@@ -349,10 +337,8 @@ fn verify_devkit_signature(patched: &[u8]) {
 	let image_info_len = info_size - 0x100;
 	let image_info = &patched[info_size_off..info_size_off + image_info_len];
 	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(image_info, &[]);
-	let sig = &patched[sec_off + 0x08..sec_off + 0x108];
-	xecrypt::RsaKeyKind::Pirs
-		.verify_signature(xecrypt::ConsoleKind::Devkit, sig, &digest)
-		.expect("devkit PIRS signature should verify");
+	let sig: &[u8; 256] = patched[sec_off + 0x08..sec_off + 0x108].try_into().unwrap();
+	assert!(xecrypt::xex_sig::verify_devkit(sig, &digest).expect("devkit XEX key should be available"));
 }
 
 fn verify_header_hash(patched: &[u8]) {
@@ -623,7 +609,7 @@ fn builder_produces_parseable_xex() {
 }
 
 #[test]
-fn builder_produces_compressed_xex() {
+fn builder_produces_encrypted_compressed_xex() {
 	use xex2::builder::Xex2Builder;
 
 	// 128 KB PE so we get multiple LZX chunks.
@@ -638,6 +624,7 @@ fn builder_produces_compressed_xex() {
 		.title_id(xenon_types::TitleId(0x4D530914))
 		.entry_point(xenon_types::VirtualAddress(0x82001000))
 		.load_address(xenon_types::VirtualAddress(0x82000000))
+		.encrypt(xex2::builder::EncryptionTarget::Devkit)
 		.compress()
 		.build()
 		.unwrap();
@@ -645,11 +632,13 @@ fn builder_produces_compressed_xex() {
 	let parsed = xex2::Xex2::parse(&bytes).unwrap();
 	let fmt = parsed.header.file_format_info().unwrap();
 	assert_eq!(fmt.compression_type, CompressionType::Normal);
+	assert_eq!(fmt.encryption_type, xex2::header::EncryptionType::Normal);
 	assert_eq!(fmt.window_size, Some(0x10000));
 	assert_eq!(parsed.security_info.image_size as usize, pe.len());
 
 	let extracted = parsed.extract_basefile(&bytes).unwrap();
-	assert_eq!(extracted, pe, "compressed builder output must round-trip the PE");
+	assert_eq!(extracted, pe, "encrypted compressed builder output must round-trip the PE");
+	verify_devkit_signature(&bytes);
 }
 
 #[test]
