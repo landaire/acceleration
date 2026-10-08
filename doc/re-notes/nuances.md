@@ -1,0 +1,20 @@
+# Flash and shadowboot nuance ledger
+
+- The reference kernel and hypervisor are build 17559 artifacts, not live-devkit evidence.
+- The separately captured live kernel identifies itself as build 16547 through its PE export name.
+- Whole live-kernel memory captures vary in mutable data sections. Immutable sections, including `.text`, are the reproducible build evidence.
+- `dmversion` identifies XBDM. Its value `2.0.21256.0` is not the live kernel or hypervisor build.
+- `FLASH:\` reports as a directory through file attributes but `getfile FLASH:\` streams a raw 60 MiB image.
+- `flash` performs persistent image update work. It is prohibited.
+- `magicboot` is a title reboot command in the analyzed build, not a proven shadowboot loader.
+- The flash filesystem uses allocation chains. A file's start cluster and size do not imply contiguous storage.
+- In the observed image, root metadata uses 1024-byte page pairs: allocation links occupy the first 512-byte page and directory records occupy the second. This is a profile fact, not a general NAND assumption.
+- Allocation entries use a 13-bit cluster link. The upper three bits contain metadata and must be preserved when changing a link. Observed examples include `0x5ffe` for free clusters and `0x9fff` for an end-of-chain marker.
+- Stage names and sizes are big-endian. The observed boot chain is SB, SC, SD, SE and starts at offset `0x8000`.
+- SC starts its HMAC-SHA1 state with 16 zero bytes. SD and SE use the preceding stage's derived 16-byte key.
+- SE compression records use big-endian sizes around a continuous LZX stream. Treating each record as an independent LZX stream fails.
+- The expanded SE payload contains the `0x40000`-byte hypervisor followed by the `0x240000`-byte kernel.
+- A valid recompressed SE stage must still fit the top-level image's declared boot region. The acceleration LZX encoder is valid but may produce a larger stream than the source image's compressor.
+- XBDM can read `0x80000000..0x80040000`, but this protected alias returns ciphertext. The verified plaintext hypervisor comes from the decrypted flash boot chain.
+- `ExExpansionInstall` entered a non-returning path in two console-signed experiments. Do not invoke it again.
+- The live kernel exposes four expansion slots at `0x90001000`; all were empty when inspected. `ExExpansionCall` therefore has no existing reader to invoke.

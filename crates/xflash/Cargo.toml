@@ -1,0 +1,39 @@
+[package]
+name = "xflash"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["Lander Brandt"]
+description = "Xbox 360 devkit flash image parser"
+repository = "https://github.com/landaire/acceleration"
+readme = "README.md"
+keywords = ["xbox360", "flash", "xbox", "cli"]
+categories = ["command-line-utilities", "parser-implementations"]
+
+[features]
+default = ["cli"]
+cli = [
+	"dep:clap",
+	"dep:memmap2",
+	"dep:rootcause",
+	"dep:same-file",
+	"dep:tracing",
+	"dep:tracing-subscriber",
+]
+dhat = ["cli", "dep:dhat"]
+
+[dependencies]
+winnow = { version = "1.0.4", default-features = false, features = ["binary", "parser"] }
+thiserror = { workspace = true }
+clap = { version = "4.6.1", features = ["derive"], optional = true }
+memmap2 = { version = "0.9.9", optional = true }
+rootcause = { version = "0.12", optional = true }
+same-file = { version = "1.0.6", optional = true }
+tracing = { version = "0.1.44", optional = true }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"], optional = true }
+dhat = { version = "0.3.3", optional = true }
+
+[[bin]]
+name = "xflash"
+path = "src/main.rs"
+required-features = ["cli"]
