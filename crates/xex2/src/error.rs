@@ -14,6 +14,7 @@ pub enum Xex2Error {
 	InvalidEncryptionType(u16),
 	DecryptionFailed,
 	DecompressionFailed,
+	CompressedChunkTooLarge { size: usize },
 	InvalidBasefileSize { expected: usize, got: usize },
 	HashMismatch { block_index: usize },
 	SigningFailed,
@@ -65,6 +66,9 @@ impl fmt::Display for Xex2Error {
 			Self::InvalidEncryptionType(v) => write!(f, "invalid encryption type: {}", v),
 			Self::DecryptionFailed => write!(f, "decryption failed"),
 			Self::DecompressionFailed => write!(f, "decompression failed"),
+			Self::CompressedChunkTooLarge { size } => {
+				write!(f, "compressed LZX chunk of {:#x} bytes does not fit in a 64 KB block", size)
+			}
 			Self::InvalidBasefileSize { expected, got } => {
 				write!(f, "basefile size mismatch: expected {:#x}, got {:#x}", expected, got)
 			}

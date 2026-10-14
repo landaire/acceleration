@@ -100,7 +100,7 @@ fn decompress_basic(data: &[u8], format: &FileFormatInfo) -> Result<Vec<u8>> {
 	Ok(output)
 }
 
-fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> Result<Vec<u8>> {
+pub(crate) fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> Result<Vec<u8>> {
 	let mut output = Vec::new();
 	let window_size = window_size_from_format(format)?;
 	let first_chunk_size =

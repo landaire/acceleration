@@ -131,7 +131,7 @@ The inspected retail build 17559 kernel is `0x1b0000` bytes with SHA-256 `e1d1c8
 
 ### XEX packaging
 
-The XEX header signature computes RotSumSha over the `0x74`-byte ImageInfo, selects the `XBOX360XEX` or `XBOXREVXEX` salt, applies the `XeCryptBnQwBeSig` SHA-1 and RC4 padding, performs the qword byte-order transforms, and applies the development private exponent. The development hypervisor contains the matching public modulus. `xex2::builder::Xex2Builder` implements this signature form instead of PKCS#1 and can wrap its AES session key with either the development or retail master key. Shadowboot XBDM uses normal compression and development-key AES encryption.
+The XEX header signature computes RotSumSha over the `0x74`-byte ImageInfo, selects the `XBOX360XEX` or `XBOXREVXEX` salt, applies the `XeCryptBnQwBeSig` SHA-1 and RC4 padding, performs the qword byte-order transforms, and applies the development private exponent. The development hypervisor contains the matching public modulus. `xex2::builder::Xex2Builder` implements this signature form instead of PKCS#1 and can wrap its AES session key with either the development or retail master key. Shadowboot XBDM uses normal compression and development-key AES encryption. The image layout rules the console loader enforces are recorded in `xex-loader.md`.
 
 ## Implemented image contract
 

@@ -24,9 +24,9 @@ use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::hashes;
 use crate::header::AesKey;
+use crate::header::CompressionType;
 use crate::header::EncryptionType;
 use crate::header::OptionalHeaderKey;
-use crate::header::Sha1Hash;
 use crate::imports::ImportLibrary;
 use crate::imports::serialize_import_libraries;
 use crate::opt::ImageFlags;
@@ -69,7 +69,7 @@ pub struct Xex2Builder {
 	base_version: Version,
 	entry_point: Option<VirtualAddress>,
 	/// If `Some(window_size_bytes)`, the builder LZX-compresses `pe` and emits
-	/// a Normal-compressed stream. Otherwise the PE is written uncompressed.
+	/// a Normal-compressed stream. Otherwise the PE is stored as Basic runs.
 	compress_window: Option<u32>,
 	encryption_target: Option<EncryptionTarget>,
 	/// Import libraries to emit in the `ImportLibraries` optional header. Empty
@@ -173,11 +173,12 @@ const OPT_INDEX_START: usize = 0x18;
 const PAGE_ALIGN: usize = 0x1000;
 
 fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
-	// Optional headers we emit (in order):
-	// - 0x00040006 ExecutionInfo (0x18 bytes of data)
-	// - 0x000103FF ImportLibraries (variable, empty table)
-	// - 0x000003FF FileFormatInfo (variable, "none/none")
+	// Optional headers we emit, indexed in ascending key order:
+	// - 0x000003FF FileFormatInfo (Basic runs or the Normal LZX descriptor)
 	// - 0x00010100 EntryPoint (inline u32) -- if provided
+	// - 0x00010201 ImageBaseAddress (inline u32)
+	// - 0x000103FF ImportLibraries (variable)
+	// - 0x00040006 ExecutionInfo (0x18 bytes of data)
 	//
 	// Each entry is keyed by (key_u32, value_u32). The low byte of the key
 	// encodes the size class:
@@ -185,7 +186,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	//   - 0xFF:        variable-length (value is a file offset to u32 size + body)
 	//   - other:       (N * 4) bytes (value is a file offset)
 
-	// If compression is requested, compress the PE before laying out headers.
+	// Select the image data format before laying out headers.
 	let encryption = if b.encryption_target.is_some() { EncryptionType::Normal } else { EncryptionType::None };
 	let session_key = b.encryption_target.map(|_| {
 		let digest = xecrypt::symmetric::xe_crypt_sha(&b.pe);
@@ -193,25 +194,21 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 		key.copy_from_slice(&digest[..16]);
 		AesKey(key)
 	});
-	let mut compressed_stream: Option<crate::compress::CompressedStream> = match b.compress_window {
-		Some(window) => Some(crate::compress::compress_normal(&b.pe, window)?),
-		None => None,
+	let image_data = match b.compress_window {
+		// Blocks are sector-sized, so the stream is already AES-block aligned.
+		Some(window) => ImageData::Normal(crate::compress::compress_normal(&b.pe, window)?),
+		// The console rejects the uncompressed format (0), so an image without
+		// LZX is stored in the Basic format.
+		None => ImageData::Basic(basic_layout(&b.pe)?),
 	};
-	if b.encryption_target.is_some()
-		&& let Some(stream) = &mut compressed_stream
-	{
-		stream.data.resize(align_up(stream.data.len(), 16), 0);
-		stream.first_block_size = stream.data.len() as u32;
-		stream.first_block_hash = Sha1Hash(xecrypt::symmetric::xe_crypt_sha(&stream.data));
-	}
 
 	// Build optional-header data blobs we'll need to place in the file.
 	let exec_info = execution_info_bytes(&b);
 	let import_libs =
 		if b.imports.is_empty() { empty_import_libraries_bytes() } else { serialize_import_libraries(&b.imports) };
-	let file_format = match &compressed_stream {
-		Some(stream) => crate::compress::file_format_info_blob_normal(encryption, stream),
-		None => file_format_info_bytes(encryption),
+	let file_format = match &image_data {
+		ImageData::Normal(stream) => crate::compress::file_format_info_blob_normal(encryption, stream),
+		ImageData::Basic(layout) => file_format_info_basic(encryption, &layout.runs),
 	};
 
 	// Compute file layout:
@@ -226,7 +223,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 
 	// Calculate where blobs will land. Start placing them right after the
 	// optional-header index.
-	let entry_count = 3 + b.entry_point.is_some() as usize;
+	let entry_count = 4 + b.entry_point.is_some() as usize;
 	let mut cursor = OPT_INDEX_START + entry_count * 8;
 
 	// ExecutionInfo: fixed-size 0x18 bytes, key has size_class = 0x18/4 = 0x06.
@@ -254,6 +251,11 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	if let Some(entry) = b.entry_point {
 		entries.push(OptEntry::Inline { key: OptionalHeaderKey::EntryPoint as u32, value: entry.0 });
 	}
+	entries.push(OptEntry::Inline { key: OptionalHeaderKey::ImageBaseAddress as u32, value: b.load_address.0 });
+	// The console loader expects the index in ascending key order.
+	entries.sort_by_key(|entry| match *entry {
+		OptEntry::Inline { key, .. } | OptEntry::Data { key, .. } => key,
+	});
 
 	// Page descriptors: one per page, each recording the page's section type.
 	// The kernel and hypervisor read this to protect memory: a page that is not
@@ -274,9 +276,11 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	let security_info_len = 0x184 + descriptors.len() * 24;
 	cursor += security_info_len;
 
-	// PE data at page-aligned offset. When compressed, we write the
-	// compressed stream in place of `b.pe`.
-	let data_region: &[u8] = compressed_stream.as_ref().map_or(b.pe.as_slice(), |s| s.data.as_slice());
+	// Image data at page-aligned offset: the LZX stream or the Basic data runs.
+	let data_region: &[u8] = match &image_data {
+		ImageData::Normal(stream) => &stream.data,
+		ImageData::Basic(layout) => &layout.data,
+	};
 	let data_offset = align_up(cursor, PAGE_ALIGN);
 	let total_size = data_offset + data_region.len();
 
@@ -474,12 +478,74 @@ fn empty_import_libraries_bytes() -> Vec<u8> {
 	out
 }
 
-fn file_format_info_bytes(encryption: EncryptionType) -> Vec<u8> {
-	// u32 info_size, u16 encryption_type, u16 compression_type=None
-	let mut out = vec![0u8; 8];
-	BigEndian::write_u32(&mut out[0..4], 8);
-	BigEndian::write_u16(&mut out[4..6], encryption as u16);
-	// compression_type = 0 (None)
+/// The stored form of the image.
+enum ImageData {
+	/// LZX-compressed stream.
+	Normal(crate::compress::CompressedStream),
+	/// Data runs with zero fill.
+	Basic(BasicLayout),
+}
+
+/// One Basic-format run: `data_size` image bytes stored in the file, then
+/// `zero_size` bytes of zero fill.
+struct BasicRun {
+	data_size: u32,
+	zero_size: u32,
+}
+
+struct BasicLayout {
+	runs: Vec<BasicRun>,
+	/// Concatenated stored bytes of every run.
+	data: Vec<u8>,
+}
+
+/// Split the image into Basic runs on 4 KB page boundaries. All-zero pages
+/// become zero fill. The console reads each run straight from the file into
+/// the image, so run sizes stay page-sized to keep file offsets, lengths, and
+/// destinations sector-aligned.
+fn basic_layout(pe: &[u8]) -> Result<BasicLayout> {
+	const BLOCK: usize = 0x1000;
+	if !pe.len().is_multiple_of(BLOCK) {
+		return Err(Xex2Error::InvalidBasefileSize { expected: align_up(pe.len(), BLOCK), got: pe.len() }.into_report());
+	}
+	let mut runs = Vec::new();
+	let mut data = Vec::new();
+	let mut blocks = pe.as_chunks::<BLOCK>().0.iter().peekable();
+	while blocks.peek().is_some() {
+		let mut data_size = 0u32;
+		while let Some(block) = blocks.next_if(|block| block.iter().any(|&byte| byte != 0)) {
+			data.extend_from_slice(block);
+			data_size += BLOCK as u32;
+		}
+		let mut zero_size = 0u32;
+		while blocks.next_if(|block| block.iter().all(|&byte| byte == 0)).is_some() {
+			zero_size += BLOCK as u32;
+		}
+		runs.push(BasicRun { data_size, zero_size });
+	}
+	// The console loader rejects a Basic table whose final run ends in zero
+	// fill, so the image tail is stored as data.
+	if let Some(last) = runs.last_mut()
+		&& last.zero_size != 0
+	{
+		data.resize(data.len() + last.zero_size as usize, 0);
+		last.data_size += last.zero_size;
+		last.zero_size = 0;
+	}
+	Ok(BasicLayout { runs, data })
+}
+
+fn file_format_info_basic(encryption: EncryptionType, runs: &[BasicRun]) -> Vec<u8> {
+	// u32 info_size, u16 encryption_type, u16 compression_type=Basic, then
+	// (u32 data_size, u32 zero_size) per run.
+	let mut out = Vec::with_capacity(8 + runs.len() * 8);
+	out.extend_from_slice(&((8 + runs.len() * 8) as u32).to_be_bytes());
+	out.extend_from_slice(&(encryption as u16).to_be_bytes());
+	out.extend_from_slice(&(CompressionType::Basic as u16).to_be_bytes());
+	for run in runs {
+		out.extend_from_slice(&run.data_size.to_be_bytes());
+		out.extend_from_slice(&run.zero_size.to_be_bytes());
+	}
 	out
 }
 

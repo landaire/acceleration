@@ -41,3 +41,13 @@ The build 17559 kernel and hypervisor loaded in Binary Ninja must not be used as
 | Development shadowboot loader path | identified | Build 16547 devkit kernel selects `xboxromw2d.bin` from host, flash, optical disc, or HDD root; inspected retail build 17559 has no matching loader strings |
 | Volatile console handoff | partial | HDD upload and byte comparison verified; ordinary XBDM cold reboot returned to stock without selecting the image; loader trigger unresolved |
 | Flash writing | prohibited | No writer targets a console or flash device |
+
+## XEX generation
+
+| Component | Status | Notes |
+| --- | --- | --- |
+| Header signature | verified | Montgomery-domain RSA and console RotSumSha borrow rule; generated modules load on hardware |
+| SecurityInfo validation | verified | Hypercall `0x11` small-page, alignment, and region rules in `xex-loader.md` |
+| Basic image data | verified | 4 KB-page runs load on hardware |
+| Normal image data | verified | 64 KB-bounded, 2 KB-aligned LZX block chain loads on hardware |
+| Import resolution | verified | Library identifiers checked against exporter module numbers |

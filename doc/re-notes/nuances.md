@@ -23,3 +23,10 @@
 - An ordinary XBDM cold reboot does not select the HDD-root image. The console returned to stock XBDM and left the file in place.
 - `host:\` is a debugger-backed development-host loader namespace, not a disk partition or normal XBDM drive mapping.
 - The inspected retail build 17559 kernel has no development shadowboot media table. This result does not classify every historical retail build.
+- XEX images loaded in `0x90000000..0x9fffffff` must carry ImageInfo flag `0x10000000`; images elsewhere must not.
+- The console rejects uncompressed XEX data (format 0). Uncompressed images use the Basic format.
+- A Basic run table must end with a zero zero-fill size, and runs must be sector-aligned because each run is read directly into the image.
+- Normal (LZX) blocks are at most 64 KB and are sized in 2 KB multiples. Stock images follow this; a single unaligned block fails with `C000000D`.
+- The import library `id` must equal the exporting module's export-table module number. Zero fails with `C0000225`.
+- XEX RotSumSha uses a borrow when the difference exceeds the operand, not when the minuend is smaller than the operand.
+- The console verifies XEX signatures in the Montgomery domain without converting back. A valid signature satisfies `s^e * R^-(e-1) mod n == block` with `R = 2^2048`.

@@ -1,32 +1,31 @@
 //! LZX compression of a PE image into an XEX "Normal" data region.
 //!
-//! Inverse of [`crate::basefile::decompress_normal`]. Each invocation produces
-//! a single-block stream:
+//! Inverse of [`crate::basefile::decompress_normal`]. The region is a chain of
+//! blocks:
 //!
-//!   [u32 next_block_size = 0]
-//!   [u8; 20 next_block_hash = 0]
+//!   [u32 next_block_size][u8; 20 SHA-1 of next block]
 //!   [u16 BE chunk_size][lzx_data] ...
 //!   [u16 BE 0]   (terminator)
+//!   zero padding to the block size
 //!
-//! The LZX encoder state persists across chunks within the stream, matching
-//! what [`crate::basefile::decompress_normal`] expects on the decode side.
+//! The last block has a zero `next_block_size` and hash. The LZX encoder state
+//! persists across chunks and blocks, matching the decode side.
 //!
-//! Returned alongside the data region is the `first_block_hash` (SHA-1 of the
-//! single block's bytes), which must be stitched into the FileFormatInfo blob
-//! so the hash-chain invariant holds.
+//! The console loader reads each block with unbuffered I/O into one of two
+//! 64 KB buffers, so a block never exceeds 64 KB and its size is a multiple of
+//! the 2 KB DVD sector.
 
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::header::Sha1Hash;
 use rootcause::IntoReport;
 use sha1::Digest;
-use std::io::Write;
 
 /// A compressed data region and the integrity metadata the XEX header needs.
 pub struct CompressedStream {
 	/// The data region, ready to drop in at `Xex2Header::data_offset`.
 	pub data: Vec<u8>,
-	/// Size of the first (and only) block in bytes.
+	/// Size of the first block in bytes.
 	pub first_block_size: u32,
 	/// SHA-1 of the first block, to be stored in the Normal FileFormatInfo blob.
 	pub first_block_hash: Sha1Hash,
@@ -36,31 +35,57 @@ pub struct CompressedStream {
 }
 
 const BLOCK_HEADER_SIZE: usize = 24;
+const CHUNK_SIZE_PREFIX_LEN: usize = 2;
+const MAX_BLOCK_SIZE: usize = 0x10000;
+const BLOCK_ALIGNMENT: usize = 0x800;
 
 /// Compress `pe` using LZX with the given window size (in bytes). `window_size`
 /// must be one of the LZX-legal values (0x8000..=0x200000 in powers of two).
 pub fn compress_normal(pe: &[u8], window_size: u32) -> Result<CompressedStream> {
-	let lzxc_window = map_window_size(window_size)?;
+	let mut encoder = lzxc::Encoder::new(map_window_size(window_size)?);
 
-	// Block header placeholder: next_block_size = 0, next_block_hash = 0 (this
-	// is the terminal block in a single-block stream).
-	let mut block = Vec::with_capacity(BLOCK_HEADER_SIZE + pe.len() / 2);
-	block.resize(BLOCK_HEADER_SIZE, 0);
-
-	// `EncoderWriter` emits `u16 BE chunk_size | chunk` per 32 KB slab, which
-	// is exactly the XEX per-chunk framing. We append a `u16 0` terminator
-	// ourselves so `decompress_normal` exits the chunk loop.
-	{
-		let mut writer = lzxc::EncoderWriter::new(&mut block, lzxc_window);
-		writer.write_all(pe).map_err(Xex2Error::Io).map_err(IntoReport::into_report)?;
-		writer.finish().map_err(Xex2Error::Io).map_err(IntoReport::into_report)?;
+	let mut blocks = Vec::new();
+	let mut block = vec![0u8; BLOCK_HEADER_SIZE];
+	for slab in pe.chunks(lzxc::MAX_CHUNK_SIZE) {
+		let chunk = encoder.encode_chunk(slab);
+		let framed = CHUNK_SIZE_PREFIX_LEN + chunk.len();
+		if BLOCK_HEADER_SIZE + framed + CHUNK_SIZE_PREFIX_LEN > MAX_BLOCK_SIZE {
+			return Err(Xex2Error::CompressedChunkTooLarge { size: chunk.len() }.into_report());
+		}
+		if block.len() + framed + CHUNK_SIZE_PREFIX_LEN > MAX_BLOCK_SIZE {
+			blocks.push(finish_block(block));
+			block = vec![0u8; BLOCK_HEADER_SIZE];
+		}
+		// The size check above bounds `chunk.len()` below 64 KB.
+		block.extend_from_slice(&(chunk.len() as u16).to_be_bytes());
+		block.extend_from_slice(&chunk);
 	}
+	blocks.push(finish_block(block));
+
+	// Each header names the following block, so the chain is built from the
+	// end. The last block keeps a zero size and hash.
+	let mut next_size = 0u32;
+	let mut next_hash = Sha1Hash::ZERO;
+	for block in blocks.iter_mut().rev() {
+		block[..4].copy_from_slice(&next_size.to_be_bytes());
+		block[4..BLOCK_HEADER_SIZE].copy_from_slice(&*next_hash);
+		// Blocks are at most `MAX_BLOCK_SIZE` bytes.
+		next_size = block.len() as u32;
+		next_hash = sha1_of(block);
+	}
+
+	Ok(CompressedStream {
+		data: blocks.concat(),
+		first_block_size: next_size,
+		first_block_hash: next_hash,
+		window_size,
+	})
+}
+
+fn finish_block(mut block: Vec<u8>) -> Vec<u8> {
 	block.extend_from_slice(&0u16.to_be_bytes());
-
-	let first_block_size = u32::try_from(block.len()).map_err(|_| Xex2Error::DecompressionFailed.into_report())?;
-	let first_block_hash = sha1_of(&block);
-
-	Ok(CompressedStream { data: block, first_block_size, first_block_hash, window_size })
+	block.resize(block.len().next_multiple_of(BLOCK_ALIGNMENT), 0);
+	block
 }
 
 /// Synthesize the FileFormatInfo optional-header blob for a Normal-compressed
@@ -114,57 +139,70 @@ fn map_window_size(bytes: u32) -> Result<lzxc::WindowSize> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::header::CompressionType;
+	use crate::header::EncryptionType;
+	use crate::header::FileFormatInfo;
 
-	#[test]
-	fn round_trip_through_lzxd_single_chunk() {
-		let pe = b"MZ\x90\x00".repeat(1000);
-		let stream = compress_normal(&pe, 0x10000).unwrap();
-		let decoded = decompress_via_lzxd(&stream, pe.len(), 0x10000);
-		assert_eq!(decoded, pe);
+	const WINDOW: u32 = 0x10000;
+
+	/// Bytes that LZX cannot shrink, so the stream spans several blocks.
+	fn incompressible(len: usize) -> Vec<u8> {
+		let mut state = 0x1234_5678u32;
+		(0..len)
+			.map(|_| {
+				state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+				(state >> 24) as u8
+			})
+			.collect()
 	}
 
-	#[test]
-	fn round_trip_through_lzxd_multi_chunk() {
-		let pe: Vec<u8> = (0..200_000).map(|i| (i & 0xFF) as u8).collect();
-		let stream = compress_normal(&pe, 0x10000).unwrap();
-		let decoded = decompress_via_lzxd(&stream, pe.len(), 0x10000);
-		assert_eq!(decoded, pe);
-	}
-
-	#[test]
-	fn hash_matches_sha1_of_block() {
-		let pe = vec![0u8; 4096];
-		let stream = compress_normal(&pe, 0x10000).unwrap();
-		let expected = sha1_of(&stream.data);
-		assert_eq!(stream.first_block_hash, expected);
-	}
-
-	fn decompress_via_lzxd(stream: &CompressedStream, image_size: usize, window: u32) -> Vec<u8> {
-		// Re-enter through the decode path to confirm the stream is a valid
-		// XEX "Normal" block. This is a trimmed clone of the loop in
-		// `basefile::decompress_normal` (single-block).
-		let window_size = match window {
-			0x8000 => lzxd::WindowSize::KB32,
-			0x10000 => lzxd::WindowSize::KB64,
-			_ => unreachable!(),
+	fn decode(stream: &CompressedStream, image_size: usize) -> Vec<u8> {
+		let format = FileFormatInfo {
+			encryption_type: EncryptionType::None,
+			compression_type: CompressionType::Normal,
+			blocks: Vec::new(),
+			window_size: Some(stream.window_size),
+			first_block_size: Some(stream.first_block_size),
 		};
-		let mut lzx = lzxd::Lzxd::new(window_size);
-		let mut output = Vec::with_capacity(image_size);
-		let compressed_payload = &stream.data[BLOCK_HEADER_SIZE..];
-		let mut p = 0;
-		while p < compressed_payload.len() && output.len() < image_size {
-			let size = u16::from_be_bytes([compressed_payload[p], compressed_payload[p + 1]]) as usize;
-			p += 2;
-			if size == 0 {
-				break;
-			}
-			let chunk = &compressed_payload[p..p + size];
-			let remaining = image_size - output.len();
-			let out_size = remaining.min(lzxc::MAX_CHUNK_SIZE);
-			let decoded = lzx.decompress_next(chunk, out_size).unwrap();
-			output.extend_from_slice(decoded);
-			p += size;
+		crate::basefile::decompress_normal(&stream.data, image_size as u32, &format).unwrap()
+	}
+
+	/// Walk the chain from the FileFormatInfo values and return each block size.
+	fn chain_block_sizes(stream: &CompressedStream) -> Vec<usize> {
+		let mut sizes = Vec::new();
+		let mut offset = 0;
+		let mut size = stream.first_block_size as usize;
+		let mut hash = stream.first_block_hash;
+		while size != 0 {
+			let block = &stream.data[offset..offset + size];
+			assert_eq!(sha1_of(block), hash, "block at {offset:#x} does not match the hash naming it");
+			sizes.push(size);
+			size = u32::from_be_bytes(block[..4].try_into().unwrap()) as usize;
+			hash = Sha1Hash(block[4..BLOCK_HEADER_SIZE].try_into().unwrap());
+			offset += block.len();
 		}
-		output
+		assert_eq!(offset, stream.data.len(), "chain does not cover the data region");
+		sizes
+	}
+
+	#[test]
+	fn small_image_is_one_sector_aligned_block() {
+		let pe = b"MZ\x90\x00".repeat(1000);
+		let stream = compress_normal(&pe, WINDOW).unwrap();
+		assert_eq!(chain_block_sizes(&stream), [BLOCK_ALIGNMENT]);
+		assert_eq!(decode(&stream, pe.len()), pe);
+	}
+
+	#[test]
+	fn large_image_splits_into_bounded_sector_aligned_blocks() {
+		let pe = incompressible(0x50000);
+		let stream = compress_normal(&pe, WINDOW).unwrap();
+		let sizes = chain_block_sizes(&stream);
+		assert!(sizes.len() > 1);
+		for size in sizes {
+			assert!(size <= MAX_BLOCK_SIZE);
+			assert_eq!(size % BLOCK_ALIGNMENT, 0);
+		}
+		assert_eq!(decode(&stream, pe.len()), pe);
 	}
 }
