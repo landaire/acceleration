@@ -15,6 +15,7 @@ pub enum Xex2Error {
 	DecryptionFailed,
 	DecompressionFailed,
 	CompressedChunkTooLarge { size: usize },
+	InvalidBoundingPath { path: String },
 	InvalidBasefileSize { expected: usize, got: usize },
 	HashMismatch { block_index: usize },
 	SigningFailed,
@@ -68,6 +69,9 @@ impl fmt::Display for Xex2Error {
 			Self::DecompressionFailed => write!(f, "decompression failed"),
 			Self::CompressedChunkTooLarge { size } => {
 				write!(f, "compressed LZX chunk of {:#x} bytes does not fit in a 64 KB block", size)
+			}
+			Self::InvalidBoundingPath { path } => {
+				write!(f, "bounding path {path:?} must be non-empty printable ASCII")
 			}
 			Self::InvalidBasefileSize { expected, got } => {
 				write!(f, "basefile size mismatch: expected {:#x}, got {:#x}", expected, got)

@@ -75,6 +75,28 @@ pub struct Xex2Builder {
 	/// Import libraries to emit in the `ImportLibraries` optional header. Empty
 	/// yields the minimal empty table.
 	imports: Vec<ImportLibrary>,
+	bounding_path: Option<BoundingPath>,
+}
+
+/// Resolved device path the loaded file must match. On a flash `\SystemRoot`
+/// boot the console requires one when the load flags include `0x40000000`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundingPath(String);
+
+impl BoundingPath {
+	/// Accepts printable ASCII without NUL, as stored in the NUL-terminated
+	/// optional header.
+	pub fn new(path: impl Into<String>) -> Result<Self> {
+		let path = path.into();
+		if path.is_empty() || !path.bytes().all(|byte| byte.is_ascii_graphic() || byte == b' ') {
+			return Err(Xex2Error::InvalidBoundingPath { path }.into_report());
+		}
+		Ok(Self(path))
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
 }
 
 impl Xex2Builder {
@@ -92,7 +114,14 @@ impl Xex2Builder {
 			compress_window: None,
 			encryption_target: None,
 			imports: Vec::new(),
+			bounding_path: None,
 		}
+	}
+
+	/// Emit a `BoundingPath` optional header.
+	pub fn bounding_path(mut self, path: BoundingPath) -> Self {
+		self.bounding_path = Some(path);
+		self
 	}
 
 	/// Set the import libraries emitted in the `ImportLibraries` header. Each
@@ -175,6 +204,7 @@ const PAGE_ALIGN: usize = 0x1000;
 fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// Optional headers we emit, indexed in ascending key order:
 	// - 0x000003FF FileFormatInfo (Basic runs or the Normal LZX descriptor)
+	// - 0x000080FF BoundingPath (variable) -- if provided
 	// - 0x00010100 EntryPoint (inline u32) -- if provided
 	// - 0x00010201 ImageBaseAddress (inline u32)
 	// - 0x000103FF ImportLibraries (variable)
@@ -223,8 +253,16 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 
 	// Calculate where blobs will land. Start placing them right after the
 	// optional-header index.
-	let entry_count = 4 + b.entry_point.is_some() as usize;
+	let entry_count = 4 + b.entry_point.is_some() as usize + b.bounding_path.is_some() as usize;
 	let mut cursor = OPT_INDEX_START + entry_count * 8;
+
+	// BoundingPath: u32 blob size, NUL-terminated path, zero padding.
+	if let Some(path) = &b.bounding_path {
+		let bounding = bounding_path_bytes(path);
+		entries.push(OptEntry::Data { key: OptionalHeaderKey::BoundingPath as u32, offset: cursor as u32 });
+		blob_bytes.push(BlobPlacement { offset: cursor, bytes: bounding.clone() });
+		cursor += bounding.len();
+	}
 
 	// ExecutionInfo: fixed-size 0x18 bytes, key has size_class = 0x18/4 = 0x06.
 	let exec_info_off = cursor;
@@ -452,6 +490,15 @@ fn page_section_types(pe: &[u8], page_size: u32, page_count: u32) -> Result<Vec<
 		.collect())
 }
 
+fn bounding_path_bytes(path: &BoundingPath) -> Vec<u8> {
+	let size = align_up(4 + path.as_str().len() + 1, 4);
+	let mut out = Vec::with_capacity(size);
+	out.extend_from_slice(&(size as u32).to_be_bytes());
+	out.extend_from_slice(path.as_str().as_bytes());
+	out.resize(size, 0);
+	out
+}
+
 fn execution_info_bytes(b: &Xex2Builder) -> Vec<u8> {
 	// 0x18 bytes:
 	//   +0x00: media_id (u32)
@@ -603,5 +650,29 @@ mod tests {
 	fn truncated_pe_reports_a_defect() {
 		let err = page_section_types(&[0u8; 8], 0x10000, 1).unwrap_err();
 		assert!(matches!(err.current_context(), Xex2Error::MalformedBasefilePe(BasefileDefect::TruncatedDosHeader)));
+	}
+
+	#[test]
+	fn bounding_path_round_trips_with_stock_blob_layout() {
+		let path = r"\Device\Harddisk0\Partition1\DEVKIT\FlashEx\xbdm.xex";
+		let mut pe = synthetic_pe(&[(0x1000, 0x1000, SCN_MEM_EXECUTE)]);
+		pe.resize(0x2000, 0);
+		let xex = Xex2Builder::new(pe)
+			.load_address(VirtualAddress(0x91f00000))
+			.image_flags(ImageFlags::SMALL_PAGES)
+			.bounding_path(BoundingPath::new(path).unwrap())
+			.build()
+			.unwrap();
+		let parsed = crate::Xex2::parse(&xex).unwrap();
+		assert_eq!(parsed.header.bounding_path().as_deref(), Some(path));
+		// Stock XBDM stores `\Device\Flash\xbdm.xex` in a 0x1c-byte blob: the
+		// size word counts itself, the terminator, and padding to 4 bytes.
+		assert_eq!(bounding_path_bytes(&BoundingPath::new(r"\Device\Flash\xbdm.xex").unwrap()).len(), 0x1c);
+	}
+
+	#[test]
+	fn bounding_path_rejects_control_bytes() {
+		let err = BoundingPath::new("a\0b").unwrap_err();
+		assert!(matches!(err.current_context(), Xex2Error::InvalidBoundingPath { .. }));
 	}
 }

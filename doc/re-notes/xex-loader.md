@@ -58,6 +58,10 @@ Observed identifiers, constant across `xbdm.xex`, `xsim.xex`, and older titles:
 
 Before this comparison the hypervisor verifies the import library hash chain (`C0000221`) and, in hypercall `0x16`, the import count recorded during validation.
 
+## Bounding path
+
+On a flash `\SystemRoot` boot, `0x800a2f90` requires a BoundingPath optional header (`0x000080ff`) when the load flags include `0x40000000`, and rejects a present header that does not match the resolved device path of the file (`C000008B` and `C00000CC`). The blob is a big-endian size word that counts itself, the NUL-terminated path, and zero padding to 4 bytes. `Xex2Builder::bounding_path` emits it.
+
 ## Allowed media
 
 Allowed media is the word immediately after the `0x74`-byte ImageInfo. It is not covered by the RSA signature; it is covered by the header hash.
