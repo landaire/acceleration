@@ -1,16 +1,16 @@
 # shadowboot
 
-Compiler for layered Xbox 360 devkit shadowboot images. The current target is the verified 60 MiB devkit image profile.
+Compiler for Xbox 360 devkit shadowboot images. The current target is the verified 60 MiB devkit image profile.
 
-The compiler reads a base image and applies a directory layer to produce a validated output image.
+The compiler reads a base flash capture, applies a boot layer, and writes the image's declared boot region: the flash header followed by the SB, SC, SD, and SE stages. For the verified profile the output is `0xe0000` bytes.
 
 ## Base image
 
-Use the exact read-only flash capture as the base. A directory is not accepted as a base because the observed image contains opaque and authenticated regions that cannot be reconstructed from root files alone.
+Use the exact read-only flash capture as the base. It is mapped read-only and is never modified; the output is written to a separate temporary file and renamed into place.
 
 ## Layer
 
-A layer contains only changed inputs. Missing entries are copied from the base image.
+A layer contains only changed boot inputs. Missing entries are copied from the base image. An empty layer directory reproduces the base boot region byte-for-byte.
 
 ```text
 layer/
@@ -21,14 +21,17 @@ layer/
     se.bin             optional complete encrypted SE stage
     hypervisor.bin     optional 0x40000-byte plaintext hypervisor
     xboxkrnl.exe       optional 0x240000-byte plaintext kernel image
-  root/
-    module.xex         replacement or new root file
-  delete.txt           optional root names, one per line
 ```
 
 `se.bin` conflicts with `hypervisor.bin` and `xboxkrnl.exe`. When either plaintext component is present, the missing component is recovered from the base SE stage. The compiler emits the verified 32 KiB record framing, 128 KiB LZX stream, chained HMAC-SHA1 key derivation, and RC4 body encryption. A replacement SC nonce changes the SD body key and therefore requires a re-encrypted `sd.bin`. When the selected SC and SD nonces change the SE body key, the compiler rebuilds SE unless `se.bin` is supplied. A supplied SE is decrypted and its complete framing and `0x280000`-byte payload are validated. The resulting boot chain must fit the base image's declared boot region. A separately prepared complete `se.bin` can be used when another compressor is required.
 
-Root replacements retain their directory slot, timestamp, and as much of their existing allocation chain as possible. New files use the lowest free slot and clusters and carry timestamp zero. `delete.txt` releases and clears file clusters. FAT metadata flags outside the 13-bit allocation link are preserved.
+The shadowed system mounts the console's own NAND file system, so flash root files are not part of the output and cannot be changed through a shadowboot image.
+
+SD verifies SE with a RotSumSha digest stored in the SD plaintext at offset `0x24c` and halts on mismatch. The digest covers `SE[0..0x10]` and the decrypted SE body up to the size rounded to 16 bytes. A changed SE, including one rebuilt from a replacement hypervisor or kernel, boots only with an SD that carries the matching digest. How SD itself is authenticated has not been established.
+
+## Size limit
+
+The build 16547 kernel loads the whole file into physically contiguous memory restricted to physical `0x01000000..0x01800000`. An image larger than `0x800000` bytes can never be loaded, and the compiler rejects such output.
 
 ## Build
 
@@ -47,14 +50,16 @@ For the verified devkit profile, write the compiler output to the HDD root as:
 HDD:\xboxromw2d.bin
 ```
 
-The matching build 16547 kernel contains these path strings beginning at PE file offset `0x474`:
+The matching build 16547 kernel tries these paths in this order during a cold boot when the console hardware flag that suppresses shadowboot is clear:
 
 ```text
 host:\xboxromw2d.bin
-\Device\FlashFs\xboxromw2d.bin
 \Device\CdRom0\xboxromw2d.bin
+\Device\FlashFs\xboxromw2d.bin
 \Device\Harddisk0\Partition1\xboxromw2d.bin
 ```
+
+An allocation or read failure prints a diagnostic and the normal boot continues.
 
 `\Device\Harddisk0\Partition1` is the device path exposed by XBDM as `HDD:`. The kernel places the strings next to `INIT: failed to read shadow kernel from media.` and `INIT_SHADOWBOOT`, which identifies them as shadowboot media paths rather than flash-update paths.
 

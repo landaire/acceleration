@@ -1,8 +1,6 @@
 use std::fs;
 use std::fs::File;
 use std::io;
-use std::io::BufRead;
-use std::io::BufReader;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -12,23 +10,22 @@ use memmap2::Mmap;
 use memmap2::MmapMut;
 use same_file::Handle;
 use shadowboot::BootLayer;
-use shadowboot::Layer;
-use shadowboot::RootFile;
 use tempfile::NamedTempFile;
 use thiserror::Error;
+use xflash::Image;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
 static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 
 #[derive(Debug, Parser)]
-#[command(about = "Compile a layered Xbox 360 devkit shadowboot image")]
+#[command(about = "Compile an Xbox 360 devkit shadowboot boot-region image")]
 struct Arguments {
 	/// Read-only 60 MiB deanxbox flash image used as the base
 	#[arg(long, value_name = "IMAGE")]
 	base: PathBuf,
 
-	/// Layer directory containing boot/ and root/ inputs
+	/// Layer directory containing boot/ inputs
 	#[arg(long, value_name = "DIRECTORY")]
 	layer: PathBuf,
 
@@ -54,14 +51,14 @@ enum CliError {
 	UnknownBootInput { path: PathBuf },
 	#[error("layer input {path:?} is empty")]
 	EmptyInput { path: PathBuf },
-	#[error("delete list {path:?} is not UTF-8")]
-	DeleteListUtf8 { path: PathBuf },
 	#[error("output {output:?} aliases base image {base:?}")]
 	OutputAliasesBase { base: PathBuf, output: PathBuf },
 	#[error("output {output:?} aliases layer input {input:?}")]
 	OutputAliasesLayerInput { input: PathBuf, output: PathBuf },
 	#[error("output path {path:?} has no parent directory")]
 	MissingOutputParent { path: PathBuf },
+	#[error(transparent)]
+	Flash(#[from] xflash::ParseError),
 	#[error(transparent)]
 	Compile(#[from] shadowboot::Error),
 }
@@ -71,11 +68,6 @@ type Result<T> = std::result::Result<T, CliError>;
 struct InputIdentity {
 	path: PathBuf,
 	handle: Handle,
-}
-
-struct MappedInput {
-	name: String,
-	map: Mmap,
 }
 
 #[derive(Default)]
@@ -90,8 +82,6 @@ struct MappedBoot {
 
 struct MappedLayer {
 	boot: MappedBoot,
-	root: Vec<MappedInput>,
-	deletions: Vec<String>,
 	inputs: Vec<InputIdentity>,
 }
 
@@ -119,10 +109,9 @@ fn run(arguments: Arguments) -> Result<()> {
 	let mapped_layer = load_layer(&arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
 
-	let root_files: Vec<RootFile<'_>> =
-		mapped_layer.root.iter().map(|file| RootFile { name: &file.name, bytes: &file.map }).collect();
-	let deletions: Vec<&str> = mapped_layer.deletions.iter().map(String::as_str).collect();
-	let boot = BootLayer {
+	let image = Image::parse(&base)?;
+	let output_size = shadowboot::output_size(&image)?;
+	let layer = BootLayer {
 		sb: mapped_layer.boot.sb.as_deref(),
 		sc: mapped_layer.boot.sc.as_deref(),
 		sd: mapped_layer.boot.sd.as_deref(),
@@ -130,7 +119,6 @@ fn run(arguments: Arguments) -> Result<()> {
 		hypervisor: mapped_layer.boot.hypervisor.as_deref(),
 		kernel: mapped_layer.boot.kernel.as_deref(),
 	};
-	let layer = Layer { boot, root_files: &root_files, delete_root_files: &deletions };
 
 	let parent = arguments
 		.output
@@ -141,21 +129,19 @@ fn run(arguments: Arguments) -> Result<()> {
 		.map_err(|source| io_error("create temporary output", &arguments.output, source))?;
 	temporary
 		.as_file()
-		.set_len(base.len() as u64)
+		.set_len(output_size as u64)
 		.map_err(|source| io_error("size temporary output", &arguments.output, source))?;
 	let mut output = unsafe { MmapMut::map_mut(temporary.as_file()) }
 		.map_err(|source| io_error("map temporary output", &arguments.output, source))?;
-	let report = shadowboot::compile(&base, &mut output, &layer)?;
+	let report = shadowboot::compile(&image, &mut output, &layer)?;
 	output.flush().map_err(|source| io_error("flush temporary output", &arguments.output, source))?;
 	drop(output);
 	temporary.persist(&arguments.output).map_err(|error| io_error("replace output", &arguments.output, error.error))?;
 
 	println!(
-		"wrote {}: root replaced={} added={} deleted={}, boot replaced={} se-rebuilt={}",
+		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={}",
 		arguments.output.display(),
-		report.replaced_root_files,
-		report.added_root_files,
-		report.deleted_root_files,
+		output_size,
 		report.replaced_boot_stages,
 		report.rebuilt_se,
 	);
@@ -169,8 +155,6 @@ fn load_layer(path: &Path) -> Result<MappedLayer> {
 	}
 
 	let mut boot = MappedBoot::default();
-	let mut root = Vec::new();
-	let mut deletions = Vec::new();
 	let mut inputs = Vec::new();
 	for entry in read_directory(path)? {
 		let entry_path = entry.path();
@@ -181,20 +165,10 @@ fn load_layer(path: &Path) -> Result<MappedLayer> {
 				boot = loaded;
 				inputs.append(&mut loaded_inputs);
 			}
-			"root" => {
-				let (loaded, mut loaded_inputs) = load_root_directory(&entry_path)?;
-				root = loaded;
-				inputs.append(&mut loaded_inputs);
-			}
-			"delete.txt" => {
-				let (loaded, input) = load_delete_list(&entry_path)?;
-				deletions = loaded;
-				inputs.push(input);
-			}
 			_ => return Err(CliError::UnsupportedLayerEntry { path: entry_path }),
 		}
 	}
-	Ok(MappedLayer { boot, root, deletions, inputs })
+	Ok(MappedLayer { boot, inputs })
 }
 
 fn load_boot_directory(path: &Path) -> Result<(MappedBoot, Vec<InputIdentity>)> {
@@ -218,43 +192,6 @@ fn load_boot_directory(path: &Path) -> Result<(MappedBoot, Vec<InputIdentity>)> 
 		inputs.push(input);
 	}
 	Ok((boot, inputs))
-}
-
-fn load_root_directory(path: &Path) -> Result<(Vec<MappedInput>, Vec<InputIdentity>)> {
-	require_directory(path)?;
-	let mut files = Vec::new();
-	let mut inputs = Vec::new();
-	for entry in read_directory(path)? {
-		let entry_path = entry.path();
-		let name = utf8_file_name(&entry_path)?;
-		let (map, input) = map_input(&entry_path)?;
-		files.push(MappedInput { name, map });
-		inputs.push(input);
-	}
-	files.sort_by_key(|file| file.name.to_ascii_lowercase());
-	Ok((files, inputs))
-}
-
-fn load_delete_list(path: &Path) -> Result<(Vec<String>, InputIdentity)> {
-	require_regular_file(path)?;
-	let file = open_file(path, "open delete list")?;
-	let identity = identify_file(&file, path)?;
-	let mut names = Vec::new();
-	for line in BufReader::new(file).lines() {
-		let line = match line {
-			Ok(line) => line,
-			Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-				return Err(CliError::DeleteListUtf8 { path: path.to_owned() });
-			}
-			Err(source) => return Err(io_error("read delete list", path, source)),
-		};
-		let name = line.trim();
-		if !name.is_empty() {
-			names.push(name.to_owned());
-		}
-	}
-	names.sort_by_key(|name| name.to_ascii_lowercase());
-	Ok((names, identity))
 }
 
 fn read_directory(path: &Path) -> Result<Vec<fs::DirEntry>> {

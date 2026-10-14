@@ -121,6 +121,27 @@ The strings are adjacent to `INIT: failed to read shadow kernel from media.` and
 
 The `xboxrom` stem and `.bin` extension are literal. The meaning of `w2d` remains unknown.
 
+### Loader behavior
+
+`ExpTryToShadowBoot` (`0x80081348`) runs during cold boot only when bit `0x0200` of the 16-bit field at `XboxHardwareInfo+0x0e` is clear; the caller at `0x8008187c..0x80081888` skips it when the bit is set. A clear bit therefore means the kernel attempts shadowboot. The routine tries these paths in order through `0x80081168`:
+
+```text
+host:\xboxromw2d.bin
+\Device\CdRom0\xboxromw2d.bin
+\Device\FlashFs\xboxromw2d.bin
+\Device\Harddisk0\Partition1\xboxromw2d.bin
+```
+
+This order differs from the order of the strings in the kernel image.
+
+`0x80081168` opens the file, queries its size, and allocates physically contiguous memory of that size through `0x800a75f8`, restricted to physical `0x01000000..0x01800000` with `0x1000`-byte alignment. It reads the whole file, requires the byte count read to equal the file size, and passes the buffer to `0x800966b0` with flags `0x200` (`0x600` for the `\Device\CdRom0` path). An allocation or read failure prints a diagnostic and the normal boot continues. A file larger than `0x800000` bytes can never be selected.
+
+### SD verification of SE
+
+SD code at `0x0c58..0x0ce4` derives the SE key, RC4-decrypts SE, and computes a 20-byte digest through SD routine `0x1b40` with arguments `(stage, 0x10, stage + 0x20, aligned_size - 0x20, out, 0x14)`, where `aligned_size` is the SE size rounded up to 16 bytes. It compares the result with the 20 bytes at SD plaintext offset `0x24c` through `0x1d60` and executes an illegal instruction on mismatch.
+
+The digest is RotSumSha (console borrow rule) over `SE[0..0x10]` and the RC4-decrypted bytes `SE[0x20..aligned_size]`. The range extends past the declared SE size to the 16-byte boundary, so it covers the following flash bytes. For the verified image this reproduces the stored value `9f4e2ee7c779834571ff12310a923a2aa78d04c4`. A modified SE therefore needs the SD digest updated. How SD itself is authenticated has not been established.
+
 ### `host:\` namespace
 
 `host:\` is not a disk partition or a normal XBDM drive mapping. The live development console returned `SysCache0`, `SysCache1`, `SysCache2`, `E`, `DEVKIT`, `HDD`, `MUINT`, `INTUSB` from `drivelist`; it did not return `HOST`. The kernel lists `host:\xboxromw2d.bin` separately from the native `\Device\...` candidates and contains `host:` beside debug-loader `LDRX` diagnostics. This identifies it as a debugger-backed development-host namespace. The early-boot transport and host service protocol remain unknown.
@@ -135,23 +156,26 @@ The XEX header signature computes RotSumSha over the `0x74`-byte ImageInfo, sele
 
 ## Implemented image contract
 
-The host compiler uses the exact read-only 60 MiB capture as its base. This preserves opaque and authenticated regions that cannot be reconstructed from an extracted directory. A layer can:
+The host compiler parses the exact read-only 60 MiB capture as its base and writes only the declared boot region: bytes `0..boot_image_size` of the base with the boot layer applied. For the verified profile this is `0xe0000` bytes containing the flash header and the SB, SC, SD, and SE stages. The shadowed system mounts the console NAND file system, so flash root files are not part of the image. A layer can:
 
 - Replace complete SB, SC, SD, or SE stage images.
 - Replace the plaintext hypervisor or kernel and rebuild SE.
-- Replace, add, or delete root filesystem files while preserving FAT metadata bits.
 
-Missing layer entries come from the base image. A replacement SC nonce requires a corresponding re-encrypted SD because the nonce changes the SD body key. Changes to the SC and SD nonce chain rebuild SE unless a complete SE is supplied. A supplied SE is decrypted and its framing and payload are validated. The completed output is parsed again, every root allocation chain is checked for bounds, cycles, collisions, and termination, and the boot chain is checked against the declared boot region.
+Missing layer entries come from the base image, and an empty layer reproduces the base boot region byte-for-byte. A replacement SC nonce requires a corresponding re-encrypted SD because the nonce changes the SD body key. Changes to the SC and SD nonce chain rebuild SE unless a complete SE is supplied. A supplied SE is decrypted and its framing and payload are validated. The boot chain is checked against the declared boot region, and an output larger than the `0x800000`-byte kernel load limit is rejected. A changed SE still fails the SD digest check described above unless SD carries the matching digest.
 
 ## Hardware deployment
 
-The first hardware attempt used this non-flash procedure:
+The deployment procedure does not write flash:
 
 1. Write the generated image to `HDD:\xboxromw2d.bin`.
 2. Download it through XBDM and compare it byte-for-byte with the host image.
 3. Request a cold reboot.
-4. Query XBDM identity and the HDD file after restart.
+4. Query XBDM identity, the `XboxHardwareInfo+0x0e` field, and the loaded module list after restart.
 
-The console accepted the `0x03c00000`-byte image. The uploaded and downloaded copies both had SHA-256 `6e5fc0d127bbf2e88feb856e3da4559561f64e820f78b51eeff360f3e15e682c`. After the cold reboot, stock XBDM returned as `deanxbox`, and `HDD:\xboxromw2d.bin` remained present. The file was then removed through stock XBDM and absence was confirmed. An ordinary XBDM cold reboot therefore does not select the HDD shadowboot image. The loader-selection precondition remains unknown.
+A complete `0x03c00000`-byte image (SHA-256 `6e5fc0d127bbf2e88feb856e3da4559561f64e820f78b51eeff360f3e15e682c`) uploaded and compared correctly but was not selected: it exceeds the `0x800000`-byte load limit, so the allocation fails and the normal boot continues. After the cold reboot the field read `0x009e`.
 
-This path did not call `XapiFlashKernelImage`, `XeKeysSaveBootLoader`, NAND erase, or NAND program. The replacement XBDM worker attempts to remove `HDD:\xboxromw2d.bin` before opening TCP port 730 and restricts its `delete` command to the same path. If the replacement module starts, a subsequent cold reboot should return to stock. If the replacement image fails before the XBDM worker starts, the HDD file remains and recovery requires booting without that HDD path or otherwise removing the file. `flash`, `magicboot`, and expansion installation are not shadowboot substitutes.
+The first `0xe0000` bytes of the capture (the flash header and the SB, SC, SD, and SE boot region, `917504` bytes, SHA-256 `3164f39c830537eeb3ca0a7f14078be53b249d1f878a558f73d7dc4ad73bb5a4`) at `HDD:\xboxromw2d.bin` were selected on cold reboot. After the reboot the field read `0x029e`, and stock XBDM loaded from the NAND file system (`Loaded DLL xbdm.xex (\Device\Flash\xbdm.xex)`). The compiler output for an empty layer is byte-identical to this file.
+
+The compiler output was deployed again together with a replacement XBDM at `DEVKIT:\FlashEx\xbdm.xex` whose BoundingPath names that file (see `xex-loader.md`). The shadowed kernel searches `\FlashEx\` before `\SystemRoot\`, so after an XBDM `reboot` the field read `0x029e` and the replacement monitor answered xeedee as `openxbdm-deanxbox`.
+
+This path did not call `XapiFlashKernelImage`, `XeKeysSaveBootLoader`, NAND erase, or NAND program. Because the shadowed system runs the console's own NAND file system, stock XBDM is available after a shadowboot and can remove `HDD:\xboxromw2d.bin`. If a shadowed boot chain fails before XBDM starts, the HDD file remains and recovery requires booting without that HDD path or otherwise removing the file. `flash`, `magicboot`, and expansion installation are not shadowboot substitutes.

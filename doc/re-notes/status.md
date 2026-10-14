@@ -28,18 +28,17 @@ The build 17559 kernel and hypervisor loaded in Binary Ninja must not be used as
 | Top-level image header | implemented | Big-endian magic, build, flags, entry, boot-region size |
 | SB/SC/SD/SE chain | implemented | Strict contiguous stage parsing from offset `0x8000` |
 | Root directory | implemented | Observed fixed deanxbox profile |
-| Allocation chains | implemented | Big-endian 16-bit entries with 13-bit links; metadata bits preserved |
+| Allocation chains | implemented | Big-endian 16-bit entries with 13-bit links |
 | File extraction | implemented | Streams mapped slices; fragmented files supported |
 | Stage extraction | implemented | Preserves exact stage bytes |
-| Root modification layer | implemented | Deterministic replace, add, and delete operations over a copied base image |
 | Live kernel acquisition | verified | Exact mapped kernel range captured with XBDM `getmem` |
 | Stage decryption | verified | SC, SD, and SE use chained HMAC-SHA1-derived RC4 keys |
 | SE decompression | verified | 80 big-endian-framed LZX blocks with a `0x20000`-byte window expand to `0x280000` bytes |
 | Hypervisor extraction | verified | First `0x40000` bytes of expanded SE payload; matching build header and PowerPC entry |
 | SE assembly | implemented | Plaintext hypervisor/kernel overlay, LZX framing, chained key derivation, RC4 encryption, and boot-region bounds |
-| Complete shadowboot image assembly | implemented | Base image plus boot and root layers produce a validated host image |
+| Shadowboot image assembly | implemented | Declared boot region of the base image with the boot layer applied; output limited to the `0x800000`-byte kernel load limit; a changed SE needs an SD carrying the matching digest |
 | Development shadowboot loader path | identified | Build 16547 devkit kernel selects `xboxromw2d.bin` from host, flash, optical disc, or HDD root; inspected retail build 17559 has no matching loader strings |
-| Volatile console handoff | partial | HDD upload and byte comparison verified; ordinary XBDM cold reboot returned to stock without selecting the image; loader trigger unresolved |
+| Volatile console handoff | verified | Stock `0xe0000`-byte boot region at `HDD:\xboxromw2d.bin` selected on cold reboot; a 60 MiB image exceeds the load limit and is not selected |
 | Flash writing | prohibited | No writer targets a console or flash device |
 
 ## XEX generation

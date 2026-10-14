@@ -19,8 +19,11 @@
 - `ExExpansionInstall` entered a non-returning path in two console-signed experiments. Do not invoke it again.
 - The live kernel exposes four expansion slots at `0x90001000`; all were empty when inspected. `ExExpansionCall` therefore has no existing reader to invoke.
 - The devkit HDD-root shadowboot filename is `HDD:\xboxromw2d.bin`.
-- The replacement XBDM removes the HDD-root shadowboot file before starting its listener. Failure before its worker starts leaves the file in place and requires an external recovery path.
-- An ordinary XBDM cold reboot does not select the HDD-root image. The console returned to stock XBDM and left the file in place.
+- XBDM in the shadowed system loads from the NAND file system and can remove `HDD:\xboxromw2d.bin`. A shadowed boot chain that fails before XBDM starts leaves the file in place, and every cold boot selects it again until it is removed externally.
+- The kernel loads `xboxromw2d.bin` whole into physical memory restricted to `0x01000000..0x01800000`. A file larger than `0x800000` bytes is never selected; the complete `0x03c00000`-byte capture fails allocation and the console boots normally.
+- The `0xe0000`-byte boot region (flash header plus SB, SC, SD, SE) at `HDD:\xboxromw2d.bin` is selected on cold reboot. Shadowboot is attempted when bit `0x0200` of `XboxHardwareInfo+0x0e` is clear; after the shadowed boot the field read `0x029e`.
+- The shadowed system mounts the console NAND file system. Flash root files cannot be changed through a shadowboot image.
+- SD verifies SE against the 20-byte value at SD plaintext offset `0x24c` and halts on mismatch. The value is RotSumSha over `SE[0..0x10]` and the RC4-decrypted SE body up to the size rounded to 16 bytes, which includes flash bytes past the SE end. A changed SE needs an updated SD digest; SD authentication is not established.
 - `host:\` is a debugger-backed development-host loader namespace, not a disk partition or normal XBDM drive mapping.
 - The inspected retail build 17559 kernel has no development shadowboot media table. This result does not classify every historical retail build.
 - XEX images loaded in `0x90000000..0x9fffffff` must carry ImageInfo flag `0x10000000`; images elsewhere must not.

@@ -45,7 +45,7 @@ cargo run -p xflash -- /path/to/nand.bin info
 cargo run -p xflash -- /path/to/nand.bin list
 ```
 
-Compile a copied base image with boot and root filesystem changes:
+Compile a shadowboot boot-region image from a flash capture and a boot layer:
 
 ```text
 cargo run -p shadowboot -- \
