@@ -35,7 +35,9 @@ pub fn xe_crypt_rot_sum(state: &mut [u64; 4], data: &[u8]) {
 		state[0] = state[0].wrapping_add(carry);
 		state[1] = sum.rotate_left(29);
 		let diff = state[3].wrapping_sub(qw);
-		let borrow = if state[3] < qw { 1u64 } else { 0 };
+		// The console compares the difference with the operand, not the
+		// minuend; this is not a true borrow.
+		let borrow = if diff > qw { 1u64 } else { 0 };
 		state[2] = state[2].wrapping_sub(borrow);
 		state[3] = diff.rotate_left(31);
 	}
@@ -89,4 +91,19 @@ pub fn xe_crypt_aes_ecb_decrypt(key: &[u8; 16], block: &mut [u8; 16]) {
 pub fn xe_crypt_aes_ecb_encrypt(key: &[u8; 16], block: &mut [u8; 16]) {
 	let iv = [0u8; 16];
 	xe_crypt_aes_cbc_encrypt(key, &iv, block);
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn rot_sum_sha_matches_console_borrow_rule() {
+		let image_info: Vec<u8> = (0u8..0x74).collect();
+		let expected = [
+			0x21, 0x36, 0x45, 0x35, 0x9a, 0x41, 0xfa, 0x50, 0x2f, 0x80, 0xd5, 0xc3, 0x8f, 0x3a, 0x4a, 0x3c, 0x7c, 0x55,
+			0xb0, 0xec,
+		];
+		assert_eq!(xe_crypt_rot_sum_sha(&image_info, &[]), expected);
+	}
 }
