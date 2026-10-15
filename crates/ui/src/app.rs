@@ -10,8 +10,6 @@ use egui::ImageSource;
 use egui::Ui;
 use egui_extras::Column;
 
-use clipboard::ClipboardContext;
-use clipboard::ClipboardProvider;
 use egui::Label;
 use egui::Sense;
 use egui::Spinner;
@@ -67,9 +65,6 @@ pub struct AccelerationApp {
 	stfs_package_title_image: Option<Vec<u8>>,
 
 	#[serde(skip)]
-	clipboard: ClipboardContext,
-
-	#[serde(skip)]
 	send: Sender<BackgroundTaskMessage>,
 
 	#[serde(skip)]
@@ -98,7 +93,6 @@ impl Default for AccelerationApp {
 			stfs_package: None,
 			stfs_package_display_image: None,
 			stfs_package_title_image: None,
-			clipboard: ClipboardProvider::new().unwrap(),
 			send,
 			recv,
 			status_message: None,
@@ -282,7 +276,6 @@ impl eframe::App for AccelerationApp {
 			stfs_package,
 			stfs_package_display_image,
 			stfs_package_title_image,
-			clipboard,
 			send,
 			recv,
 			status_message,
@@ -417,7 +410,7 @@ impl eframe::App for AccelerationApp {
 					ui.label("Name:");
 					let display_name = metadata.display_name[0].to_string();
 					if ui.add(Label::new(&display_name).sense(Sense::click())).double_clicked() {
-						let _ = clipboard.set_contents(display_name);
+						ui.output_mut(|output| output.copied_text = display_name);
 					}
 				});
 
@@ -425,7 +418,7 @@ impl eframe::App for AccelerationApp {
 					ui.label("Description:");
 					let description = metadata.display_description[0].to_string();
 					if ui.add(Label::new(&description).wrap(true).sense(Sense::click())).double_clicked() {
-						let _ = clipboard.set_contents(description);
+						ui.output_mut(|output| output.copied_text = description);
 					}
 				});
 
@@ -434,7 +427,7 @@ impl eframe::App for AccelerationApp {
 					let label_str = format!("{:08X}", metadata.title_id);
 
 					if ui.add(Label::new(&label_str).sense(Sense::click())).double_clicked() {
-						let _ = clipboard.set_contents(label_str);
+						ui.output_mut(|output| output.copied_text = label_str);
 					}
 				});
 
@@ -442,7 +435,7 @@ impl eframe::App for AccelerationApp {
 					ui.label("Profile ID:");
 					let profile_id = format!("{:016X}", metadata.creator_xuid);
 					if ui.add(Label::new(&profile_id).sense(Sense::click())).double_clicked() {
-						let _ = clipboard.set_contents(profile_id);
+						ui.output_mut(|output| output.copied_text = profile_id);
 					}
 				});
 
@@ -450,7 +443,7 @@ impl eframe::App for AccelerationApp {
 					ui.label("Console ID:");
 					let console_id = metadata.console_id.to_string();
 					if ui.add(Label::new(&console_id).sense(Sense::click())).double_clicked() {
-						let _ = clipboard.set_contents(console_id);
+						ui.output_mut(|output| output.copied_text = console_id);
 					}
 				});
 
@@ -458,7 +451,7 @@ impl eframe::App for AccelerationApp {
 					ui.label("Content Type:");
 					let content_type = format!("{:?}", metadata.content_type);
 					if ui.add(Label::new(&content_type).sense(Sense::click())).double_clicked() {
-						let _ = clipboard.set_contents(content_type);
+						ui.output_mut(|output| output.copied_text = content_type);
 					}
 				});
 			}
