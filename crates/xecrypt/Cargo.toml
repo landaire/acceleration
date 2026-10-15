@@ -21,7 +21,7 @@ serde = { workspace = true, optional = true }
 byteorder = { workspace = true }
 thiserror = { workspace = true }
 bitflags = { workspace = true }
-xenon_types = { version = "0.2", path = "../xenon_types" }
+xenon_types = { version = "0.4", path = "../xenon_types" }
 
 [dev-dependencies]
 insta = { workspace = true }

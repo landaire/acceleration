@@ -13,8 +13,8 @@ memmap2 = "0.9"
 clap = { version = "4.6.1", features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
-stfs = { version = "0.2", path = "../stfs" }
-xcontent = { version = "0.2", path = "../xcontent" }
+stfs = { version = "0.4", path = "../stfs" }
+xcontent = { version = "0.4", path = "../xcontent" }
 jiff = "0.2"
 hex = "0.4.3"
 humansize = "2.1.3"

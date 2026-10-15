@@ -1,6 +1,6 @@
 name: PyPI release
 
-# Tag-triggered: when a `v*` tag is pushed (e.g. `v0.2.0`), builds the
+# Tag-triggered: when a `v*` tag is pushed (e.g. `v0.4.0`), builds the
 # full wheel matrix via the Wheels workflow, then uploads every wheel
 # to PyPI using trusted publishing (OIDC — no API token in CI secrets).
 #
@@ -9,7 +9,7 @@ name: PyPI release
 #      use TestPyPI first at https://test.pypi.org/).
 #   2. Add a "Trusted Publisher" pointing at this repo + this workflow
 #      file name (`pypi.yml`) + the `publish` job below.
-#   3. Push a tag: `git tag v0.2.0 && git push --tags`.
+#   3. Push a tag: `git tag v0.4.0 && git push --tags`.
 
 on:
   push:

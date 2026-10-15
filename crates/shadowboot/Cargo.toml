@@ -16,7 +16,7 @@ include = ["src/**", "README.md"]
 dhat = ["dep:dhat"]
 
 [dependencies]
-xflash = { version = "0.2", path = "../xflash", default-features = false }
+xflash = { version = "0.4", path = "../xflash", default-features = false }
 lzxc = { version = "0.2", path = "../lzxc" }
 lzxd = "0.2"
 sha-1 = { workspace = true }

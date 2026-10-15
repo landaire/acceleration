@@ -9,6 +9,6 @@ publish = false
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-xex2 = { version = "0.2", path = "../xex2" }
+xex2 = { version = "0.4", path = "../xex2" }
 diplomat = "0.15"
 diplomat-runtime = "0.15"

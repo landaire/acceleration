@@ -1,6 +1,6 @@
 [project]
 name = "xex2"
-version = "0.3.0"
+version = "0.4.0"
 description = "Python bindings for the xex2 crate: parse, inspect, and patch Xbox 360 XEX2 executables."
 readme = "README.md"
 license = { text = "MIT OR Apache-2.0" }
