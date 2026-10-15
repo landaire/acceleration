@@ -42,12 +42,23 @@ def _platform_gated(name: str, kwargs: dict) -> dict:
 
 def _rust_library(name: str, **kwargs):
     # A fixup's linker_flags are meant for the executables that link the
-    # crate; the prelude passes only exported_linker_flags to them.
-    if "linker_flags" in kwargs:
-        kwargs["exported_linker_flags"] = kwargs.pop("linker_flags")
+    # crate. rustc links an executable with the link info of its native deps
+    # only, which leaves out a Rust library's exported_linker_flags, so the
+    # flags go on a native library that the crate depends on.
+    linker_flags = kwargs.pop("linker_flags", None)
     for platform, attrs in kwargs.get("platform", {}).items():
         if "linker_flags" in attrs:
             fail("{}: platform {} sets linker_flags; set them for all platforms".format(name, platform))
+    if linker_flags:
+        flags_name = name + "-linker-flags"
+        _prebuilt_cxx_library(
+            name = flags_name,
+            header_only = True,
+            exported_linker_flags = linker_flags,
+            platform = {platform: {} for platform in kwargs.get("platform", {})},
+            visibility = [],
+        )
+        kwargs["deps"] = kwargs.get("deps", []) + [":" + flags_name]
 
     # Proc macros are not limited: the prelude wraps each in an alias that
     # takes no compatibility attributes, and an alias of a limited macro fails
