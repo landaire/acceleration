@@ -24,6 +24,48 @@ an archive for Linux x86_64, macOS arm64 and Windows x86_64 with
 published tools also install from crates.io, for example
 `cargo install xex2ool`.
 
+### Nix
+
+The flake builds `acceleration`, `xex2ool`, `xflash` and `shadowboot` from
+source on x86_64 and aarch64 Linux and on macOS arm64. The package of each
+tool has its name; `default` has all four.
+
+Run one tool:
+
+```text
+nix run github:landaire/acceleration#xex2ool -- info game.xex
+```
+
+Start a shell with every tool, or with the tools named:
+
+```text
+nix shell github:landaire/acceleration
+nix shell github:landaire/acceleration#xex2ool github:landaire/acceleration#xflash
+```
+
+Add the tools to the development shell of another flake:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    acceleration.url = "github:landaire/acceleration";
+  };
+
+  outputs =
+    { nixpkgs, acceleration, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = nixpkgs.legacyPackages.${system};
+    in
+    {
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [ acceleration.packages.${system}.default ];
+      };
+    };
+}
+```
+
 ## xex2ool
 
 Basic usage:
