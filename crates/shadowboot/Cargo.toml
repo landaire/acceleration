@@ -15,7 +15,7 @@ dhat = ["dep:dhat"]
 
 [dependencies]
 xflash = { version = "0.2", path = "../xflash", default-features = false }
-lzxc = { version = "0.1", path = "../lzxc" }
+lzxc = { version = "0.2", path = "../lzxc" }
 lzxd = "0.2"
 sha-1 = { workspace = true }
 thiserror = { workspace = true }
