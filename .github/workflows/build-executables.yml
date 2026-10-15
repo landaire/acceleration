@@ -1,0 +1,90 @@
+name: Build executables
+
+# Builds every workspace executable with the release profile on each release
+# platform and uploads one archive per platform as an artifact of the calling
+# run. release.yml and nightly.yml call it and publish the archives.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version in the archive names, for example 0.4.0 or nightly.
+        required: true
+        type: string
+      ref:
+        description: Commit to build.
+        required: true
+        type: string
+
+jobs:
+  unix:
+    name: ${{ matrix.target }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: landaire-gh-public
+          extraPullNames: devenv
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+
+      - name: Build and archive the executables
+        env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: >-
+          devenv --profile ci shell -- python3 build_defs/package_release.py
+          --version "$VERSION" --target "$TARGET" --out-dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acceleration-${{ matrix.target }}
+          path: dist/*
+
+  windows:
+    name: x86_64-pc-windows-msvc
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install Buck2
+        shell: pwsh
+        run: ./ci/install-buck2.ps1 -InstallDir C:\buck2
+
+      - name: Copy the checkout to a short path
+        shell: pwsh
+        run: ./ci/prepare-windows-runner.ps1 -Source $env:GITHUB_WORKSPACE -Destination C:\a -AlsoExclude C:\buck2
+
+      - name: Build and archive the executables
+        shell: pwsh
+        working-directory: C:\a
+        env:
+          VERSION: ${{ inputs.version }}
+        run: >-
+          python build_defs/package_release.py
+          --version $env:VERSION --target x86_64-pc-windows-msvc
+          --out-dir $env:GITHUB_WORKSPACE\dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: acceleration-x86_64-pc-windows-msvc
+          path: dist/*

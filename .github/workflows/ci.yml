@@ -5,36 +5,117 @@ on:
     branches: [main]
   pull_request:
 
+# Buck2 builds, tests and lints everything, including benchmarks, examples,
+# and the `-all-features` variants of the crates with optional features.
+# Cargo only resolves the workspace for reindeer and
+# build_defs/update_buck_files.py.
+#
+# On Linux and macOS, the devenv `ci` profile provides Buck2, reindeer,
+# Cargo, Python and bazel-remote, and Cachix holds the Nix store paths.
+# bazel-remote serves Buck2's action cache from a directory that
+# actions/cache keeps between runs; runs on main save it, and pull requests
+# read the latest one. Windows has neither Nix nor a bazel-remote build, so
+# it installs Buck2 directly and builds without the action cache.
+
 env:
-  CARGO_TERM_COLOR: always
+  ACTION_CACHE_DIR: ${{ github.workspace }}/../buck2-action-cache
 
 jobs:
-  fmt:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup component add rustfmt
-      - run: cargo fmt --all --check
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - run: rustup component add clippy
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-
-  test:
-    runs-on: ${{ matrix.os }}
+  unix:
+    name: ${{ matrix.name }}
     strategy:
-      # Report every OS instead of cancelling the rest on the first failure.
+      # Report every platform instead of cancelling the rest on the first failure.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - name: Linux x86_64
+            os: ubuntu-latest
+            checks: true
+          - name: macOS arm64
+            os: macos-15
+            checks: false
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      # Exclude the GUI app crate: it's a publish=false eframe/egui frontend
-      # with no tests, and linking its cdylib drags in system libs (libxcb, …)
-      # that headless CI runners don't have. clippy still compile-checks it.
-      - run: cargo test --workspace --exclude acceleration_ui
+
+      - uses: cachix/install-nix-action@v30
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - uses: cachix/cachix-action@v15
+        with:
+          name: landaire-gh-public
+          extraPullNames: devenv
+          authToken: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+
+      # Action keys cover the C compiler wrappers but not the compiler that
+      # they run from PATH, so each runner image keeps its own cache.
+      - name: Name the action cache
+        id: action-cache
+        run: echo "prefix=buck2-action-cache-$ImageOS-$ImageVersion-${{ runner.arch }}-" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Buck2 action cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.ACTION_CACHE_DIR }}
+          key: ${{ steps.action-cache.outputs.prefix }}${{ github.run_id }}
+          restore-keys: ${{ steps.action-cache.outputs.prefix }}
+
+      - name: Start the action cache
+        run: devenv --profile ci shell -- ci/start-action-cache.sh "$ACTION_CACHE_DIR"
+
+      - name: Check the generated files
+        if: matrix.checks
+        run: |
+          devenv --profile ci shell -- python3 toolchains/update_rust_release.py --check
+          devenv --profile ci shell -- python3 build_defs/update_buck_files.py
+          git diff --exit-code
+          test -z "$(git status --porcelain)"
+
+      - name: Build
+        run: devenv --profile ci shell -- buck2 build //...
+
+      - name: Test
+        run: devenv --profile ci shell -- buck2 test //...
+
+      - name: Check formatting and clippy diagnostics
+        if: matrix.checks
+        run: devenv --profile ci shell -- python3 build_defs/lint.py
+
+      - name: Stop the action cache
+        if: always()
+        run: |
+          devenv --profile ci shell -- buck2 kill
+          if [ -f "$ACTION_CACHE_DIR.pid" ]; then kill "$(cat "$ACTION_CACHE_DIR.pid")"; fi
+
+      - name: Save the Buck2 action cache
+        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.ACTION_CACHE_DIR }}
+          key: ${{ steps.action-cache.outputs.prefix }}${{ github.run_id }}
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Buck2
+        shell: pwsh
+        run: ./ci/install-buck2.ps1 -InstallDir C:\buck2
+
+      - name: Copy the checkout to a short path
+        shell: pwsh
+        run: ./ci/prepare-windows-runner.ps1 -Source $env:GITHUB_WORKSPACE -Destination C:\a -AlsoExclude C:\buck2
+
+      - name: Build
+        working-directory: C:\a
+        run: buck2 build //...
+
+      - name: Test
+        working-directory: C:\a
+        run: buck2 test //...

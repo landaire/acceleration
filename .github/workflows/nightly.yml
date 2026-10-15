@@ -1,0 +1,82 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+# Publishes the archives of the default branch as the `nightly` pre-release
+# when the branch has moved since the last one. The `nightly` tag marks the
+# commit of the current nightly; each new one replaces the release, its tag
+# and its archives, so the download URLs stay the same.
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+      head: ${{ steps.compare.outputs.head }}
+    steps:
+      - name: Compare the default branch with the last nightly
+        id: compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # A manual run from another branch still builds the default branch.
+          branch=$(gh api "repos/$GH_REPO" --jq .default_branch)
+          head=$(gh api "repos/$GH_REPO/commits/$branch" --jq .sha)
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          # A missing tag means there is no nightly yet.
+          published=$(gh api "repos/$GH_REPO/git/ref/tags/nightly" --jq .object.sha 2>/dev/null || true)
+          if [ "$published" = "$head" ]; then
+            echo "The nightly release already has $head."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    uses: ./.github/workflows/build-executables.yml
+    with:
+      version: nightly
+      ref: ${{ needs.check.outputs.head }}
+    secrets: inherit
+
+  publish:
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Replace the nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD: ${{ needs.check.outputs.head }}
+        run: |
+          if gh release view nightly >/dev/null 2>&1; then
+            gh release delete nightly --yes
+          fi
+          # `gh release create` reuses an existing tag and ignores --target.
+          if gh api "repos/$GH_REPO/git/ref/tags/nightly" >/dev/null 2>&1; then
+            gh api -X DELETE "repos/$GH_REPO/git/refs/tags/nightly"
+          fi
+          date=$(date -u +%Y-%m-%d)
+          gh release create nightly dist/* \
+            --prerelease \
+            --target "$HEAD" \
+            --title "Nightly $date" \
+            --notes "Built from $HEAD on $date. Nightly builds are not versioned releases; each one replaces the previous."
