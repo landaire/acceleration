@@ -1,5 +1,5 @@
 /target
-Cargo.lock
+/buck-out
 xex_files/
 
 # Generated Diplomat FFI bindings (regenerate with diplomat-tool)
@@ -13,3 +13,7 @@ bindings/python/*.egg-info/
 bindings/python/uv.lock
 bindings/python/.pytest_cache/
 **/__pycache__/
+/.buckconfig.local
+/.devenv
+/.devenv.flake.nix
+/devenv.local.nix

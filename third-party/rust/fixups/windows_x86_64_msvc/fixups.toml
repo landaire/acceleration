@@ -1,0 +1,7 @@
+# The crate ships the import library that the windows crates link against;
+# its build script only adds the directory to the link search path.
+buildscript.run = false
+
+[[prebuilt_cxx_library]]
+name = "windows"
+static_libs = ["lib/*.lib"]

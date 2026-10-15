@@ -1,0 +1,61 @@
+# Generates third-party/rust/BUCK (`reindeer buckify`, which
+# build_defs/update_buck_files.py runs): rules for the crates.io dependencies
+# of the workspace crates, with an alias for each direct dependency. Crates
+# are not vendored; Buck2 downloads each one and checks it against the
+# checksum in Cargo.lock. Fixups are in third-party/rust/fixups.
+manifest_path = "Cargo.toml"
+third_party_dir = "third-party/rust"
+precise_srcs = false
+cargo_env = true
+vendor = false
+
+[platform.windows-msvc]
+target = "x86_64-pc-windows-msvc"
+target_arch = ["x86_64"]
+target_env = ["msvc"]
+target_family = ["windows"]
+target_os = ["windows"]
+target_pointer_width = ["64"]
+target_vendor = ["pc"]
+target_endian = ["little"]
+target_feature = ["fxsr", "sse", "sse2"]
+target_has_atomic = ["16", "32", "64", "8", "ptr"]
+
+[platform.linux-x86_64]
+target = "x86_64-unknown-linux-gnu"
+target_arch = ["x86_64"]
+target_env = ["gnu"]
+target_family = ["unix"]
+target_os = ["linux"]
+target_pointer_width = ["64"]
+target_vendor = ["unknown"]
+target_endian = ["little"]
+target_feature = ["fxsr", "sse", "sse2"]
+target_has_atomic = ["16", "32", "64", "8", "ptr"]
+
+[platform.macos-arm64]
+target = "aarch64-apple-darwin"
+target_arch = ["aarch64"]
+target_env = [""]
+target_family = ["unix"]
+target_os = ["macos"]
+target_pointer_width = ["64"]
+target_vendor = ["apple"]
+target_endian = ["little"]
+target_feature = ["neon", "aes", "sha2"]
+target_has_atomic = ["128", "16", "32", "64", "8", "ptr"]
+
+[buck]
+file_name = "BUCK"
+# Every rule lists the platforms that use the crate; build_defs/third_party.bzl
+# limits the crate to those hosts.
+platform_compatibility_on_all_targets = true
+cxx_library = "cargo.cxx_library"
+http_archive = "cargo.http_archive"
+prebuilt_cxx_library = "cargo.prebuilt_cxx_library"
+rust_library = "cargo.rust_library"
+rust_binary = "cargo.rust_binary"
+buckfile_imports = """
+load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
+load("//build_defs:third_party.bzl", "cargo")
+"""

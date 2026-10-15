@@ -1,0 +1,29 @@
+# Third-party crates that the workspace crates use only as dev-dependencies
+# or optional dependencies, and the features that only `--all-features`
+# enables. Reindeer generates rules and aliases only for the normal
+# dependencies that default features enable, and Buck2 builds each
+# third-party crate with one feature set, so they are listed here as normal
+# dependencies. build_defs/update_buck_files.py fails when one is missing.
+#
+# This package is a workspace member only so that it shares Cargo.lock with
+# the other crates; it has no code.
+[package]
+name = "acceleration-third-party"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = { workspace = true }
+criterion = { version = "0.8", features = ["html_reports"] }
+dhat = "0.3.3"
+fskit = { workspace = true, features = ["async-vfs"] }
+insta = { workspace = true, features = ["json"] }
+log = { version = "0.4", features = ["kv_unstable"] }
+lzxd = "0.2"
+serde_json = "1.0"
+vfs = { workspace = true, features = ["async-vfs"] }

@@ -1,0 +1,4 @@
+[buildscript.run]
+# The build script requires OPT_LEVEL, which Cargo sets. It only selects
+# whether slow tests run.
+env = { OPT_LEVEL = "0" }

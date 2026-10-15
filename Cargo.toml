@@ -13,11 +13,12 @@ members = [
 	"crates/xex2-ffi",
 	"crates/xex2ool",
 	"crates/xenon_types",
+	"third-party/rust",
 ]
 
 [workspace.package]
-# Shared version for all workspace crates *except* `lzxc`, which is
-# released independently so its version drifts on its own cadence.
+# Shared version for the published crates except `lzxc`, which is released
+# independently.
 version = "0.4.0"
 
 [workspace.dependencies]

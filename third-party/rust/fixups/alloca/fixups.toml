@@ -1,0 +1,9 @@
+# Buck2 compiles alloca.c with its C toolchain instead of running the build
+# script, which runs cc-rs. Like the build script's archive, the library
+# links statically.
+buildscript.run = false
+
+[[cxx_library]]
+name = "calloca"
+srcs = ["alloca.c"]
+preferred_linkage = "static"

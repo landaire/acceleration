@@ -1,0 +1,7 @@
+# Rust for Cargo and rust-analyzer through rustup or devenv. Buck2
+# downloads the same release itself (toolchains/rust_release.bzl); run
+# toolchains/update_rust_release.py after changing the channel.
+[toolchain]
+channel = "1.98.0"
+components = ["clippy", "rustfmt", "rust-analyzer"]
+profile = "minimal"

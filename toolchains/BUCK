@@ -1,0 +1,108 @@
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:cxx.bzl", "cxx_tools_info_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
+load("@prelude//toolchains:python.bzl", "remote_python_toolchain")
+load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load(":cxx.bzl", "path_cxx_tools")
+load(":rust.bzl", "release_tool", "rust_release", "rust_release_toolchain")
+
+export_file(
+    name = "assemble_rust_sysroot.py",
+    visibility = ["PUBLIC"],
+)
+
+rust_release(
+    name = "rust-release",
+    hosts = "release",
+)
+
+# Downloaded only when something runs rustfmt.
+rust_release(
+    name = "rustfmt-nightly",
+    hosts = "rustfmt-nightly",
+)
+
+# `-c rust.profile=release` builds like Cargo's release profile, which also
+# strips the standard library's debug information from executables. The dev
+# profile uses rustc's defaults.
+_PROFILE_RUSTC_FLAGS = {
+    "dev": [],
+    "release": ["-Copt-level=3", "-Cstrip=debuginfo"],
+}
+
+_PROFILE = read_config("rust", "profile", "dev")
+
+_PROFILE in _PROFILE_RUSTC_FLAGS or fail("rust.profile must be one of {}, not `{}`".format(_PROFILE_RUSTC_FLAGS.keys(), _PROFILE))
+
+rust_release_toolchain(
+    name = "rust",
+    default_edition = "2024",
+    release = ":rust-release",
+    rustc_flags = _PROFILE_RUSTC_FLAGS[_PROFILE],
+    visibility = ["PUBLIC"],
+)
+
+# `buck2 run toolchains//:rustfmt -- ...` formats with the pinned nightly
+# rustfmt, which accepts every option in .rustfmt.toml.
+release_tool(
+    name = "rustfmt",
+    release = ":rustfmt-nightly",
+    tool = "rustfmt",
+    visibility = ["PUBLIC"],
+)
+
+# On Linux the driver can be GCC or Clang: the `-fuse-ld=lld` that the
+# prelude adds resolves to the lld that rustc bundles, so no system lld is
+# needed.
+path_cxx_tools(
+    name = "linux-cxx-tools",
+    ar = "ar.sh",
+    cc = "cc.sh",
+    compiler_type = "gcc",
+    cxx = "cxx.sh",
+    linker_type = "gnu",
+)
+
+path_cxx_tools(
+    name = "macos-cxx-tools",
+    ar = "ar.sh",
+    cc = "clang.sh",
+    compiler_type = "clang",
+    cxx = "clangxx.sh",
+    linker_type = "darwin",
+)
+
+# Host C and C++ tools: the drivers on PATH (Xcode's clang on macOS) and
+# the Visual Studio build tools on Windows. They link Rust executables and
+# compile the C sources of some third-party crates.
+cxx_tools_info_toolchain(
+    name = "cxx",
+    cxx_tools_info = select({
+        "prelude//os:linux": ":linux-cxx-tools",
+        "prelude//os:macos": ":macos-cxx-tools",
+        "prelude//os:windows": "prelude//toolchains/msvc:msvc_tools",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# Required by the genrule that remote_python_toolchain declares.
+system_genrule_toolchain(
+    name = "genrule",
+    visibility = ["PUBLIC"],
+)
+
+# Runs the prelude's Python tools with a downloaded CPython.
+remote_python_toolchain(
+    name = "python",
+    visibility = ["PUBLIC"],
+)
+
+remote_test_execution_toolchain(
+    name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)
+
+noop_test_toolchain(
+    name = "test",
+    visibility = ["PUBLIC"],
+)
