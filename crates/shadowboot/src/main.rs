@@ -21,7 +21,7 @@ static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 #[derive(Debug, Parser)]
 #[command(about = "Compile an Xbox 360 devkit shadowboot boot-region image")]
 struct Arguments {
-	/// Read-only 60 MiB deanxbox flash image used as the base
+	/// Read-only 60 MiB devkit flash image used as the base
 	#[arg(long, value_name = "IMAGE")]
 	base: PathBuf,
 
@@ -120,11 +120,12 @@ fn run(arguments: Arguments) -> Result<()> {
 		kernel: mapped_layer.boot.kernel.as_deref(),
 	};
 
-	let parent = arguments
-		.output
-		.parent()
-		.filter(|parent| !parent.as_os_str().is_empty())
-		.ok_or_else(|| CliError::MissingOutputParent { path: arguments.output.clone() })?;
+	// A bare file name has an empty parent: the current directory.
+	let parent = match arguments.output.parent() {
+		Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+		Some(parent) => parent,
+		None => return Err(CliError::MissingOutputParent { path: arguments.output.clone() }),
+	};
 	let temporary = NamedTempFile::new_in(parent)
 		.map_err(|source| io_error("create temporary output", &arguments.output, source))?;
 	temporary
