@@ -44,9 +44,65 @@ Stock `xbdm.xex` uses a `0x8000` window and blocks of `0xd800`, `0xe800`, `0xe80
 
 Each block begins with the next block size and the SHA-1 of the next block. The first block size and hash are in FileFormatInfo.
 
-## Import library identity
+## Protected pages
 
-Hypercall `0x17` decrypts the exporting module's export table header with a per-boot key. The header begins with the words `0x48000000`, `0x00485645`, and `0x48000000`. The hypervisor combines the low halves of the next two words as `(word3 << 16) | word4` and compares the result with the import library `id` field at entry offset `0x18`. A mismatch fails with `C0000225`, reported as `LDRX: failed to complete load of module`.
+Hypercall `0x14` loads each page range with the low nibble of its page descriptor info word. A value with bit `4` set is rejected. A code page (bit `2` clear, bit `1` set) is relocated into protected memory; a data (`2`) or read-only data (`3`) page is protected only when bit `8` is also set. For small-page images the per-page state nibble at hypervisor offset `0x1f58000` records `(type & 3) | 4`, plus `8` for a protected page. The kernel can change the low three bits through `HvxSetImagePageTableEntry` but not bit `8`.
+
+The hypervisor helper at `0x29948` translates an image address to its page table entry. For an address in `0x90000000..0x9fffffff` whose state nibble lacks bit `8`, it clears PTE bit `0x40000000`. The protected read at `0x29a78` requires PTE bits `1` and `0x40000000`, so it reads only protected pages: in practice, code pages.
+
+## Export table
+
+When hypercall `0x15` finishes the data load, `0x29cc0` reads the first `0x2c` bytes of the export table recorded in ImageInfo through the protected read, encrypts the first 16 bytes in place with the per-boot AES key at hypervisor offset `0x16630`, and writes them back. A table outside protected pages is skipped silently and stays plaintext.
+
+The table is eleven big-endian words followed by one word per ordinal:
+
+| Word | Contents |
+| --- | --- |
+| 0-2 | `0x48000000`, `0x00485645`, `0x48000000` |
+| 3, 4 | Module identifier, high and low half |
+| 5 | Version, low 24 bits |
+| 6 | Minimum version, low 24 bits |
+| 7 | Version top byte in bits 8-15, minimum version top byte in bits 0-7 |
+| 8 | Image base `>> 16` |
+| 9 | Slot count |
+| 10 | First ordinal |
+
+Each slot holds the export's offset from the image base, or 0 for an unused ordinal. Stock `xbdm.xex` keeps the table at `0x91f95794`, inside `.text`.
+
+## Import resolution
+
+Hypercall `0x16` decrypts the import descriptor recorded during validation, checks the import library count, and moves the slot to state `3`.
+
+Hypercall `0x17` resolves one import library. The kernel loader at `0x800a11b8` calls it once per library with the image slot, the physical address of the library entry past its size word, and the exporting module's export table address. On any failure the slot moves to state `0xf`. The checks, in order:
+
+| Status | Condition |
+| --- | --- |
+| `C000000D` | Slot index is 2 or more, or the slot is not in state `3` |
+| `C00000CD` | Every library counted by hypercall `0x16` has been resolved |
+| `C0000141` | The entry is not 4-byte aligned, or its `0x24`-byte header or record list crosses a 4 KB page |
+| `C0000221` | The SHA-1 of the header and records differs from the expected digest; the slot then expects the entry's next-library digest |
+| `C0000141` | The export table address is not 4-byte aligned |
+| `C0000156` | The first `0x2c` bytes of the export table cannot be read from protected pages |
+| `C000007B` | The decrypted first three words are not the magic words |
+| `C0000225` | The module identifier (words 3 and 4) differs from the library `id` at entry offset `0x18` |
+| `C0000059` | The exporter version is below the library minimum version, or the library version is below the exporter minimum version |
+
+Each record is then resolved. Ordinals are remapped through a table at hypervisor offset `0x16648` for titles when enabled.
+
+| Status | Condition |
+| --- | --- |
+| `C0000156` | The record address is unaligned, outside the importing image, or unmapped |
+| `C000007B` | Record byte 1 differs from the library name index |
+| `C0000138` | The ordinal is outside the export table range; hypervisor offset `0x16840` receives the ordinal |
+| `C0000156` | The export table slot is not in a protected page |
+| `C0000138` | The export table slot is 0; hypervisor offset `0x16840` receives the ordinal |
+| `C000007B` | Record byte 0 is neither `0` (data: replaced with the export address) nor `1` (function thunk) |
+| `C0000156` | A thunk extends past the importing image, or its second word is unmapped |
+| `C000007B` | The thunk's second word is not `0x02000000 \| index << 16 \| ordinal` |
+
+A function thunk is patched to `lis r11, hi` and `addi r11, r11, lo` of the export address.
+
+An export table outside code pages therefore fails every import with `C0000156`, reported as `LDRX: failed to complete load of module`. `Xex2Builder` rejects an export table that does not lie entirely in code pages.
 
 Observed identifiers, constant across `xbdm.xex`, `xsim.xex`, and older titles:
 
@@ -55,8 +111,6 @@ Observed identifiers, constant across `xbdm.xex`, `xsim.xex`, and older titles:
 | `xboxkrnl.exe` | `0x45dc17e0` |
 | `xam.xex` | `0xfca15c76` |
 | `xbdm.xex` | `0xeceb8109` |
-
-Before this comparison the hypervisor verifies the import library hash chain (`C0000221`) and, in hypercall `0x16`, the import count recorded during validation.
 
 ## Bounding path
 

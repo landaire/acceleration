@@ -76,6 +76,7 @@ pub struct Xex2Builder {
 	/// yields the minimal empty table.
 	imports: Vec<ImportLibrary>,
 	bounding_path: Option<BoundingPath>,
+	export_table: Option<VirtualAddress>,
 }
 
 /// Resolved device path the loaded file must match. On a flash `\SystemRoot`
@@ -115,12 +116,19 @@ impl Xex2Builder {
 			encryption_target: None,
 			imports: Vec::new(),
 			bounding_path: None,
+			export_table: None,
 		}
 	}
 
 	/// Emit a `BoundingPath` optional header.
 	pub fn bounding_path(mut self, path: BoundingPath) -> Self {
 		self.bounding_path = Some(path);
+		self
+	}
+
+	/// Record the address of the in-image export table in the security info.
+	pub fn export_table(mut self, addr: VirtualAddress) -> Self {
+		self.export_table = Some(addr);
 		self
 	}
 
@@ -302,7 +310,11 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// hash chain applies to every page regardless of type.
 	let page_size: u32 = if b.image_flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
 	let page_count_total = (b.pe.len() as u32).div_ceil(page_size);
-	let template: Vec<page_descriptors::DescriptorSlot> = page_section_types(&b.pe, page_size, page_count_total)?
+	let page_types = page_section_types(&b.pe, page_size, page_count_total)?;
+	if let Some(table) = b.export_table {
+		require_export_table_in_code(&b.pe, b.load_address, table, page_size, &page_types)?;
+	}
+	let template: Vec<page_descriptors::DescriptorSlot> = page_types
 		.into_iter()
 		.map(|section_type| page_descriptors::DescriptorSlot { page_count: 1, section_type })
 		.collect();
@@ -367,7 +379,9 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 		let wrapped = crate::crypto::wrap_file_key(&key, target.master_key());
 		out[ii_start + 0x48..ii_start + 0x58].copy_from_slice(&*wrapped);
 	}
-	// export_table_address left zero
+	if let Some(table) = b.export_table {
+		BigEndian::write_u32(&mut out[ii_start + 0x58..ii_start + 0x5C], table.0);
+	}
 	// header_hash: to be computed after optional-header region is finalized.
 	// game_regions default to 0xFFFFFFFF so the game can run on any region.
 	BigEndian::write_u32(&mut out[ii_start + 0x70..ii_start + 0x74], 0xFFFFFFFFu32);
@@ -430,6 +444,47 @@ fn align_up(x: usize, align: usize) -> usize {
 // PE section header characteristics bits.
 const SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 const SCN_MEM_WRITE: u32 = 0x8000_0000;
+
+// Export table header: eleven words, the last two being the slot count and the
+// first ordinal. One word per ordinal slot follows.
+const EXPORT_TABLE_HEADER_SIZE: u32 = 0x2C;
+const EXPORT_TABLE_SLOT_COUNT_OFFSET: u32 = 0x24;
+
+/// Require every page of the export table to be code. The hypervisor resolves
+/// imports only against a table in pages it loaded into protected memory,
+/// which for the section types this builder emits are the code pages. Import
+/// resolution against any other table fails with `C0000156`.
+fn require_export_table_in_code(
+	pe: &[u8],
+	load_address: VirtualAddress,
+	table: VirtualAddress,
+	page_size: u32,
+	page_types: &[SectionType],
+) -> Result<()> {
+	if !table.0.is_multiple_of(4) {
+		return Err(Xex2Error::ExportTableUnaligned { address: table.0 }.into_report());
+	}
+	let outside = || Xex2Error::ExportTableOutsideImage { address: table.0 }.into_report();
+	let start = table.0.checked_sub(load_address.0).ok_or_else(outside)?;
+	let count_offset = start.checked_add(EXPORT_TABLE_SLOT_COUNT_OFFSET).ok_or_else(outside)? as usize;
+	let slot_count = pe.get(count_offset..count_offset + 4).map(BigEndian::read_u32).ok_or_else(outside)?;
+	let end = slot_count
+		.checked_mul(4)
+		.and_then(|slots| slots.checked_add(EXPORT_TABLE_HEADER_SIZE))
+		.and_then(|size| size.checked_add(start))
+		.ok_or_else(outside)?;
+	for page in start / page_size..end.div_ceil(page_size) {
+		match page_types.get(page as usize) {
+			Some(SectionType::Code) => {}
+			Some(_) => {
+				let page = load_address.0 + page * page_size;
+				return Err(Xex2Error::ExportTableNotInCode { address: table.0, page }.into_report());
+			}
+			None => return Err(outside()),
+		}
+	}
+	Ok(())
+}
 
 /// Determine the section type of each page from the PE sections that cover it.
 ///
@@ -668,6 +723,47 @@ mod tests {
 		// Stock XBDM stores `\Device\Flash\xbdm.xex` in a 0x1c-byte blob: the
 		// size word counts itself, the terminator, and padding to 4 bytes.
 		assert_eq!(bounding_path_bytes(&BoundingPath::new(r"\Device\Flash\xbdm.xex").unwrap()).len(), 0x1c);
+	}
+
+	#[test]
+	fn export_table_address_lands_in_image_info() {
+		let mut pe = synthetic_pe(&[(0x1000, 0x1000, SCN_MEM_EXECUTE)]);
+		pe.resize(0x2000, 0);
+		let xex = Xex2Builder::new(pe)
+			.load_address(VirtualAddress(0x91f00000))
+			.image_flags(ImageFlags::SMALL_PAGES)
+			.export_table(VirtualAddress(0x91f01800))
+			.build()
+			.unwrap();
+		let parsed = crate::Xex2::parse(&xex).unwrap();
+		assert_eq!(parsed.security_info.image_info.export_table_address, 0x91f01800);
+	}
+
+	#[test]
+	fn export_table_must_occupy_code_pages() {
+		let mut pe = synthetic_pe(&[(0x1000, 0x1000, SCN_MEM_EXECUTE), (0x2000, 0x1000, 0)]);
+		pe.resize(0x3000, 0);
+		let build = |pe: Vec<u8>, table: u32| {
+			Xex2Builder::new(pe)
+				.load_address(VirtualAddress(0x91f00000))
+				.image_flags(ImageFlags::SMALL_PAGES)
+				.export_table(VirtualAddress(table))
+				.build()
+		};
+
+		let err = build(pe.clone(), 0x91f02000).unwrap_err();
+		assert!(matches!(
+			err.current_context(),
+			Xex2Error::ExportTableNotInCode { address: 0x91f02000, page: 0x91f02000 }
+		));
+
+		// Header in the code page, ordinal slots spilling into read-only data.
+		BigEndian::write_u32(&mut pe[0x1fc0 + 0x24..0x1fc0 + 0x28], 8);
+		let err = build(pe, 0x91f01fc0).unwrap_err();
+		assert!(matches!(
+			err.current_context(),
+			Xex2Error::ExportTableNotInCode { address: 0x91f01fc0, page: 0x91f02000 }
+		));
 	}
 
 	#[test]

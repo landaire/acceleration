@@ -16,6 +16,9 @@ pub enum Xex2Error {
 	DecompressionFailed,
 	CompressedChunkTooLarge { size: usize },
 	InvalidBoundingPath { path: String },
+	ExportTableUnaligned { address: u32 },
+	ExportTableOutsideImage { address: u32 },
+	ExportTableNotInCode { address: u32, page: u32 },
 	InvalidBasefileSize { expected: usize, got: usize },
 	HashMismatch { block_index: usize },
 	SigningFailed,
@@ -72,6 +75,15 @@ impl fmt::Display for Xex2Error {
 			}
 			Self::InvalidBoundingPath { path } => {
 				write!(f, "bounding path {path:?} must be non-empty printable ASCII")
+			}
+			Self::ExportTableUnaligned { address } => {
+				write!(f, "export table at {address:#010x} is not 4-byte aligned")
+			}
+			Self::ExportTableOutsideImage { address } => {
+				write!(f, "export table at {address:#010x} extends outside the image")
+			}
+			Self::ExportTableNotInCode { address, page } => {
+				write!(f, "export table at {address:#010x} occupies non-code page {page:#010x}")
 			}
 			Self::InvalidBasefileSize { expected, got } => {
 				write!(f, "basefile size mismatch: expected {:#x}, got {:#x}", expected, got)
