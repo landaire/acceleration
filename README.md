@@ -88,10 +88,10 @@ compiler stays the host's. Without devenv, install:
 
 | Command | Purpose |
 | --- | --- |
-| `buck2 build //...` | Build everything. |
-| `buck2 test //...` | Run the unit, integration and documentation tests. |
+| `buck2 build //crates/...` | Build the workspace crates and the third-party crates they use on this host. |
+| `buck2 test //crates/...` | Run the unit, integration and documentation tests. |
 | `buck2 run //crates/xex2ool:xex2ool-bin -- ARGS` | Run a tool; each binary is `//crates/<crate>:<binary>-bin`. |
-| `buck2 build -c rust.profile=release //...` | Build with the optimizations of Cargo's release profile. |
+| `buck2 build -c rust.profile=release //crates/...` | Build with the optimizations of Cargo's release profile. |
 | `build_defs/lint.py` | Check formatting and clippy diagnostics. |
 | `build_defs/lint.py --format` | Format the workspace crates. |
 | `build_defs/package_release.py --version V --target T` | Archive the release executables. |

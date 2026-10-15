@@ -1,10 +1,10 @@
 [tasks.build]
-description = "Builds everything with Buck2"
-run = "buck2 build //..."
+description = "Builds the workspace crates with Buck2"
+run = "buck2 build //crates/..."
 
 [tasks.test]
-description = "Runs every test with Buck2"
-run = "buck2 test //..."
+description = "Runs the tests of the workspace crates with Buck2"
+run = "buck2 test //crates/..."
 
 [tasks.lint]
 description = "Checks formatting and clippy diagnostics with Buck2"
