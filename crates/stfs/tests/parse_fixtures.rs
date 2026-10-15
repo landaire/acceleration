@@ -1,10 +1,20 @@
+use std::path::PathBuf;
+
 use serde::Serialize;
 use stfs::BytesStfsReader;
 use stfs::StfsPackageReader;
 
+/// Cargo and Buck2 set CARGO_MANIFEST_DIR when they run a test. Buck2 sets it
+/// relative to the project root, where its tests run, so the compile-time
+/// value (an absolute path into the build's source tree) does not serve.
+fn fixture_path(name: &str) -> PathBuf {
+	let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR");
+	PathBuf::from(manifest_dir).join("tests/fixtures").join(name)
+}
+
 fn open_fixture(name: &str) -> BytesStfsReader<Vec<u8>> {
-	let path = format!("tests/fixtures/{}", name);
-	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
+	let path = fixture_path(name);
+	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
 	BytesStfsReader::open(data).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e))
 }
 
@@ -82,8 +92,7 @@ mod hash_validation {
 	use stfs::types::Sha1Digest;
 
 	fn open_package(name: &str) -> (Vec<u8>, StfsPackage) {
-		let path = format!("tests/fixtures/{}", name);
-		let data = std::fs::read(&path).unwrap();
+		let data = std::fs::read(super::fixture_path(name)).unwrap();
 		let reader = SliceReader(&data);
 		let package = StfsPackage::open(&reader).unwrap();
 		(data, package)
@@ -230,7 +239,7 @@ mod vfs_tests {
 	use vfs::FileSystem;
 
 	fn open_vfs_fixture(name: &str) -> impl FileSystem {
-		let path = format!("tests/fixtures/{}", name);
+		let path = super::fixture_path(name);
 		let data = std::fs::read(&path).unwrap();
 		let reader = SliceReader(&data);
 		let package = StfsPackage::open(&reader).unwrap();

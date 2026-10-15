@@ -1,8 +1,18 @@
+use std::path::PathBuf;
+
 use xcontent::XContentPackage;
 
+/// Cargo and Buck2 set CARGO_MANIFEST_DIR when they run a test. Buck2 sets it
+/// relative to the project root, where its tests run, so the compile-time
+/// value (an absolute path into the build's source tree) does not serve.
+fn fixture_path(name: &str) -> PathBuf {
+	let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR");
+	PathBuf::from(manifest_dir).join("tests/fixtures").join(name)
+}
+
 fn load_package(name: &str) -> (Vec<u8>, XContentPackage) {
-	let path = format!("tests/fixtures/{}", name);
-	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path, e));
+	let path = fixture_path(name);
+	let data = std::fs::read(&path).unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
 	let package = XContentPackage::parse(&data).unwrap_or_else(|e| panic!("failed to parse {}: {}", name, e));
 	(data, package)
 }

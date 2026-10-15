@@ -5,8 +5,13 @@ use xex2::header::CompressionType;
 /// when the file is absent — that directory is gitignored (it holds real
 /// console executables that can't be committed), so CI and fresh clones
 /// don't have it. Tests use `load_or_skip!` to skip cleanly in that case.
+///
+/// Cargo and Buck2 set CARGO_MANIFEST_DIR when they run a test. Buck2 sets it
+/// relative to the project root, where its tests run, so the compile-time
+/// value (an absolute path into the build's source tree) does not serve.
 fn load_xex(name: &str) -> Option<(Vec<u8>, Xex2)> {
-	let path = format!("../../xex_files/{}", name);
+	let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR");
+	let path = std::path::Path::new(&manifest_dir).join("../../xex_files").join(name);
 	let data = match std::fs::read(&path) {
 		Ok(data) => data,
 		Err(_) => return None,

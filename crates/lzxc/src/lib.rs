@@ -909,7 +909,11 @@ mod tests {
 	fn real_pe_basefile_roundtrips() {
 		// Use a known PE image (afplayer.xex's basefile). If the fixture
 		// isn't available the test is skipped; in CI we always have it.
-		let Ok(basefile) = std::fs::read("../../xex_files/afplayer.xex") else {
+		// CARGO_MANIFEST_DIR is read when the test runs: Buck2 sets it
+		// relative to the project root, where its tests run.
+		let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR");
+		let Ok(basefile) = std::fs::read(std::path::Path::new(&manifest_dir).join("../../xex_files/afplayer.xex"))
+		else {
 			eprintln!("skipping: afplayer.xex not found");
 			return;
 		};
