@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "xecrypt",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xecrypt",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -47,7 +47,7 @@ rust_library(
 
 rust_test(
     name = "xecrypt-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xecrypt",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -74,7 +74,7 @@ rust_test(
 
 rust_test(
     name = "parse_keyvault-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "parse_keyvault",
     crate_root = "tests/parse_keyvault.rs",
     edition = "2024",

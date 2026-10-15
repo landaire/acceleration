@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "stfs",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "stfs",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -48,7 +48,7 @@ rust_library(
 
 rust_test(
     name = "stfs-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "stfs",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -76,7 +76,7 @@ rust_test(
 
 rust_test(
     name = "parse_fixtures-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "parse_fixtures",
     crate_root = "tests/parse_fixtures.rs",
     edition = "2024",
@@ -105,7 +105,7 @@ rust_test(
 
 rust_library(
     name = "stfs-all-features",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "stfs",
     crate_root = "src/lib.rs",
     edition = "2024",

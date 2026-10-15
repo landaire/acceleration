@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "xenon_types",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xenon_types",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -41,7 +41,7 @@ rust_library(
 
 rust_test(
     name = "xenon_types-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xenon_types",
     crate_root = "src/lib.rs",
     edition = "2024",

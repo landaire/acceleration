@@ -286,12 +286,17 @@ def crate_rules(package, directory, resolved, suffix, default):
             return Raw("ENV")
         return Raw(f'ENV | {{"CARGO_BIN_NAME": {json.dumps(target["name"])}}}')
 
+    def srcs(*directories):
+        # Cargo.toml is part of the sources: proc macros such as
+        # num_enum_derive read it from CARGO_MANIFEST_DIR.
+        return Raw("glob({})".format(json.dumps(["Cargo.toml"] + [f"{directory}/**" for directory in directories])))
+
     def test(name, target, environment, deps):
         return call(
             "rust_test",
             {
                 "name": name,
-                "srcs": Raw('glob(["src/**", "tests/**"])'),
+                "srcs": srcs("src", "tests"),
                 "crate": target["name"].replace("-", "_"),
                 "crate_root": crate_root(target),
                 "edition": target["edition"],
@@ -325,7 +330,7 @@ def crate_rules(package, directory, resolved, suffix, default):
                 "rust_library",
                 {
                     "name": library["name"] + suffix,
-                    "srcs": Raw('glob(["src/**"])'),
+                    "srcs": srcs("src"),
                     "crate": library["name"].replace("-", "_"),
                     "crate_root": crate_root(library),
                     "edition": library["edition"],
@@ -352,7 +357,7 @@ def crate_rules(package, directory, resolved, suffix, default):
                     "rust_binary",
                     {
                         "name": f"{target['name']}{suffix}-bin",
-                        "srcs": Raw('glob(["src/**"])'),
+                        "srcs": srcs("src"),
                         "crate": target["name"].replace("-", "_"),
                         "crate_root": crate_root(target),
                         "edition": target["edition"],
@@ -380,7 +385,7 @@ def crate_rules(package, directory, resolved, suffix, default):
                     "rust_binary",
                     {
                         "name": f"{target['name']}-{kind}",
-                        "srcs": Raw(f'glob(["src/**", "{directory_of_root}/**"])'),
+                        "srcs": srcs(*dict.fromkeys(["src", directory_of_root])),
                         "crate": target["name"].replace("-", "_"),
                         "crate_root": crate_root(target),
                         "edition": target["edition"],

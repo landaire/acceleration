@@ -20,7 +20,7 @@ ENV = {
 
 rust_binary(
     name = "acceleration-bin",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "acceleration",
     crate_root = "src/main.rs",
     edition = "2024",
@@ -49,7 +49,7 @@ rust_binary(
 
 rust_test(
     name = "acceleration-bin-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "acceleration",
     crate_root = "src/main.rs",
     edition = "2024",

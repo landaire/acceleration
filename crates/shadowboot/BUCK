@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "shadowboot",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "shadowboot",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -45,7 +45,7 @@ rust_library(
 
 rust_test(
     name = "shadowboot-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "shadowboot",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -69,7 +69,7 @@ rust_test(
 
 rust_binary(
     name = "shadowboot-bin",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "shadowboot",
     crate_root = "src/main.rs",
     edition = "2024",
@@ -97,7 +97,7 @@ rust_binary(
 
 rust_test(
     name = "shadowboot-bin-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "shadowboot",
     crate_root = "src/main.rs",
     edition = "2024",
@@ -122,7 +122,7 @@ rust_test(
 
 rust_library(
     name = "shadowboot-all-features",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "shadowboot",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -150,7 +150,7 @@ rust_library(
 
 rust_binary(
     name = "shadowboot-all-features-bin",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "shadowboot",
     crate_root = "src/main.rs",
     edition = "2024",

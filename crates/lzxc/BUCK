@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "lzxc",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "lzxc",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -35,7 +35,7 @@ rust_library(
 
 rust_test(
     name = "lzxc-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "lzxc",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -52,7 +52,7 @@ rust_test(
 
 rust_binary(
     name = "profile_compress-example",
-    srcs = glob(["src/**", "examples/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "examples/**"]),
     crate = "profile_compress",
     crate_root = "examples/profile_compress.rs",
     edition = "2024",
@@ -70,7 +70,7 @@ rust_binary(
 
 rust_binary(
     name = "compression-bench",
-    srcs = glob(["src/**", "benches/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "benches/**"]),
     crate = "compression",
     crate_root = "benches/compression.rs",
     edition = "2024",

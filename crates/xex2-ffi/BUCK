@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "xex2_ffi",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xex2_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -39,7 +39,7 @@ rust_library(
 
 rust_test(
     name = "xex2_ffi-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xex2_ffi",
     crate_root = "src/lib.rs",
     edition = "2024",

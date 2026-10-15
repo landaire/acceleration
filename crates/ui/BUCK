@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "acceleration_ui",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "acceleration_ui",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -52,7 +52,7 @@ rust_library(
 
 rust_test(
     name = "acceleration_ui-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "acceleration_ui",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -83,7 +83,7 @@ rust_test(
 
 rust_binary(
     name = "acceleration_ui-bin",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "acceleration_ui",
     crate_root = "src/main.rs",
     edition = "2024",
@@ -118,7 +118,7 @@ rust_binary(
 
 rust_test(
     name = "acceleration_ui-bin-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "acceleration_ui",
     crate_root = "src/main.rs",
     edition = "2024",

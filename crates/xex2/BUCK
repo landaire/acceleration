@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "xex2",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xex2",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -48,7 +48,7 @@ rust_library(
 
 rust_test(
     name = "xex2-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xex2",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -76,7 +76,7 @@ rust_test(
 
 rust_test(
     name = "parse_xex-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "parse_xex",
     crate_root = "tests/parse_xex.rs",
     edition = "2024",
@@ -105,7 +105,7 @@ rust_test(
 
 rust_library(
     name = "xex2-all-features",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xex2",
     crate_root = "src/lib.rs",
     edition = "2024",

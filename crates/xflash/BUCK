@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "xflash",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xflash",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -47,7 +47,7 @@ rust_library(
 
 rust_test(
     name = "xflash-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xflash",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -73,7 +73,7 @@ rust_test(
 
 rust_binary(
     name = "xflash-bin",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xflash",
     crate_root = "src/main.rs",
     edition = "2024",
@@ -103,7 +103,7 @@ rust_binary(
 
 rust_test(
     name = "xflash-bin-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xflash",
     crate_root = "src/main.rs",
     edition = "2024",
@@ -130,7 +130,7 @@ rust_test(
 
 rust_library(
     name = "xflash-all-features",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xflash",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -159,7 +159,7 @@ rust_library(
 
 rust_binary(
     name = "xflash-all-features-bin",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xflash",
     crate_root = "src/main.rs",
     edition = "2024",

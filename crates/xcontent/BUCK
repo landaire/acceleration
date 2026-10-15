@@ -20,7 +20,7 @@ ENV = {
 
 rust_library(
     name = "xcontent",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xcontent",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -45,7 +45,7 @@ rust_library(
 
 rust_test(
     name = "xcontent-lib-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xcontent",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -71,7 +71,7 @@ rust_test(
 
 rust_test(
     name = "parse_xcontent-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "parse_xcontent",
     crate_root = "tests/parse_xcontent.rs",
     edition = "2024",

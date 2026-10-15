@@ -20,7 +20,7 @@ ENV = {
 
 rust_binary(
     name = "xex2ool-bin",
-    srcs = glob(["src/**"]),
+    srcs = glob(["Cargo.toml", "src/**"]),
     crate = "xex2ool",
     crate_root = "src/main.rs",
     edition = "2024",
@@ -46,7 +46,7 @@ rust_binary(
 
 rust_test(
     name = "xex2ool-bin-test",
-    srcs = glob(["src/**", "tests/**"]),
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "xex2ool",
     crate_root = "src/main.rs",
     edition = "2024",
