@@ -3,6 +3,7 @@ name = "xex2"
 version.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
 repository = "https://github.com/landaire/acceleration"
 authors = ["Lander Brandt <landerbrandt@gmail.com>"]
 readme = "README.md"

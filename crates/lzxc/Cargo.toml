@@ -3,6 +3,7 @@ name = "lzxc"
 version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
 authors = ["Lander Brandt"]
 description = "LZX compression encoder. Produces streams decodable by the `lzxd` crate."
 repository = "https://github.com/landaire/acceleration"

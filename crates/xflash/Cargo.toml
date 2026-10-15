@@ -3,6 +3,7 @@ name = "xflash"
 version.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
 authors = ["Lander Brandt"]
 description = "Xbox 360 devkit flash image parser"
 repository = "https://github.com/landaire/acceleration"

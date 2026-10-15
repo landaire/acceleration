@@ -34,4 +34,4 @@ for entry in package.file_table.walk_files() {
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](../LICENSE-APACHE) or [MIT License](../LICENSE-MIT) at your option.
+Licensed under either of Apache License, Version 2.0 or MIT License at your option; see [LICENSE](../LICENSE).

@@ -3,6 +3,7 @@ name = "xex2ool"
 version.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
 authors = ["Lander Brandt"]
 description = "Command-line tool for inspecting and modifying Xbox 360 XEX2 executables"
 repository = "https://github.com/landaire/acceleration"
