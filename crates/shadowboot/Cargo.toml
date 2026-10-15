@@ -9,6 +9,7 @@ repository = "https://github.com/landaire/acceleration"
 readme = "README.md"
 keywords = ["xbox360", "shadowboot", "xbox", "cli"]
 categories = ["command-line-utilities"]
+include = ["src/**", "README.md"]
 
 [features]
 dhat = ["dep:dhat"]

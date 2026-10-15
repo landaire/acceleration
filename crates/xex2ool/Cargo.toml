@@ -9,6 +9,7 @@ repository = "https://github.com/landaire/acceleration"
 readme = "README.md"
 keywords = ["xbox360", "xex", "xbox", "cli"]
 categories = ["command-line-utilities"]
+include = ["src/**", "README.md"]
 
 [[bin]]
 name = "xex2ool"

@@ -9,6 +9,7 @@ readme = "README.md"
 description = "Common types for Xbox 360 (Xenon) file formats and protocols"
 keywords = ["xbox360", "xenon", "xbox", "types"]
 categories = ["data-structures"]
+include = ["src/**", "README.md"]
 
 [dependencies]
 serde = { workspace = true }

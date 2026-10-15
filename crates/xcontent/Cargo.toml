@@ -9,6 +9,7 @@ readme = "README.md"
 description = "Parser for Xbox 360 XContent packages (CON, LIVE, PIRS)"
 keywords = ["xbox360", "xcontent", "xbox", "parser"]
 categories = ["parser-implementations"]
+include = ["src/**", "README.md"]
 
 [dependencies]
 sha-1 = { workspace = true }

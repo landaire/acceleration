@@ -9,6 +9,7 @@ readme = "README.md"
 description = "Xbox 360 cryptographic primitives (AES, SHA-1, RSA signature verification)"
 keywords = ["xbox360", "crypto", "aes", "rsa"]
 categories = ["cryptography"]
+include = ["src/**", "README.md"]
 
 [dependencies]
 rsa = { version = "0.9.10", features = ["sha1"] }

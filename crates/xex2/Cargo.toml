@@ -9,6 +9,7 @@ readme = "README.md"
 description = "Parser and extractor for Xbox 360 XEX2 executables"
 keywords = ["xbox360", "xex", "xbox", "parser"]
 categories = ["parser-implementations"]
+include = ["src/**", "README.md"]
 
 [dependencies]
 byteorder = { workspace = true }

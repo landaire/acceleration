@@ -9,6 +9,7 @@ repository = "https://github.com/landaire/acceleration"
 readme = "README.md"
 keywords = ["xbox360", "flash", "xbox", "cli"]
 categories = ["command-line-utilities", "parser-implementations"]
+include = ["src/**", "README.md"]
 
 [features]
 default = ["cli"]

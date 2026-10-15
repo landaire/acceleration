@@ -10,6 +10,7 @@ documentation = "https://docs.rs/lzxc"
 readme = "README.md"
 keywords = ["lzx", "compression", "xbox360", "encoder"]
 categories = ["compression"]
+include = ["src/**", "benches/**", "examples/**", "README.md"]
 
 [dependencies]
 
