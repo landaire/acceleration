@@ -8,31 +8,32 @@
 //! [lzxd]: https://docs.rs/lzxd
 //! [spec]: https://docs.microsoft.com/en-us/openspecs/exchange_server_protocols/ms-patch/cc78752a-b4af-4eee-88cb-01f4d8a4c2bf
 //!
-//! # Two entry points
+//! # Entry points
 //!
 //! - [`EncoderWriter`]: a `std::io::Write` sink. Buffers input into 32 KB
 //!   slabs, compresses each slab, and forwards `u16 BE size | compressed`
 //!   frames to an inner sink. Call [`EncoderWriter::finish`] at the end.
-//! - [`Encoder`]: the chunk-at-a-time primitive. Use this when you want to
-//!   control the framing yourself (an XEX "Normal" data region, for
-//!   example, wraps chunks in its own block header).
+//! - [`Encoder::encode_chunk`]: one chunk at a time, one block per chunk.
+//!   Use this when you want to control the framing yourself.
+//! - [`Encoder::encode_stream`]: a whole input at once. Blocks may span
+//!   chunks, which saves tree headers; an XEX "Normal" data region is
+//!   built this way.
 //!
 //! # Strategy
 //!
 //! [`Strategy`] controls how a chunk is encoded:
 //!
-//! - [`Strategy::Greedy`] (default): verbatim block + hash-chain match finder
-//!   with a greedy parser. Cross-chunk match history is kept in the
-//!   [`Encoder`] so matches can span chunk boundaries. On representative
-//!   XEX PE payloads this lands around 1.8:1 (~55% of input).
-//! - [`Strategy::LiteralOnly`]: verbatim block with no LZ77 matching. Useful
-//!   as a Huffman-only baseline.
+//! - [`Strategy::Optimal`] (default): hash-chain match finder and a
+//!   cost-based optimal parser that prices literals, repeated-offset
+//!   matches, and new matches with the block's own Huffman code lengths.
+//!   Each block is emitted as verbatim or aligned offset, whichever is
+//!   smaller. Match history persists across chunks.
+//! - [`Strategy::LiteralOnly`]: Huffman-coded literals with no LZ77
+//!   matching. Useful as a Huffman-only baseline.
 //! - [`Strategy::Uncompressed`]: type-3 blocks only. No compression, fastest.
 //!
-//! # Not implemented
-//!
-//! - Aligned-offset blocks (block type 2). A verbatim block always works in
-//!   their place, so output is valid without them.
+//! Under `Optimal` and `LiteralOnly`, a block that would be larger than its
+//! raw bytes is emitted as uncompressed blocks instead.
 //!
 //! # Example: `Write` sink
 //!
@@ -60,14 +61,36 @@
 //!     # let _ = compressed;
 //! }
 //! ```
+//!
+//! # Example: whole stream
+//!
+//! ```no_run
+//! use lzxc::{Encoder, WindowSize};
+//!
+//! let input: &[u8] = b"...some PE image...";
+//! let mut enc = Encoder::new(WindowSize::KB32);
+//! for compressed in enc.encode_stream(input) {
+//!     // Each entry decodes with one `lzxd::Lzxd::decompress_next` call
+//!     // for the matching 32 KB of input.
+//!     # let _ = compressed;
+//! }
+//! ```
 
 mod bitstream;
+mod block;
 mod huffman;
 mod match_finder;
+mod parse;
 mod pretree;
-mod verbatim;
 
-use bitstream::BitWriter;
+use std::borrow::Cow;
+use std::ops::Range;
+
+use block::FrameSink;
+use block::RepeatOffsets;
+use block::Stats;
+use block::Token;
+use block::Trees;
 
 /// LZX window sizes. Mirrors the sizes in the [lzxd] decoder crate so
 /// callers can pass the same choice to both sides of a round-trip.
@@ -164,29 +187,40 @@ impl WindowSize {
 		let top = BASE[self.position_slots()];
 		(top as usize).saturating_sub(3)
 	}
+
+	/// Main-tree alphabet size: 256 literals plus 8 match headers per slot.
+	fn main_tree_len(self) -> usize {
+		256 + 8 * self.position_slots()
+	}
 }
 
-/// Maximum input size passed to a single [`Encoder::encode_chunk`] call (32 KB).
+/// Uncompressed size of one chunk (32 KB): the largest input to
+/// [`Encoder::encode_chunk`], and the unit [`Encoder::encode_stream`] splits
+/// its input into.
 pub const MAX_CHUNK_SIZE: usize = 32 * 1024;
 
-/// Block type 3 = uncompressed block (MS-PATCH section 2.6).
-const BLOCK_TYPE_UNCOMPRESSED: u32 = 0b011;
+/// Parses per chunk under chunk-local prices, each pass priced from the
+/// previous pass's statistics.
+const CHUNK_PASSES: usize = 2;
+
+/// Parses per block under the block's merged prices.
+const BLOCK_PASSES: usize = 2;
 
 /// How a chunk gets encoded. Set via [`Encoder::with_strategy`] /
-/// [`EncoderWriter::with_strategy`]; the default is [`Strategy::Greedy`].
+/// [`EncoderWriter::with_strategy`]; the default is [`Strategy::Optimal`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strategy {
 	/// Type-3 blocks only. Fastest, no compression.
 	Uncompressed,
-	/// Verbatim blocks with Huffman-coded literals and no LZ77 matching.
-	/// Compresses biased data (text); roughly neutral on random data.
+	/// Huffman-coded literals and no LZ77 matching. Compresses biased data
+	/// (text).
 	LiteralOnly,
-	/// Verbatim blocks with a 3-byte-hash greedy match finder. Best
-	/// compression among the currently implemented strategies.
-	Greedy,
+	/// Hash-chain match finder with a cost-based optimal parser; verbatim
+	/// or aligned offset blocks, whichever is smaller.
+	Optimal,
 }
 
-/// LZX encoder: produces one compressed chunk per call.
+/// LZX encoder.
 ///
 /// Use this directly when you want to control chunk framing yourself. For a
 /// `std::io::Write` sink with built-in `u16 BE size | chunk` framing, use
@@ -194,7 +228,7 @@ pub enum Strategy {
 ///
 /// The encoder is **stateful**: match-finder history, the R0/R1/R2
 /// repeat-offset queue, previous-tree path lengths, and the one-shot
-/// per-stream preamble all persist across chunks so the concatenated output
+/// per-stream preamble all persist across calls so the concatenated output
 /// decodes as a single LZX stream.
 ///
 /// # Example
@@ -216,35 +250,35 @@ pub struct Encoder {
 	/// (bytes from the start of the decompressed stream where fixups apply).
 	e8_translation_size: Option<u32>,
 	first_chunk: bool,
-	/// Absolute byte offset of the next chunk in the decompressed stream.
-	/// Increments by `input.len()` after each `encode_chunk` call; used as
+	/// Absolute byte offset of the next chunk in the decompressed stream;
 	/// the base for E8 `current_pointer` when preprocessing is enabled.
 	input_offset: u64,
 	strategy: Strategy,
-	verbatim_state: verbatim::VerbatimState,
+	/// Previous block's trees, which the next block's trees are coded against.
+	trees: Trees,
+	/// R0/R1/R2 as the decoder holds them after the last emitted block.
+	r: RepeatOffsets,
 	match_finder: match_finder::MatchFinder,
-	/// Token scratch buffer reused across chunks. The match finder writes
-	/// into it on `Greedy`; `LiteralOnly` repopulates it directly.
-	tokens: Vec<verbatim::Token>,
-	/// Working buffer for E8 preprocessing. Sized up to a chunk once and
-	/// reused.
-	e8_scratch: Vec<u8>,
+	parser: parse::Parser,
+	/// Price model of the last emitted block; seeds the next parse.
+	prices: Option<parse::Prices>,
 }
 
 impl Encoder {
 	/// Construct an encoder for the given window size. Default strategy is
-	/// [`Strategy::Greedy`]; E8 preprocessing is off.
+	/// [`Strategy::Optimal`]; E8 preprocessing is off.
 	pub fn new(window_size: WindowSize) -> Self {
 		Self {
 			window_size,
 			e8_translation_size: None,
 			first_chunk: true,
 			input_offset: 0,
-			strategy: Strategy::Greedy,
-			verbatim_state: verbatim::VerbatimState::new(window_size),
+			strategy: Strategy::Optimal,
+			trees: Trees::new(window_size.main_tree_len()),
+			r: RepeatOffsets::initial(),
 			match_finder: match_finder::MatchFinder::new(window_size.max_match_offset()),
-			tokens: Vec::new(),
-			e8_scratch: Vec::new(),
+			parser: parse::Parser::default(),
+			prices: None,
 		}
 	}
 
@@ -275,22 +309,44 @@ impl Encoder {
 		self
 	}
 
-	/// Encode one chunk (at most [`MAX_CHUNK_SIZE`] bytes). The returned
-	/// bytes correspond to exactly one `lzxd::Lzxd::decompress_next` call on
-	/// the decode side with `output_len == input.len()`.
+	/// Encode one chunk (at most [`MAX_CHUNK_SIZE`] bytes) as a complete
+	/// block. The returned bytes correspond to exactly one
+	/// `lzxd::Lzxd::decompress_next` call on the decode side with
+	/// `output_len == input.len()`.
 	///
 	/// # Panics
 	///
 	/// Panics if `input.len() > MAX_CHUNK_SIZE`.
 	pub fn encode_chunk(&mut self, input: &[u8]) -> Vec<u8> {
 		assert!(input.len() <= MAX_CHUNK_SIZE);
-		let mut w = BitWriter::with_capacity(input.len() + 64);
+		let mut frames = self.encode_frames(input, vec![input.len()], false);
+		frames.pop().expect("one frame per chunk")
+	}
 
+	/// Encode `input` as consecutive [`MAX_CHUNK_SIZE`] chunks, returning
+	/// one compressed chunk per input chunk. Each corresponds to one
+	/// `lzxd::Lzxd::decompress_next` call with that chunk's length.
+	///
+	/// Blocks may span chunks, so the chunks must be decoded in order by
+	/// one decoder. The last block ends with `input`, so further calls can
+	/// continue the stream.
+	pub fn encode_stream(&mut self, input: &[u8]) -> Vec<Vec<u8>> {
+		let frame_lens = input.chunks(MAX_CHUNK_SIZE).map(<[u8]>::len).collect();
+		self.encode_frames(input, frame_lens, true)
+	}
+
+	fn encode_frames(&mut self, input: &[u8], frame_lens: Vec<usize>, span_blocks: bool) -> Vec<Vec<u8>> {
+		// With no chunk to carry it, the preamble waits for the next call.
+		if frame_lens.is_empty() {
+			return Vec::new();
+		}
+		let mut sink = FrameSink::new(frame_lens.iter().copied());
 		if self.first_chunk {
 			self.first_chunk = false;
 			// Per-stream preamble: one flag bit (E8 translation) optionally
-			// followed by 32 bits of translation size. Decoder reads this
-			// exactly once on the first chunk.
+			// followed by 32 bits of translation size. The decoder reads it
+			// once, at the start of the first chunk.
+			let w = sink.writer();
 			match self.e8_translation_size {
 				Some(size) => {
 					w.write_bit(true);
@@ -300,74 +356,135 @@ impl Encoder {
 			}
 		}
 
-		// E8 preprocessing runs on a per-chunk copy of `input` so the caller's
-		// buffer isn't mutated. Only applied when enabled; the transformation
-		// uses `input_offset` as the chunk's base position in the decompressed
-		// stream, matching `lzxd`'s postprocess formula.
-		let effective_input: &[u8] = if let Some(size) = self.e8_translation_size {
-			self.e8_scratch.clear();
-			self.e8_scratch.extend_from_slice(input);
-			e8_preprocess_in_place(&mut self.e8_scratch, self.input_offset, size as i32);
-			&self.e8_scratch
-		} else {
-			input
+		// E8 preprocessing works on a copy so the caller's buffer is not
+		// mutated. The decoder reverses it per chunk.
+		let data: Cow<'_, [u8]> = match self.e8_translation_size {
+			Some(size) => {
+				let mut buf = input.to_vec();
+				let mut offset = self.input_offset;
+				let mut start = 0;
+				for &len in &frame_lens {
+					e8_preprocess_in_place(&mut buf[start..start + len], offset, size as i32);
+					offset += len as u64;
+					start += len;
+				}
+				Cow::Owned(buf)
+			}
+			None => Cow::Borrowed(input),
 		};
 
-		let has_tokens = match self.strategy {
-			Strategy::Uncompressed => {
-				self.tokens.clear();
-				false
+		let start = self.match_finder.append(&data);
+		let mut frames: Vec<Range<usize>> = Vec::with_capacity(frame_lens.len());
+		let mut end = start;
+		for &len in &frame_lens {
+			if len > 0 {
+				frames.push(end..end + len);
 			}
-			Strategy::LiteralOnly => {
-				self.tokens.clear();
-				self.tokens.extend(effective_input.iter().map(|&b| verbatim::Token::Literal(b)));
-				true
-			}
-			// Greedy feeds the stateful match finder so matches span chunks.
-			Strategy::Greedy => {
-				self.match_finder.process(effective_input, &mut self.tokens);
-				true
-			}
-		};
-
-		// A verbatim block requires a non-degenerate main tree: at least two
-		// distinct symbols must appear. If the token stream has 0 or 1 unique
-		// main-tree symbols, fall back to an uncompressed block for this chunk.
-		// The check needs the current R-queue to simulate main-symbol lookup
-		// accurately.
-		let current_r = self.verbatim_state.r;
-		let use_verbatim = has_tokens && verbatim::main_tree_is_nondegenerate(&self.tokens, current_r);
-
-		if use_verbatim {
-			verbatim::emit_verbatim_block(
-				&mut w,
-				&mut self.verbatim_state,
-				&self.tokens,
-				effective_input.len() as u32,
-				self.window_size,
-			);
-		} else {
-			self.emit_uncompressed_block(&mut w, effective_input);
+			end += len;
 		}
 
+		match self.strategy {
+			Strategy::Uncompressed => {
+				for frame in frames {
+					block::emit_uncompressed(&mut sink, &self.r, &self.match_finder.history()[frame]);
+				}
+			}
+			Strategy::LiteralOnly => {
+				for frame in frames {
+					let data = self.match_finder.history()[frame].to_vec();
+					let tokens: Vec<Token> = data.iter().map(|&b| Token::Literal(b)).collect();
+					self.emit(&mut sink, &tokens, &data);
+				}
+			}
+			Strategy::Optimal => self.encode_optimal(&mut sink, &frames, span_blocks),
+		}
+
+		self.match_finder.trim();
 		self.input_offset += input.len() as u64;
-		w.finish()
+		sink.into_frames()
 	}
 
-	/// Block type 3: type+size, aligned, R0/R1/R2 (each initialized to 1),
-	/// then raw bytes. Mirrors lzxd's `Block::read`.
-	fn emit_uncompressed_block(&self, w: &mut BitWriter, data: &[u8]) {
-		w.write_bits(BLOCK_TYPE_UNCOMPRESSED, 3);
-		w.write_u24_be(data.len() as u32);
-		w.align();
-		w.write_u32_le(1);
-		w.write_u32_le(1);
-		w.write_u32_le(1);
-		w.write_raw(data);
-		// Odd-length blocks pad to even so the reader's re-align consumes the
-		// stray byte when `size % 2 != 0`.
-		if !data.len().is_multiple_of(2) {
-			w.write_raw(&[0]);
+	/// Parse `frames` (history ranges, one per chunk), group them into
+	/// blocks, and emit the blocks.
+	fn encode_optimal(&mut self, sink: &mut FrameSink, frames: &[Range<usize>], span_blocks: bool) {
+		let main_len = self.window_size.main_tree_len();
+		let tables: Vec<match_finder::CandidateTable> = frames
+			.iter()
+			.map(|frame| {
+				let mut table = match_finder::CandidateTable::default();
+				self.match_finder.collect(frame.start, frame.end, &mut table);
+				table
+			})
+			.collect();
+		let history = self.match_finder.history();
+
+		// First pass: parse each chunk under prices refined from its own
+		// statistics, to learn what each chunk looks like.
+		let mut prices = self.prices.take().unwrap_or_else(|| parse::Prices::initial(main_len));
+		let mut r = self.r;
+		let mut tokens = Vec::new();
+		let mut frame_stats = Vec::with_capacity(frames.len());
+		for (frame, table) in frames.iter().zip(&tables) {
+			let mut stats = Stats::new(main_len);
+			let mut r_end = r;
+			for _ in 0..CHUNK_PASSES {
+				tokens.clear();
+				r_end = self.parser.parse(history, frame.clone(), table, r, &prices, &mut tokens);
+				stats = Stats::new(main_len);
+				stats.add_tokens(&tokens, &mut r.clone());
+				prices = parse::Prices::from_stats(&stats);
+			}
+			r = r_end;
+			frame_stats.push(stats);
+		}
+
+		let groups = if span_blocks {
+			group_frames(&frame_stats, &self.trees)
+		} else {
+			(0..frames.len()).map(|f| f..f + 1).collect()
+		};
+
+		// Final pass: reparse each block under its merged prices so the
+		// parse and the emitted trees agree.
+		for group in groups {
+			let mut stats = frame_stats[group.start].clone();
+			for s in &frame_stats[group.start + 1..group.end] {
+				stats.merge(s);
+			}
+			for _ in 0..BLOCK_PASSES {
+				let prices = parse::Prices::from_stats(&stats);
+				tokens.clear();
+				let mut r = self.r;
+				for f in group.clone() {
+					r = self.parser.parse(history, frames[f].clone(), &tables[f], r, &prices, &mut tokens);
+				}
+				stats = Stats::new(main_len);
+				stats.add_tokens(&tokens, &mut self.r.clone());
+			}
+			let plan = block::plan_block(&stats, &self.trees);
+			let group_frames = &frames[group];
+			if plan.bits > group_frames.iter().map(|f| block::uncompressed_bits(f.len())).sum() {
+				for frame in group_frames {
+					block::emit_uncompressed(sink, &self.r, &history[frame.clone()]);
+				}
+				continue;
+			}
+			let size = group_frames.iter().map(Range::len).sum();
+			block::emit_block(sink, &mut self.trees, &mut self.r, &tokens, size, plan);
+			self.prices = Some(parse::Prices::from_stats(&stats));
+		}
+	}
+
+	/// Emit `tokens` (expanding to the bytes `data`) as one block, or as an
+	/// uncompressed block if that is smaller.
+	fn emit(&mut self, sink: &mut FrameSink, tokens: &[Token], data: &[u8]) {
+		let mut stats = Stats::new(self.window_size.main_tree_len());
+		stats.add_tokens(tokens, &mut self.r.clone());
+		let plan = block::plan_block(&stats, &self.trees);
+		if plan.bits > block::uncompressed_bits(data.len()) {
+			block::emit_uncompressed(sink, &self.r, data);
+		} else {
+			block::emit_block(sink, &mut self.trees, &mut self.r, tokens, data.len(), plan);
 		}
 	}
 
@@ -375,6 +492,39 @@ impl Encoder {
 	pub fn window_size(&self) -> WindowSize {
 		self.window_size
 	}
+}
+
+/// Most chunks one block may span: the block size field is 24 bits.
+const MAX_BLOCK_FRAMES: usize = ((1 << 24) - 1) / MAX_CHUNK_SIZE;
+
+/// Group consecutive chunks into blocks. A chunk joins the current block
+/// when one block with merged trees is smaller than ending the block and
+/// starting a new one.
+fn group_frames(frame_stats: &[Stats], trees: &Trees) -> Vec<Range<usize>> {
+	let mut groups = Vec::new();
+	let Some(first) = frame_stats.first() else { return groups };
+	let mut prev = trees.clone();
+	let mut start = 0;
+	let mut acc = first.clone();
+	let mut acc_plan = block::plan_block(&acc, &prev);
+	for (f, stats) in frame_stats.iter().enumerate().skip(1) {
+		let mut merged = acc.clone();
+		merged.merge(stats);
+		let merged_plan = block::plan_block(&merged, &prev);
+		let split_plan = block::plan_block(stats, &acc_plan.trees());
+		if f - start < MAX_BLOCK_FRAMES && merged_plan.bits <= acc_plan.bits + split_plan.bits {
+			acc = merged;
+			acc_plan = merged_plan;
+		} else {
+			groups.push(start..f);
+			prev = acc_plan.trees();
+			start = f;
+			acc = stats.clone();
+			acc_plan = split_plan;
+		}
+	}
+	groups.push(start..frame_stats.len());
+	groups
 }
 
 /// E8 preprocessing: rewrite each 0xE8-prefixed 4-byte operand in the chunk
@@ -784,8 +934,9 @@ mod tests {
 	}
 
 	#[test]
-	fn single_byte_input_falls_back_to_uncompressed() {
-		// Single byte -> single main-tree symbol -> must fall back to uncompressed.
+	fn single_byte_input_roundtrips() {
+		// One literal is a single-symbol main tree, which gets a partner
+		// symbol so the tree stays decodable.
 		let mut enc = Encoder::new(WindowSize::KB32);
 		let mut dec = lzxd::Lzxd::new(lzxd::WindowSize::KB32);
 		let bytes = enc.encode_chunk(b"a");
@@ -795,9 +946,8 @@ mod tests {
 
 	#[test]
 	fn identical_chunks_produce_identical_trees() {
-		// Two identical chunks: block 2's Huffman tree == block 1's, so every
-		// pretree delta is 0 (symbol 0). Exercises the ensure_multi_symbol
-		// path and the case-B fallback (all-symbol-0 ops).
+		// Two identical chunks: block 2's trees equal block 1's, so every
+		// pretree delta is 0 and the pretree may have a single used symbol.
 		let input: Vec<u8> = (0..40_000).map(|i| (i & 0xFF) as u8).collect();
 		roundtrip(&input, WindowSize::KB64);
 	}
@@ -898,5 +1048,116 @@ mod tests {
 			input.push((state >> 16) as u8);
 		}
 		roundtrip(&input, WindowSize::KB128);
+		roundtrip_stream(&input, WindowSize::KB128);
+	}
+
+	/// Decode `chunks` (one per `MAX_CHUNK_SIZE` of `input`) with one
+	/// decoder and compare against `input`.
+	fn decode_chunks(chunks: &[Vec<u8>], input: &[u8], window: WindowSize) {
+		assert_eq!(chunks.len(), input.chunks(MAX_CHUNK_SIZE).len());
+		let mut dec = lzxd::Lzxd::new(to_lzxd(window));
+		for (i, (chunk, expected)) in chunks.iter().zip(input.chunks(MAX_CHUNK_SIZE)).enumerate() {
+			let out = dec.decompress_next(chunk, expected.len()).unwrap();
+			assert!(out == expected, "chunk {i} mismatch");
+		}
+	}
+
+	fn roundtrip_stream(input: &[u8], window: WindowSize) {
+		let chunks = Encoder::new(window).encode_stream(input);
+		decode_chunks(&chunks, input, window);
+	}
+
+	/// PowerPC-shaped image: big-endian instruction words drawn from a small
+	/// set of opcodes with varying fields, branch offsets that are multiples
+	/// of 4, pointer tables, strings, and zero fill.
+	fn ppc_like(len: usize, seed: u32) -> Vec<u8> {
+		let mut state = seed;
+		let mut next = move || {
+			state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+			state
+		};
+		let opcodes = [0x3860_0000u32, 0x7C08_02A6, 0x4E80_0020, 0x9421_FF00, 0x8001_0000, 0x4800_0001, 0x3D60_8200];
+		let mut out = Vec::with_capacity(len);
+		while out.len() < len {
+			match next() % 8 {
+				0..=4 => {
+					for _ in 0..(next() % 48) {
+						let op = opcodes[(next() >> 8) as usize % opcodes.len()];
+						let word = if op == 0x4800_0001 { op | ((next() % 0x4000) << 2) } else { op | (next() >> 24) };
+						out.extend_from_slice(&word.to_be_bytes());
+					}
+				}
+				5 => {
+					for _ in 0..(next() % 16) {
+						out.extend_from_slice(&(0x8200_0000u32 + (next() % 0x10000) * 4).to_be_bytes());
+					}
+				}
+				6 => out.extend_from_slice(b"DmGetThreadInfo\0DmSetBreakpoint\0"),
+				_ => out.resize(out.len() + (next() % 512) as usize, 0),
+			}
+		}
+		out.truncate(len);
+		out
+	}
+
+	#[test]
+	fn stream_roundtrips_ppc_like_image() {
+		let input = ppc_like(300_000, 1);
+		roundtrip(&input, WindowSize::KB32);
+		roundtrip_stream(&input, WindowSize::KB32);
+		roundtrip_stream(&input, WindowSize::KB64);
+	}
+
+	#[test]
+	fn stream_roundtrips_random_and_repetitive() {
+		let mut state = 0x0BAD_F00Du32;
+		let random: Vec<u8> = (0..100_000)
+			.map(|_| {
+				state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+				(state >> 16) as u8
+			})
+			.collect();
+		roundtrip_stream(&random, WindowSize::KB32);
+		roundtrip_stream(&vec![0u8; 200_000], WindowSize::KB64);
+		roundtrip_stream(b"x", WindowSize::KB32);
+		roundtrip_stream(&[], WindowSize::KB32);
+		let mut mixed = ppc_like(70_000, 2);
+		mixed.extend_from_slice(&random[..50_000]);
+		mixed.extend(ppc_like(70_000, 2));
+		roundtrip_stream(&mixed, WindowSize::KB64);
+	}
+
+	#[test]
+	fn stream_continues_after_chunks_and_strategy_changes() {
+		// Uncompressed blocks carry R0/R1/R2, and later matches may use the
+		// repeated offsets that were current before them.
+		let input = ppc_like(6 * MAX_CHUNK_SIZE, 3);
+		let window = WindowSize::KB64;
+		let mut enc = Encoder::new(window);
+		let mut chunks = vec![enc.encode_chunk(&input[..MAX_CHUNK_SIZE])];
+		enc.set_strategy(Strategy::Uncompressed);
+		chunks.push(enc.encode_chunk(&input[MAX_CHUNK_SIZE..2 * MAX_CHUNK_SIZE]));
+		enc.set_strategy(Strategy::LiteralOnly);
+		chunks.push(enc.encode_chunk(&input[2 * MAX_CHUNK_SIZE..3 * MAX_CHUNK_SIZE]));
+		enc.set_strategy(Strategy::Optimal);
+		chunks.extend(enc.encode_stream(&input[3 * MAX_CHUNK_SIZE..]));
+		decode_chunks(&chunks, &input, window);
+	}
+
+	#[test]
+	fn empty_stream_keeps_preamble_for_next_call() {
+		let input = ppc_like(50_000, 5);
+		let mut enc = Encoder::new(WindowSize::KB64);
+		assert!(enc.encode_stream(&[]).is_empty());
+		decode_chunks(&enc.encode_stream(&input), &input, WindowSize::KB64);
+	}
+
+	#[test]
+	fn stream_beats_chunked_output_on_structured_input() {
+		let input = ppc_like(400_000, 4);
+		let mut enc = Encoder::new(WindowSize::KB64);
+		let chunked: usize = input.chunks(MAX_CHUNK_SIZE).map(|c| enc.encode_chunk(c).len()).sum();
+		let stream: usize = Encoder::new(WindowSize::KB64).encode_stream(&input).iter().map(Vec::len).sum();
+		assert!(stream < chunked, "stream {stream} >= chunked {chunked}");
 	}
 }

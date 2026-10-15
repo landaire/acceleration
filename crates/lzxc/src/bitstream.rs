@@ -40,10 +40,6 @@ impl BitWriter {
 		Self { buffer: Vec::new(), cur: 0, bits_used: 0 }
 	}
 
-	pub fn with_capacity(cap: usize) -> Self {
-		Self { buffer: Vec::with_capacity(cap), cur: 0, bits_used: 0 }
-	}
-
 	/// Write `n_bits` from `value` (low-order bits). Accepts up to 32 bits.
 	#[inline]
 	pub fn write_bits(&mut self, value: u32, n_bits: u8) {
@@ -133,16 +129,20 @@ impl BitWriter {
 		self.buffer.extend_from_slice(bytes);
 	}
 
-	/// Consume and return the final byte stream. Pads any trailing partial
-	/// word with zeros to make 16-bit words whole.
-	pub fn finish(mut self) -> Vec<u8> {
+	/// Number of bits written so far.
+	pub fn bit_len(&self) -> usize {
+		self.buffer.len() * 8 + self.bits_used as usize
+	}
+
+	/// Pad the trailing partial word with zeros and return the byte stream,
+	/// leaving the writer empty for the next chunk.
+	pub fn take(&mut self) -> Vec<u8> {
 		if self.bits_used != 0 {
-			// Pad to the next 16-bit boundary with zeros.
 			let pad = 16 - (self.bits_used % 16);
 			self.bits_used += pad;
 			self.drain_words();
 		}
-		self.buffer
+		std::mem::take(&mut self.buffer)
 	}
 }
 
@@ -177,7 +177,7 @@ mod tests {
 		w.write_bits(0b1, 1);
 		w.write_bits(0xABCD, 16);
 		w.write_bits(0x1234, 16);
-		let bytes = w.finish();
+		let bytes = w.take();
 		// 1 + 2 + 3 + 4 + 1 + 16 + 16 = 43 bits = 2 full 16-bit words + 11 bits;
 		// the partial word pads to 48 bits = 6 bytes.
 		assert_eq!(bytes.len(), 6);
@@ -187,7 +187,7 @@ mod tests {
 	fn u32_le_roundtrips() {
 		let mut w = BitWriter::new();
 		w.write_u32_le(0x12345678);
-		let bytes = w.finish();
+		let bytes = w.take();
 		// LZX stores u32 as two LE u16 words, each output LE. Result should
 		// be the u32 in little-endian byte order: [0x78, 0x56, 0x34, 0x12].
 		assert_eq!(bytes, vec![0x78, 0x56, 0x34, 0x12]);
@@ -197,7 +197,7 @@ mod tests {
 	fn u24_be_roundtrips() {
 		let mut w = BitWriter::new();
 		w.write_u24_be(0xABCDEF);
-		let bytes = w.finish();
+		let bytes = w.take();
 		// 24 bits fits in 1.5 words -> 2 words padded.
 		assert_eq!(bytes.len(), 4);
 	}

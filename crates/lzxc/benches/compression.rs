@@ -193,14 +193,14 @@ fn bench_at(c: &mut Criterion, strategy: Strategy, window: WindowSize, group_nam
 }
 
 /// Default strategy at the default window size: the common case.
-fn greedy_kb64(c: &mut Criterion) {
-	bench_at(c, Strategy::Greedy, WindowSize::KB64, "greedy", "kb64");
+fn optimal_kb64(c: &mut Criterion) {
+	bench_at(c, Strategy::Optimal, WindowSize::KB64, "optimal", "kb64");
 }
 
-/// Sweep Greedy across window sizes so readers can see how window choice
+/// Sweep Optimal across window sizes so readers can see how window choice
 /// trades off ratio vs throughput. Window affects the match-finder's
 /// `max_offset`, so bigger windows let matches reach farther back.
-fn greedy_window_sweep(c: &mut Criterion) {
+fn optimal_window_sweep(c: &mut Criterion) {
 	for (window, suffix) in [
 		(WindowSize::KB32, "kb32"),
 		(WindowSize::KB128, "kb128"),
@@ -208,7 +208,7 @@ fn greedy_window_sweep(c: &mut Criterion) {
 		(WindowSize::MB1, "mb1"),
 		(WindowSize::MB2, "mb2"),
 	] {
-		bench_at(c, Strategy::Greedy, window, "greedy-window-sweep", suffix);
+		bench_at(c, Strategy::Optimal, window, "optimal-window-sweep", suffix);
 	}
 }
 
@@ -220,5 +220,5 @@ fn uncompressed(c: &mut Criterion) {
 	bench_at(c, Strategy::Uncompressed, WindowSize::KB64, "uncompressed", "kb64");
 }
 
-criterion_group!(benches, greedy_kb64, greedy_window_sweep, literal_only, uncompressed);
+criterion_group!(benches, optimal_kb64, optimal_window_sweep, literal_only, uncompressed);
 criterion_main!(benches);

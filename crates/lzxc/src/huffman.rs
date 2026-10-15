@@ -32,25 +32,25 @@ struct Node {
 	right: Option<u32>,
 }
 
-/// Build canonical Huffman path lengths from symbol frequencies.
+/// Build canonical Huffman path lengths from symbol frequencies, with every
+/// code at most `max_len` bits.
 ///
 /// Returns a vector of length `freqs.len()`. Symbols with `freqs[i] == 0`
-/// get path length 0 (not in tree). All other path lengths fit in [1, 16].
-pub fn build_path_lengths(freqs: &[u32]) -> Vec<u8> {
+/// get path length 0 (not in tree), except that a single used symbol is
+/// paired with an unused one: LZX decoders reject one-symbol trees, so both
+/// receive a 1-bit code.
+pub fn build_path_lengths(freqs: &[u32], max_len: u8) -> Vec<u8> {
 	let mut lengths = vec![0u8; freqs.len()];
 	let non_zero: Vec<usize> = (0..freqs.len()).filter(|&i| freqs[i] > 0).collect();
-	if non_zero.is_empty() {
-		return lengths;
+	match non_zero.as_slice() {
+		[] => return lengths,
+		&[only] => {
+			lengths[only] = 1;
+			lengths[if only == 0 { 1 } else { 0 }] = 1;
+			return lengths;
+		}
+		_ => {}
 	}
-	assert!(
-		non_zero.len() != 1,
-		"single-symbol Huffman tree (sym={}, freq={}, alphabet={}) isn't representable in LZX; \
-		 non-zero list: {:?}",
-		non_zero[0],
-		freqs[non_zero[0]],
-		freqs.len(),
-		non_zero
-	);
 
 	let mut nodes: Vec<Node> = non_zero
 		.iter()
@@ -111,8 +111,8 @@ pub fn build_path_lengths(freqs: &[u32]) -> Vec<u8> {
 	let root = pop_smallest(&nodes, &leaves_sorted, &merges, &mut li, &mut mi);
 	assign_lengths(&nodes, root, 0, &mut lengths);
 
-	if lengths.iter().any(|&l| l > MAX_CODE_LEN) {
-		lengths = package_merge_lengths(freqs, MAX_CODE_LEN);
+	if lengths.iter().any(|&l| l > max_len) {
+		lengths = package_merge_lengths(freqs, max_len);
 	}
 
 	lengths
@@ -234,12 +234,8 @@ pub struct Code {
 pub fn build_codes(lengths: &[u8]) -> Vec<Code> {
 	let mut codes = vec![Code { value: 0, len: 0 }; lengths.len()];
 
-	// Sort symbols by (length, symbol_index). lzxd's reader walks bit lengths
-	// from 1 upward and assigns codes in symbol order within each length.
-	for bit in 1..=MAX_CODE_LEN {
-		let _ = bit;
-	}
-
+	// lzxd's reader walks bit lengths from 1 upward and assigns codes in
+	// symbol order within each length.
 	let max_len = lengths.iter().copied().max().unwrap_or(0);
 	if max_len == 0 {
 		return codes;
@@ -264,24 +260,22 @@ mod tests {
 	use super::*;
 
 	#[test]
-	#[should_panic(expected = "single-symbol Huffman tree")]
-	fn single_symbol_is_rejected() {
-		// Callers must avoid this case by recoding before invoking Huffman.
-		let freqs = vec![0, 0, 5, 0];
-		let _ = build_path_lengths(&freqs);
+	fn single_symbol_gets_partner() {
+		assert_eq!(build_path_lengths(&[0, 0, 5, 0], MAX_CODE_LEN), vec![1, 0, 1, 0]);
+		assert_eq!(build_path_lengths(&[7, 0, 0], MAX_CODE_LEN), vec![1, 1, 0]);
 	}
 
 	#[test]
 	fn two_symbols() {
 		let freqs = vec![1, 1];
-		let lens = build_path_lengths(&freqs);
+		let lens = build_path_lengths(&freqs, MAX_CODE_LEN);
 		assert_eq!(lens, vec![1, 1]);
 	}
 
 	#[test]
 	fn uniform_256() {
 		let freqs = vec![1u32; 256];
-		let lens = build_path_lengths(&freqs);
+		let lens = build_path_lengths(&freqs, MAX_CODE_LEN);
 		// All codes should be 8 bits (full balanced binary tree).
 		for (i, &l) in lens.iter().enumerate() {
 			assert_eq!(l, 8, "symbol {} got length {}", i, l);
@@ -310,7 +304,7 @@ mod tests {
 		for (i, f) in freqs.iter_mut().enumerate() {
 			*f = 1 << (i.min(30) as u32);
 		}
-		let lens = build_path_lengths(&freqs);
+		let lens = build_path_lengths(&freqs, MAX_CODE_LEN);
 		for &l in &lens {
 			assert!(l <= MAX_CODE_LEN, "got length {}, max {}", l, MAX_CODE_LEN);
 		}

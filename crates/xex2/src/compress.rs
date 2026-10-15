@@ -42,25 +42,23 @@ const BLOCK_ALIGNMENT: usize = 0x800;
 /// Compress `pe` using LZX with the given window size (in bytes). `window_size`
 /// must be one of the LZX-legal values (0x8000..=0x200000 in powers of two).
 pub fn compress_normal(pe: &[u8], window_size: u32) -> Result<CompressedStream> {
-	let mut encoder = lzxc::Encoder::new(map_window_size(window_size)?);
-
-	let mut blocks = Vec::new();
-	let mut block = vec![0u8; BLOCK_HEADER_SIZE];
-	for slab in pe.chunks(lzxc::MAX_CHUNK_SIZE) {
-		let chunk = encoder.encode_chunk(slab);
-		let framed = CHUNK_SIZE_PREFIX_LEN + chunk.len();
-		if BLOCK_HEADER_SIZE + framed + CHUNK_SIZE_PREFIX_LEN > MAX_BLOCK_SIZE {
-			return Err(Xex2Error::CompressedChunkTooLarge { size: chunk.len() }.into_report());
-		}
-		if block.len() + framed + CHUNK_SIZE_PREFIX_LEN > MAX_BLOCK_SIZE {
-			blocks.push(finish_block(block));
-			block = vec![0u8; BLOCK_HEADER_SIZE];
-		}
-		// The size check above bounds `chunk.len()` below 64 KB.
-		block.extend_from_slice(&(chunk.len() as u16).to_be_bytes());
-		block.extend_from_slice(&chunk);
+	let chunks = lzxc::Encoder::new(map_window_size(window_size)?).encode_stream(pe);
+	if let Some(chunk) = chunks.iter().find(|c| unpadded_block_size(CHUNK_SIZE_PREFIX_LEN + c.len()) > MAX_BLOCK_SIZE) {
+		return Err(Xex2Error::CompressedChunkTooLarge { size: chunk.len() }.into_report());
 	}
-	blocks.push(finish_block(block));
+
+	let mut blocks: Vec<Vec<u8>> = partition_chunks(&chunks)
+		.into_iter()
+		.map(|group| {
+			let mut block = vec![0u8; BLOCK_HEADER_SIZE];
+			for chunk in &chunks[group] {
+				// The size check above bounds `chunk.len()` below 64 KB.
+				block.extend_from_slice(&(chunk.len() as u16).to_be_bytes());
+				block.extend_from_slice(chunk);
+			}
+			finish_block(block)
+		})
+		.collect();
 
 	// Each header names the following block, so the chain is built from the
 	// end. The last block keeps a zero size and hash.
@@ -80,6 +78,48 @@ pub fn compress_normal(pe: &[u8], window_size: u32) -> Result<CompressedStream> 
 		first_block_hash: next_hash,
 		window_size,
 	})
+}
+
+/// Size of a block holding `payload` bytes of size-prefixed chunks, before
+/// sector padding.
+fn unpadded_block_size(payload: usize) -> usize {
+	BLOCK_HEADER_SIZE + payload + CHUNK_SIZE_PREFIX_LEN
+}
+
+/// Split the compressed chunks into consecutive groups, one per block, so
+/// the total sector-padded size is minimal and no block exceeds 64 KB.
+/// Every chunk must fit in a block on its own.
+fn partition_chunks(chunks: &[Vec<u8>]) -> Vec<std::ops::Range<usize>> {
+	// best[j]: smallest padded size of chunks[..j], and where its last block starts.
+	let mut best: Vec<(usize, usize)> = vec![(usize::MAX, 0); chunks.len() + 1];
+	best[0] = (0, 0);
+	for j in 1..=chunks.len() {
+		let mut payload = 0;
+		for i in (0..j).rev() {
+			payload += CHUNK_SIZE_PREFIX_LEN + chunks[i].len();
+			let size = unpadded_block_size(payload);
+			if size > MAX_BLOCK_SIZE {
+				break;
+			}
+			let total = best[i].0 + size.next_multiple_of(BLOCK_ALIGNMENT);
+			if total < best[j].0 {
+				best[j] = (total, i);
+			}
+		}
+	}
+	let mut groups = Vec::new();
+	let mut end = chunks.len();
+	while end > 0 {
+		let start = best[end].1;
+		groups.push(start..end);
+		end = start;
+	}
+	groups.reverse();
+	// An empty image still needs one (empty) block.
+	if groups.is_empty() {
+		groups.push(0..0);
+	}
+	groups
 }
 
 fn finish_block(mut block: Vec<u8>) -> Vec<u8> {

@@ -26,10 +26,7 @@ use crate::huffman;
 pub fn encode(out: &mut BitWriter, prev_lengths: &[u8], new_lengths: &[u8]) {
 	assert_eq!(prev_lengths.len(), new_lengths.len(), "prev/new must be equal-length slices");
 
-	let mut symbols = plan_symbols(prev_lengths, new_lengths);
-	// The pretree is itself Huffman-coded; LZX forbids single-symbol trees,
-	// so force a second symbol into the op stream if planning produced one.
-	ensure_multi_symbol(&mut symbols, prev_lengths);
+	let symbols = plan_symbols(prev_lengths, new_lengths);
 
 	// Sym-19's follow-up draws from the same pretree alphabet, so it counts
 	// toward the histogram too; otherwise a delta that appears only as a
@@ -41,16 +38,13 @@ pub fn encode(out: &mut BitWriter, prev_lengths: &[u8], new_lengths: &[u8]) {
 			freqs[op.extra2 as usize] += 1;
 		}
 	}
-	let pretree_lengths = huffman::build_path_lengths(&freqs);
+	// Pretree path lengths are 4-bit fields.
+	let pretree_lengths = huffman::build_path_lengths(&freqs, 15);
 	let pretree_codes = huffman::build_codes(&pretree_lengths);
 
-	for &l in pretree_lengths.iter().take(20) {
+	for &l in &pretree_lengths {
 		out.write_bits(l as u32, 4);
 	}
-	for _ in pretree_lengths.len()..20 {
-		out.write_bits(0, 4);
-	}
-
 	for op in &symbols {
 		let c = pretree_codes[op.symbol as usize];
 		out.write_bits(c.value, c.len);
@@ -185,88 +179,6 @@ fn modsub(prev: u8, new: u8) -> u8 {
 	((17 + prev as i16 - new as i16).rem_euclid(17)) as u8
 }
 
-/// Post-process the op stream to guarantee at least two distinct pretree
-/// symbols appear. Called only when the naive planner would produce a
-/// mono-symbol sequence (e.g. all symbol-18 for a long all-zero range).
-///
-/// Strategy: find the last RLE op (symbol 17 or 18) covering at least one
-/// more position than its minimum, shrink its cover by 1, and append a
-/// literal-delta op covering the last position. Since the last position
-/// is a zero and prev[last]'s value determines the literal symbol, the
-/// inserted op uses `prev[last] % 17` as its symbol -- which differs from
-/// 17 and 18 by construction.
-fn ensure_multi_symbol(ops: &mut Vec<Op>, prev_lengths: &[u8]) {
-	let first = match ops.first() {
-		Some(op) => op.symbol,
-		None => return,
-	};
-	if ops.iter().any(|o| o.symbol != first) {
-		return;
-	}
-
-	// A: RLE op with headroom. Shrink it by one position and append a
-	// literal-delta op for the stolen byte. The stolen byte's literal symbol
-	// is `prev[pos] % 17`, always in 0..=16 and so distinct from 17/18.
-	for idx in (0..ops.len()).rev() {
-		let op = ops[idx];
-		if (op.symbol == 17 || op.symbol == 18) && op.extra > 0 {
-			ops[idx].extra -= 1;
-			let stolen = end_position_after_ops(ops, idx);
-			let literal_sym = prev_lengths.get(stolen).map_or(0, |&p| p % 17);
-			ops.insert(idx + 1, Op { symbol: literal_sym, extra: 0, extra2: 0 });
-			return;
-		}
-	}
-
-	// B: every RLE op is at minimum cover. Unpack the last one into literal
-	// deltas. In the (statistically very rare) case those literals all have
-	// the same delta too, fall through to C.
-	if first == 17 || first == 18 {
-		let last_op = *ops.last().unwrap();
-		let cover = op_cover(&last_op);
-		let end_pos = end_position_after_ops(ops, ops.len() - 1);
-		let start_pos = end_pos.saturating_sub(cover);
-		ops.pop();
-		for p in start_pos..end_pos {
-			let literal_sym = prev_lengths.get(p).map_or(0, |&v| v % 17);
-			ops.push(Op { symbol: literal_sym, extra: 0, extra2: 0 });
-		}
-		if ops.iter().any(|o| o.symbol != first) {
-			return;
-		}
-	}
-
-	// C: all ops are the same literal-delta symbol X. Replace the first 4 of
-	// them with one sym-19 (same-run) whose follow-up is X. This introduces
-	// sym-19 into the histogram while preserving the encoded path lengths.
-	if first <= 16 && ops.len() >= 4 {
-		let new_op = Op { symbol: 19, extra: 0, extra2: first };
-		ops.drain(0..4);
-		ops.insert(0, new_op);
-	}
-}
-
-/// Absolute path-length-array position just past what `ops[0..=idx]` covers.
-fn end_position_after_ops(ops: &[Op], idx: usize) -> usize {
-	let mut pos = 0usize;
-	for (i, op) in ops.iter().enumerate() {
-		pos += op_cover(op);
-		if i == idx {
-			break;
-		}
-	}
-	pos
-}
-
-fn op_cover(op: &Op) -> usize {
-	match op.symbol {
-		17 => 4 + op.extra as usize,
-		18 => 20 + op.extra as usize,
-		19 => 4 + op.extra as usize,
-		_ => 1,
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -288,6 +200,6 @@ mod tests {
 		// Result should be compact (mostly symbol 18 runs of 20 each, so
 		// 256 = 12*20 + 16 -> ~12 eighteen-symbols plus 3 seventeen-symbols
 		// plus 4 direct zeros -- all 0 symbols effectively).
-		let _ = w.finish();
+		let _ = w.take();
 	}
 }
