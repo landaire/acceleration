@@ -109,6 +109,7 @@ def _rust_release_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             rustc_flags = ctx.attrs.rustc_flags,
             rustc_target_triple = release.host_triple,
             rustdoc = tool("rustdoc"),
+            rustdoc_flags = ctx.attrs.rustdoc_flags,
         ),
     ]
 
@@ -120,6 +121,7 @@ rust_release_toolchain = rule(
         "default_edition": attrs.option(attrs.string(), default = None),
         "release": attrs.exec_dep(providers = [RustReleaseInfo]),
         "rustc_flags": attrs.list(attrs.string(), default = []),
+        "rustdoc_flags": attrs.list(attrs.string(), default = []),
     },
     is_toolchain_rule = True,
 )

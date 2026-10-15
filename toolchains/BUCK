@@ -39,6 +39,13 @@ rust_release_toolchain(
     default_edition = "2024",
     release = ":rust-release",
     rustc_flags = _PROFILE_RUSTC_FLAGS[_PROFILE],
+    # The prelude runs doctests through a wrapper (`--test-runtool`), and
+    # rustdoc then runs merged edition 2024 doctests in one process. Separate
+    # binaries run each doctest in its own process, as Cargo does.
+    rustdoc_flags = [
+        "-Zunstable-options",
+        "--merge-doctests=no",
+    ],
     visibility = ["PUBLIC"],
 )
 
