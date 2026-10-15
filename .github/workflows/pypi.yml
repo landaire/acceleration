@@ -2,13 +2,13 @@ name: PyPI release
 
 # Tag-triggered: when a `v*` tag is pushed (e.g. `v0.4.0`), builds the
 # full wheel matrix via the Wheels workflow, then uploads every wheel
-# to PyPI using trusted publishing (OIDC — no API token in CI secrets).
+# to PyPI using trusted publishing (OIDC; no API token in CI secrets).
 #
 # One-time PyPI setup required:
-#   1. Create the project at https://pypi.org/manage/project/xex2/ (or
-#      use TestPyPI first at https://test.pypi.org/).
-#   2. Add a "Trusted Publisher" pointing at this repo + this workflow
-#      file name (`pypi.yml`) + the `publish` job below.
+#   1. On https://pypi.org/manage/account/publishing/ (or TestPyPI),
+#      add a pending trusted publisher for project xex2.
+#   2. Point it at this repository, workflow file name pypi.yml, and
+#      environment pypi.
 #   3. Push a tag: `git tag v0.4.0 && git push --tags`.
 
 on:

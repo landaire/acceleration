@@ -5,10 +5,10 @@
 // Python classes and exceptions.
 //
 // All method patterns are mechanical:
-//   - `Result<T, Error>` → unwrap or throw RuntimeError with message
-//   - `unique_ptr<Collection>` (imports / resources) → wrap in PyHandle
-//   - `copy_<field>(span)` fixed-size byte accessors → return `bytes`
-//   - `Xex2Bytes` owned-buffer results → return `bytes`
+//   - `Result<T, Error>` -> unwrap or throw RuntimeError with message
+//   - `unique_ptr<Collection>` (imports / resources) -> wrap in PyHandle
+//   - `copy_<field>(span)` fixed-size byte accessors -> return `bytes`
+//   - `Xex2Bytes` owned-buffer results -> return `bytes`
 //
 // Regenerate the diplomat headers after any change to
 // `crates/xex2-ffi/src/lib.rs`:
@@ -36,9 +36,7 @@
 
 namespace nb = nanobind;
 
-// ──────────────────────────────────────────────────────────────────────────
 // Result / bytes helpers
-// ──────────────────────────────────────────────────────────────────────────
 
 namespace {
 
@@ -85,9 +83,7 @@ struct PyXex2RemoveLimits { std::unique_ptr<::Xex2RemoveLimits> inner; };
 
 } // namespace
 
-// ──────────────────────────────────────────────────────────────────────────
 // Module
-// ──────────────────────────────────────────────────────────────────────────
 
 NB_MODULE(xex2, m) {
 	m.doc() =
@@ -96,7 +92,7 @@ NB_MODULE(xex2, m) {
 		"modify are all exposed; absent optional fields raise RuntimeError "
 		"with a specific message (propagated from the Rust side).";
 
-	// ── Xex2RemoveLimits ───────────────────────────────────────────────
+	// Xex2RemoveLimits
 	nb::class_<PyXex2RemoveLimits>(m, "Xex2RemoveLimits")
 		.def(
 			"__init__",
@@ -105,7 +101,7 @@ NB_MODULE(xex2, m) {
 		.def_static(
 			"all",
 			[]() { return PyXex2RemoveLimits{::Xex2RemoveLimits::all()}; },
-			"All flags true — strip every known restriction.")
+			"All flags true: strip every known restriction.")
 		.def("set_media", [](PyXex2RemoveLimits& s, bool v) { s.inner->set_media(v); })
 		.def("set_region", [](PyXex2RemoveLimits& s, bool v) { s.inner->set_region(v); })
 		.def("set_bounding_path", [](PyXex2RemoveLimits& s, bool v) { s.inner->set_bounding_path(v); })
@@ -117,7 +113,7 @@ NB_MODULE(xex2, m) {
 		.def("set_library_versions", [](PyXex2RemoveLimits& s, bool v) { s.inner->set_library_versions(v); })
 		.def("set_zero_media_id", [](PyXex2RemoveLimits& s, bool v) { s.inner->set_zero_media_id(v); });
 
-	// ── Xex2ImportLibrary ──────────────────────────────────────────────
+	// Xex2ImportLibrary
 	nb::class_<PyXex2ImportLibrary>(m, "Xex2ImportLibrary")
 		.def_prop_ro("name", [](const PyXex2ImportLibrary& s) { return s.inner->name(); })
 		.def_prop_ro("import_id", [](const PyXex2ImportLibrary& s) { return s.inner->import_id(); })
@@ -135,7 +131,7 @@ NB_MODULE(xex2, m) {
 			return bytes_from_copy([&](auto buf) { return s.inner->copy_digest(buf); }, 20);
 		});
 
-	// ── Xex2Imports ────────────────────────────────────────────────────
+	// Xex2Imports
 	nb::class_<PyXex2Imports>(m, "Xex2Imports")
 		.def("__len__", [](const PyXex2Imports& s) { return s.inner->len(); })
 		.def_prop_ro("len", [](const PyXex2Imports& s) { return s.inner->len(); })
@@ -149,13 +145,13 @@ NB_MODULE(xex2, m) {
 			return PyXex2ImportLibrary{unwrap(s.inner->get(idx))};
 		});
 
-	// ── Xex2Resource ───────────────────────────────────────────────────
+	// Xex2Resource
 	nb::class_<PyXex2Resource>(m, "Xex2Resource")
 		.def_prop_ro("name", [](const PyXex2Resource& s) { return s.inner->name(); })
 		.def_prop_ro("address", [](const PyXex2Resource& s) { return s.inner->address(); })
 		.def_prop_ro("size", [](const PyXex2Resource& s) { return s.inner->size(); });
 
-	// ── Xex2Resources ──────────────────────────────────────────────────
+	// Xex2Resources
 	nb::class_<PyXex2Resources>(m, "Xex2Resources")
 		.def("__len__", [](const PyXex2Resources& s) { return s.inner->len(); })
 		.def_prop_ro("len", [](const PyXex2Resources& s) { return s.inner->len(); })
@@ -169,7 +165,7 @@ NB_MODULE(xex2, m) {
 			return PyXex2Resource{unwrap(s.inner->get(idx))};
 		});
 
-	// ── Xex2 ───────────────────────────────────────────────────────────
+	// Xex2
 	nb::class_<PyXex2>(m, "Xex2")
 		.def_static(
 			"parse",
@@ -181,7 +177,7 @@ NB_MODULE(xex2, m) {
 			nb::arg("data"),
 			"Parse an XEX2 file from bytes. RuntimeError on parse failure.")
 
-		// SecurityInfo / ImageInfo / header — always present
+		// SecurityInfo / ImageInfo / header: always present
 		.def_prop_ro("load_address", [](const PyXex2& s) { return s.inner->load_address(); })
 		.def_prop_ro("image_size", [](const PyXex2& s) { return s.inner->image_size(); })
 		.def_prop_ro("header_size", [](const PyXex2& s) { return s.inner->header_size(); })
@@ -197,7 +193,7 @@ NB_MODULE(xex2, m) {
 		.def_prop_ro("security_offset", [](const PyXex2& s) { return s.inner->security_offset(); })
 		.def_prop_ro("optional_header_count", [](const PyXex2& s) { return s.inner->optional_header_count(); })
 
-		// Optional-header-backed fields — raise RuntimeError when absent
+		// Optional-header-backed fields: raise RuntimeError when absent
 		.def_prop_ro("entry_point", [](const PyXex2& s) { return unwrap(s.inner->entry_point()); })
 		.def_prop_ro("original_base_address", [](const PyXex2& s) { return unwrap(s.inner->original_base_address()); })
 		.def_prop_ro("default_stack_size", [](const PyXex2& s) { return unwrap(s.inner->default_stack_size()); })

@@ -28,3 +28,6 @@ insta = { workspace = true }
 
 [features]
 serde = ["dep:serde"]
+
+[package.metadata.docs.rs]
+all-features = true

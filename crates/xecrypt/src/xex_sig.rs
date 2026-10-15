@@ -16,8 +16,8 @@ use rsa::traits::PublicKeyParts;
 use sha1::Digest;
 use sha1::Sha1;
 
-/// Salt for a normal XEX signature. (Revocation-required images use
-/// "XBOX360REV"; not needed here.)
+/// Salt for a normal XEX signature. The hypervisor selects "XBOXREVXEX"
+/// instead for revocation-required images; that form is not implemented.
 pub const SALT_XEX: &[u8; 10] = b"XBOX360XEX";
 
 fn rc4(key: &[u8], data: &mut [u8]) {

@@ -95,7 +95,10 @@ impl fmt::Display for Xex2Error {
 			}
 			Self::PatchOverlap => write!(f, "patch has overlapping writes"),
 			Self::RebuildTransformNotImplemented => {
-				write!(f, "rebuild transform (compression / encryption / machine / PE replacement) is not implemented")
+				write!(
+					f,
+					"requested rebuild transform is not implemented (Basic or Delta compression, or PE replacement on an encrypted source)"
+				)
 			}
 			Self::MalformedBasefilePe(defect) => write!(f, "malformed basefile PE: {}", defect),
 			Self::Io(e) => write!(f, "I/O error: {}", e),

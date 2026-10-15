@@ -36,7 +36,7 @@ The build 16547 kernel loads the whole file into physically contiguous memory re
 ## Build
 
 ```text
-cargo run -p shadowboot -- \
+shadowboot \
   --base base.bin \
   --layer layer \
   --output shadowboot.bin
@@ -73,7 +73,7 @@ The evidence is the `0x240000`-byte devkit kernel with SHA-256 `bd57560a12f07eee
 
 ## Loader availability
 
-`host:\` is a development-host loader namespace, not a console disk partition. It is distinct from the native `\Device\...` paths in the same candidate list. The live development console's XBDM drive list contains `HDD`, `DEVKIT`, cache, memory-unit, and USB mappings but no `HOST` drive. The matching development kernel also labels `host:` as a debug loader path in its `LDRX` strings. The exact early-boot host transport has not been reconstructed; use `HDD:\xboxromw2d.bin` for local deployment.
+`host:\` is the kernel debugger's host file namespace, not a console disk partition or an XBDM drive. With a kernel debugger host attached over kdnet, the kernel sends the open, read, and close requests for `host:\xboxromw2d.bin` to that host as kd host file I/O packets; the openxbdm repository records the packet format in `docs/re-notes/kd.md`. The shadowboot loader sizes its allocation from the file size in the host's open reply. Without an attached host the open fails at once and the loader tries the next candidate. A stock boot of the build 16547 devkit kernel with a host attached requests `host:\xboxromw2d.bin`; loading a shadowboot image served that way has not been tested. `openxbdm-kd host --file 'host:\xboxromw2d.bin=shadowboot.bin'` would serve the file without writing the console disk. Use `HDD:\xboxromw2d.bin` for the verified deployment.
 
 The inspected retail build 17559 kernel does not contain `xboxrom`, `INIT_SHADOWBOOT`, `shadow kernel`, or an equivalent HDD-root loader path. Its SHA-256 is `e1d1c87dbcbec01c71c5400cc129a462fa46738d267e29151a91c5354bdf6cb8`. This establishes that the development media loader is absent from that retail build. It does not establish behavior for every historical retail kernel.
 

@@ -11,26 +11,17 @@ The pipeline is intentionally small; everything below the `src/xex2.cpp`
 glue file is auto-generated or stock tooling.
 
 ```
-┌─────────────────────────────┐
-│ crates/xex2-ffi/src/lib.rs  │  #[diplomat::bridge] — hand-written
-└────────────┬────────────────┘
-             │ diplomat-tool cpp
-             ▼
-┌─────────────────────────────────────────────┐
-│ crates/xex2-ffi/bindings/cpp/*.hpp          │  auto-generated C++
-│ (Xex2.hpp, Xex2Bytes.hpp, Xex2Error.hpp,    │  (gitignored)
-│  diplomat_runtime.hpp, ...)                 │
-└────────────┬────────────────────────────────┘
-             │ #include
-             ▼
-┌─────────────────────────────┐
-│ bindings/python/src/xex2.cpp│  nanobind glue — hand-written
-└────────────┬────────────────┘
-             │ nanobind + scikit-build-core
-             ▼
-┌─────────────────────────────┐
-│ xex2.cpython-<ver>-<abi>.so │  final Python extension module
-└─────────────────────────────┘
+crates/xex2-ffi/src/lib.rs           #[diplomat::bridge], hand-written
+    |  diplomat-tool cpp
+    v
+crates/xex2-ffi/bindings/cpp/*.hpp   auto-generated C++ (gitignored)
+  (Xex2.hpp, Xex2Bytes.hpp, Xex2Error.hpp, diplomat_runtime.hpp, ...)
+    |  #include
+    v
+bindings/python/src/xex2.cpp         nanobind glue, hand-written
+    |  nanobind + scikit-build-core
+    v
+xex2.cpython-<ver>-<abi>.so          final Python extension module (.pyd on Windows)
 ```
 
 ## Install
@@ -43,9 +34,9 @@ pip install xex2
 uv add xex2
 ```
 
-Pre-built wheels cover CPython 3.10–3.14 on Linux (manylinux_2_28 x86_64),
-macOS (arm64 + x86_64), and Windows x86_64. The extension is statically
-linked to `libxex2_ffi.a`, so wheels have no dependency on a separately
+Pre-built wheels cover CPython 3.10 to 3.14 on Linux (manylinux_2_28 x86_64),
+macOS (arm64 + x86_64), and Windows x86_64. The extension statically links
+the xex2-ffi archive (`libxex2_ffi.a`, or `xex2_ffi.lib` on Windows), so wheels have no dependency on a separately
 installed native library.
 
 ## Building from source
@@ -55,12 +46,14 @@ intended for local development.
 
 ```sh
 # From the workspace root:
+cargo install diplomat-tool --version '^0.15' --locked
 cargo build -p xex2-ffi --release
 diplomat-tool cpp crates/xex2-ffi/bindings/cpp \
     --entry crates/xex2-ffi/src/lib.rs
 
 # Then:
 cd bindings/python
+uv pip install scikit-build-core nanobind
 uv pip install -e . --no-build-isolation
 ```
 
@@ -78,7 +71,7 @@ print(f"image_size:    {x.image_size:#x}")
 print(f"module_flags:  {x.module_flags:#x}")
 print(f"image_flags:   {x.image_flags:#x}")
 
-# Optional-header-backed fields raise RuntimeError when absent —
+# Optional-header-backed fields raise RuntimeError when absent:
 # `xex2`'s `Option<T>` is propagated as a typed error rather than a
 # silent default. Catch or use .get-style wrappers yourself.
 try:
@@ -128,11 +121,11 @@ open("game.pe", "wb").write(x.extract_basefile())
 - **Fixed-size bytes:** `image_hash` (20), `import_table_hash` (20),
   `header_hash` (20), `media_id` (16), `file_key` (16),
   `rsa_signature` (256).
-- **Collections:** `imports()` → `Xex2Imports`, `resources()` →
+- **Collections:** `imports()` -> `Xex2Imports`, `resources()` ->
   `Xex2Resources`. Both support `len()`, `[i]`, and `get(i)`; OOB
   indices raise `RuntimeError`.
-- **Operations:** `extract_basefile()` → `bytes` (decrypted/decompressed
-  PE); `modify(Xex2RemoveLimits)` → `bytes` (re-signed XEX with the
+- **Operations:** `extract_basefile()` -> `bytes` (decrypted/decompressed
+  PE); `modify(Xex2RemoveLimits)` -> `bytes` (re-signed XEX with the
   requested restrictions stripped).
 
 ## Tests

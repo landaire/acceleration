@@ -1,4 +1,4 @@
-//! Parser and extractor for Xbox 360 XEX2 executables.
+//! Parser, extractor, and rebuilder for Xbox 360 XEX2 executables.
 //!
 //! XEX2 is the executable format used by the Xbox 360. An XEX file wraps a
 //! Windows PE image with added metadata, optional compression (basic or LZX),
@@ -31,12 +31,20 @@
 //! - [`imports`] -- import library parsing
 //! - [`basefile`] -- decryption and decompression of the inner PE image
 //! - [`patch`] -- describing modifications as byte-level edits
-//! - [`writer`] -- planning length-preserving edits + re-signing (small-edit path)
-//! - [`rebuild`] -- streaming rebuilds (transformative-edit path)
+//! - [`writer`] -- planning length-preserving edits (limits, encryption, target
+//!   machine) and devkit re-signing
+//! - [`rebuild`] -- streaming rebuilds, including recompression
+//! - [`builder`] -- building a XEX from a PE image
+//! - [`hashes`] -- header_hash and import_table_hash computation
+//! - [`page_descriptors`] -- page-descriptor chain generation and verification
+//! - [`error`] -- error types
 //!
 //! # Features
 //!
-//! - `serde` (default off) -- enables `Serialize` on all public types.
+//! - `serde` (default off) -- enables `Serialize` on the parsed header,
+//!   optional-header, and import types.
+//! - `jiff` (default off) -- enables `DateRangeEdit::from_timestamps` and the
+//!   `jiff` conversions in `xenon_types`.
 
 pub(crate) mod assemble;
 pub(crate) mod basefile;

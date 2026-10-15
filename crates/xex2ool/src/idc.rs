@@ -1,8 +1,9 @@
 //! IDA Pro IDC script generation.
 //!
-//! Generates an IDC script that labels kernel import thunks with their
-//! Microsoft names (e.g. `KeGetCurrentProcessType`, `XamLoaderLaunchTitle`)
-//! and sets up the load address for the extracted basefile.
+//! Generates an IDC script that names the entry point `_start`, sets the
+//! segment bounds to the load address and image size, and labels each
+//! import's IAT slot (`__imp_<lib>_<n>`) and thunk (`<lib>_<n>`) by library
+//! and index.
 
 use std::fmt::Write;
 

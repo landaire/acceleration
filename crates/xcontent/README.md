@@ -1,13 +1,13 @@
 # xcontent
 
-Parser for Xbox 360 XContent packages. Handles the outer container format that wraps STFS and SVOD filesystems.
+Parser for Xbox 360 XContent packages. Handles the outer container format and the STFS filesystem inside it. SVOD volume descriptors are parsed from the header, but `XContentPackage::parse` does not support SVOD packages.
 
 ## Features
 
 - Parse XContent headers (CON, LIVE, PIRS signature types)
-- RSA signature verification via [xecrypt](https://crates.io/crates/xecrypt)
+- RSA signature verification of LIVE and PIRS packages via [xecrypt](https://crates.io/crates/xecrypt) (CON verification is not implemented)
 - STFS filesystem access via [stfs](https://crates.io/crates/stfs)
-- Content metadata: title ID, media ID, display names, thumbnails, ratings
+- Content metadata: title ID, media ID, content type, version, display names, publisher/title names, thumbnails
 
 ## Usage
 

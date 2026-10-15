@@ -16,3 +16,6 @@ include = ["src/**", "README.md"]
 serde = { workspace = true }
 bitflags = { workspace = true }
 jiff = { version = "0.2", optional = true }
+
+[package.metadata.docs.rs]
+all-features = true

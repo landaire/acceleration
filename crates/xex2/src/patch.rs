@@ -7,8 +7,8 @@
 //! source bytes.
 //!
 //! Patches are the small-edit branch of the modification story. Full
-//! rebuilds (recompression, re-encryption, replacing the inner PE) go
-//! through [`crate::rebuild::Rebuilder`] and produce a whole new file.
+//! rebuilds (compression changes, or replacing the inner PE of a compressed
+//! XEX) go through [`crate::rebuild::Rebuilder`] and produce a whole new file.
 
 use std::io::Write;
 

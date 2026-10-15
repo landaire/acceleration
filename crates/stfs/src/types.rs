@@ -65,8 +65,8 @@ pub const DATA_BLOCKS_PER_HASH_TREE_LEVEL: [usize; 3] =
 
 #[derive(Debug, Serialize)]
 pub enum PackageType {
-	/// User container packages created by an Xbox 360 console,
-	/// signed by the user's private key.
+	/// Packages created by an Xbox 360 console ("CON "), signed with that
+	/// console's private key from its keyvault.
 	Con,
 	/// Xbox LIVE-distributed package signed by Microsoft's private key.
 	Live,

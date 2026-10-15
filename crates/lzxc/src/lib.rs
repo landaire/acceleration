@@ -583,9 +583,11 @@ fn e8_preprocess_in_place(buf: &mut [u8], base_offset: u64, translation_size: i3
 /// `u16 BE size | compressed chunk` frames to an inner writer.
 ///
 /// Input is buffered into 32 KB slabs internally (the LZX chunk size) and
-/// each slab is compressed through an [`Encoder`]. The frame format matches
-/// what XEX "Normal"-compression data regions expect; for raw LZX streams
-/// with custom framing, use [`Encoder`] directly.
+/// each slab is compressed through an [`Encoder`]. The `u16 BE size | chunk`
+/// frames match the chunk framing inside XEX "Normal" data-region blocks;
+/// the block headers and padding are added by the caller (the `xex2` crate
+/// builds regions with [`Encoder::encode_stream`]). For raw LZX streams with
+/// custom framing, use [`Encoder`] directly.
 ///
 /// # Always call [`finish`][Self::finish]
 ///
@@ -648,9 +650,8 @@ impl<W: std::io::Write> EncoderWriter<W> {
 	/// as they happen.
 	pub fn finish(mut self) -> std::io::Result<W> {
 		self.flush_trailing()?;
-		// `inner` is still Some unless an earlier write error poisoned it;
-		// Drop's best-effort flush only runs if we leave Some here, which we
-		// don't want after a successful finish.
+		// Take `inner` so Drop's best-effort flush does not run again after a
+		// successful finish.
 		Ok(self.inner.take().expect("EncoderWriter::finish called twice"))
 	}
 
@@ -666,7 +667,7 @@ impl<W: std::io::Write> EncoderWriter<W> {
 		let size = u16::try_from(chunk.len()).map_err(|_| {
 			std::io::Error::new(std::io::ErrorKind::InvalidData, "compressed chunk exceeds u16 size prefix")
 		})?;
-		// `unwrap` is safe: `flush_trailing` guards this path, and `write`
+		// `expect` cannot fire: `flush_trailing` guards this path, and `write`
 		// asserts on missing-inner before it ever reaches here.
 		let inner = self.inner.as_mut().expect("inner sink taken; cannot emit");
 		inner.write_all(&size.to_be_bytes())?;
@@ -692,10 +693,10 @@ impl<W: std::io::Write> std::io::Write for EncoderWriter<W> {
 		Ok(written)
 	}
 
-	/// Flushes any chunks that are already full-sized (and forwards to the
-	/// inner sink's flush). Does **not** emit the trailing partial chunk --
-	/// a partial chunk can only be emitted once, at the end of the input.
-	/// Use [`finish`][Self::finish] for that.
+	/// Forwards to the inner sink's flush. Full-sized chunks are already
+	/// emitted by `write`. This does **not** emit the trailing partial chunk,
+	/// because a partial chunk can only be emitted once, at the end of the
+	/// input. Use [`finish`][Self::finish] for that.
 	fn flush(&mut self) -> std::io::Result<()> {
 		self.inner.as_mut().expect("EncoderWriter: flush after finish").flush()
 	}

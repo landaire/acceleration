@@ -2,9 +2,9 @@
 //!
 //! Exposes most of the inspection + modification surface of `xex2` as
 //! opaque handles. Optional headers and fields that `xex2` models as
-//! `Option<T>` surface here as `Result<T, Box<Xex2Error>>` — callers get a
-//! specific error message ("no ExecutionInfo optional header", "OOB import
-//! index", etc.) rather than a silent default. Iteration uses handle
+//! `Option<T>` surface here as `Result<T, Box<Xex2Error>>`; callers get a
+//! specific error message ("no ExecutionInfo optional header", "import
+//! library index N out of range", etc.) rather than a silent default. Iteration uses handle
 //! types (`Xex2Imports`, `Xex2Resources`) with `.len()` + `.get(idx)`.
 //!
 //! The generated C++ wrappers in `bindings/cpp/` are regenerated with:
@@ -23,9 +23,7 @@ mod ffi {
 	use std::fmt::Write;
 	use std::sync::Arc;
 
-	// ──────────────────────────────────────────────────────────────────
 	// Error + byte-buffer handles
-	// ──────────────────────────────────────────────────────────────────
 
 	/// Error returned by any fallible FFI entry point. Carries a
 	/// human-readable message accessible via [`Xex2Error::message`].
@@ -39,7 +37,7 @@ mod ffi {
 		}
 	}
 
-	/// Owned byte buffer — used as the return type for operations that
+	/// Owned byte buffer, used as the return type for operations that
 	/// produce arbitrary-sized output (extract / modify). Diplomat's C++
 	/// backend doesn't yet return `Vec<u8>` as a native type, so we wrap
 	/// it as an opaque with `.len()` + `.copy_into(buf)`.
@@ -62,9 +60,7 @@ mod ffi {
 		}
 	}
 
-	// ──────────────────────────────────────────────────────────────────
-	// Xex2 — the primary handle
-	// ──────────────────────────────────────────────────────────────────
+	// Xex2: the primary handle
 
 	/// Parsed XEX2 file. Owns an internal copy of the input bytes so
 	/// extract/modify calls don't require the caller to keep the original
@@ -79,7 +75,7 @@ mod ffi {
 			crate::inner::parse(bytes).map(|inner| Box::new(Xex2(inner))).map_err(|msg| Box::new(Xex2Error(msg)))
 		}
 
-		// ── SecurityInfo fields (always present) ───────────────────────
+		// SecurityInfo fields (always present)
 
 		/// Virtual address where the PE image is loaded.
 		pub fn load_address(&self) -> u32 {
@@ -101,7 +97,7 @@ mod ffi {
 			self.0.parsed.security_info.page_descriptor_count
 		}
 
-		// ── ImageInfo fields (always present) ──────────────────────────
+		// ImageInfo fields (always present)
 
 		/// Size of the ImageInfo block within SecurityInfo.
 		pub fn info_size(&self) -> u32 {
@@ -134,7 +130,7 @@ mod ffi {
 			self.0.parsed.security_info.image_info.allowed_media_types.bits()
 		}
 
-		// ── Xex2Header fields (always present) ─────────────────────────
+		// Xex2Header fields (always present)
 
 		/// Bitflags: `ModuleFlags` (TITLE, EXPORTS_TO_TITLE, DLL, PATCH, ...).
 		pub fn module_flags(&self) -> u32 {
@@ -156,7 +152,7 @@ mod ffi {
 			self.0.parsed.header.optional_header_count
 		}
 
-		// ── Optional-header-backed Xex2Header accessors ────────────────
+		// Optional-header-backed Xex2Header accessors
 		// All may legitimately be absent; we return Result so Python sees
 		// a typed error instead of a silent default.
 
@@ -197,7 +193,8 @@ mod ffi {
 				.ok_or_else(|| Box::new(Xex2Error("no DefaultHeapSize optional header".into())))
 		}
 
-		/// `DefaultFsCacheSize` optional header, if present.
+		/// `DefaultFsCacheSize` optional header. Always returns an error: the key's
+		/// size class parses as a data blob, not an inline value.
 		pub fn default_fs_cache_size(&self) -> Result<u32, Box<Xex2Error>> {
 			self.0
 				.parsed
@@ -206,7 +203,7 @@ mod ffi {
 				.ok_or_else(|| Box::new(Xex2Error("no DefaultFsCacheSize optional header".into())))
 		}
 
-		// ── DateRange optional header ──────────────────────────────────
+		// DateRange optional header
 
 		/// Lower bound of the execution date restriction, as a FILETIME
 		/// value. Absent when the optional header isn't set or has no
@@ -230,7 +227,7 @@ mod ffi {
 				.ok_or_else(|| Box::new(Xex2Error("no DateRange.not_after".into())))
 		}
 
-		// ── BoundingPath optional header ───────────────────────────────
+		// BoundingPath optional header
 
 		/// Writes the `BoundingPath` optional header into `out`. Errors
 		/// when the header is absent.
@@ -244,7 +241,7 @@ mod ffi {
 			Ok(())
 		}
 
-		// ── ExecutionInfo optional header ──────────────────────────────
+		// ExecutionInfo optional header
 
 		/// `title_id` from ExecutionInfo.
 		pub fn title_id(&self) -> Result<u32, Box<Xex2Error>> {
@@ -255,7 +252,7 @@ mod ffi {
 				.ok_or_else(|| Box::new(Xex2Error("no ExecutionInfo optional header".into())))
 		}
 
-		/// `media_id` from ExecutionInfo (the u32 one — distinct from the
+		/// `media_id` from ExecutionInfo (the u32 one, distinct from the
 		/// 16-byte `ImageInfo::media_id` exposed via `copy_media_id`).
 		pub fn exec_media_id(&self) -> Result<u32, Box<Xex2Error>> {
 			self.0
@@ -328,7 +325,7 @@ mod ffi {
 				.ok_or_else(|| Box::new(Xex2Error("no ExecutionInfo optional header".into())))
 		}
 
-		// ── FileFormatInfo optional header ─────────────────────────────
+		// FileFormatInfo optional header
 
 		/// Compression-type discriminant (0 = None, 1 = Basic,
 		/// 2 = Normal, 3 = Delta).
@@ -360,7 +357,7 @@ mod ffi {
 				})
 		}
 
-		// ── Fixed-size byte fields: copy-into-slice accessors ──────────
+		// Fixed-size byte fields: copy-into-slice accessors
 		// All always-present (from SecurityInfo/ImageInfo). Returned
 		// length is the number of bytes actually written (= field size
 		// when `dst` is big enough).
@@ -396,7 +393,7 @@ mod ffi {
 			copy(&self.0.parsed.security_info.rsa_signature, dst)
 		}
 
-		// ── Operations ─────────────────────────────────────────────────
+		// Operations
 
 		/// Decrypt + decompress the inner PE image. The returned handle
 		/// owns the bytes; use `.len()` + `.copy_into(buf)`.
@@ -414,11 +411,11 @@ mod ffi {
 				.map_err(|msg| Box::new(Xex2Error(msg)))
 		}
 
-		// ── Collections ────────────────────────────────────────────────
+		// Collections
 
 		/// Return a handle to the import libraries. The handle is always
 		/// returned (even when the `ImportLibraries` optional header is
-		/// absent — in that case `.len()` will be 0).
+		/// absent; in that case `.len()` will be 0).
 		pub fn imports(&self) -> Box<Xex2Imports> {
 			Box::new(Xex2Imports(self.0.imports.clone()))
 		}
@@ -430,9 +427,7 @@ mod ffi {
 		}
 	}
 
-	// ──────────────────────────────────────────────────────────────────
 	// Imports
-	// ──────────────────────────────────────────────────────────────────
 
 	/// Collection of import libraries referenced by the XEX.
 	#[diplomat::opaque]
@@ -454,7 +449,7 @@ mod ffi {
 		}
 	}
 
-	/// Reference to a single import library. Cheap to hold — the
+	/// Reference to a single import library. Cheap to hold; the
 	/// underlying data is shared via `Arc` with the parent `Xex2Imports`.
 	#[diplomat::opaque]
 	pub struct Xex2ImportLibrary {
@@ -483,7 +478,8 @@ mod ffi {
 			self.lib().version_min.into()
 		}
 
-		/// Number of imported ordinal/thunk records.
+		/// Number of raw import records (alternating IAT and thunk addresses; two
+		/// per import).
 		pub fn record_count(&self) -> usize {
 			self.lib().records.len()
 		}
@@ -511,9 +507,7 @@ mod ffi {
 		}
 	}
 
-	// ──────────────────────────────────────────────────────────────────
 	// Resources
-	// ──────────────────────────────────────────────────────────────────
 
 	/// Collection of embedded PE resources (XUI, STRB, ...).
 	#[diplomat::opaque]
@@ -562,9 +556,7 @@ mod ffi {
 		}
 	}
 
-	// ──────────────────────────────────────────────────────────────────
 	// Modify: restriction-removal limits
-	// ──────────────────────────────────────────────────────────────────
 
 	/// Opaque wrapper around `xex2::writer::RemoveLimits`. Constructed
 	/// empty via `Xex2RemoveLimits::new()` or fully populated via
@@ -580,7 +572,7 @@ mod ffi {
 			Box::new(Xex2RemoveLimits(xex2::writer::RemoveLimits::default()))
 		}
 
-		/// All flags true — strip every known restriction.
+		/// All flags true: strip every known restriction.
 		#[diplomat::attr(auto, named_constructor = "all")]
 		pub fn all() -> Box<Xex2RemoveLimits> {
 			Box::new(Xex2RemoveLimits(xex2::writer::RemoveLimits::all()))
@@ -628,9 +620,7 @@ mod ffi {
 		}
 	}
 
-	// ──────────────────────────────────────────────────────────────────
 	// Helpers
-	// ──────────────────────────────────────────────────────────────────
 
 	/// Shared copy-into-slice helper used by fixed-size byte accessors.
 	fn copy(src: &[u8], dst: &mut [u8]) -> usize {

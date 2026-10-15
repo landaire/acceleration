@@ -1,7 +1,6 @@
 // `deserialize` / `Helper*` paths here are reached only via `#[serde(with = ...)]`
-// expansions, which rustc doesn't see as usage. The struct fields using them
-// live across several downstream crates, so keeping the full serializer +
-// deserializer pair on-hand is the right call even if not every path is hit.
+// expansions, which rustc doesn't see as usage. The full serializer +
+// deserializer pair is kept even though stfs only derives Serialize.
 #![allow(dead_code)]
 
 pub mod fixed {

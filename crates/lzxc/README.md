@@ -68,7 +68,7 @@ Corpora:
 
 - `text-256k`: 256 KB of English-ish prose built word-at-a-time from a
   ~200-word vocabulary via LCG.
-- `text-256k-pathological`: 256 KB of a single 107-byte phrase repeated
+- `text-256k-pathological`: 256 KB of a single 102-byte phrase repeated
   end-to-end. A ceiling on what LZ77+Huffman can do on a perfectly
   periodic signal; not representative of realistic text.
 - `structured-1m`: 1 MB mix of zero-runs, a repeating 64-byte "jump table"
@@ -132,12 +132,14 @@ reports.
 ### 4 GiB input cap per encoder
 
 A single `Encoder` / `EncoderWriter` can compress **up to 4 GiB of input**
-before its match finder silently degrades to literal-only output. Internal
+before its match finder degrades to literal-only output. Internal
 hash-chain positions are stored as `u32`, so once total bytes fed through
 one encoder exceed `u32::MAX`, the stale-entry guard rejects every match
 candidate. The output stream remains valid LZX (it decodes correctly via
 `lzxd`), but compression ratio collapses to ~1.0x for all bytes past the
-4 GiB mark.
+4 GiB mark. This applies to release builds. Debug builds instead panic on a
+debug assertion (`input crossed 4 GiB; construct a fresh Encoder per
+segment`).
 
 In practice XEX payloads and other LZX targets are orders of magnitude
 below this bound. If you need to compress larger streams, segment the

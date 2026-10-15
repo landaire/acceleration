@@ -3,11 +3,14 @@
 //! Collects the crypto routines and public keys needed to verify and re-sign
 //! Xbox 360 content:
 //!
-//! - [`symmetric`] -- AES-128-CBC, SHA-1, and `XeCryptRotSumSha` (the rolling
-//!   checksum + SHA-1 hash used for XEX ImageInfo signatures)
-//! - [`keyvault`] -- console keyvault parser (owned and zerocopy variants)
-//! - [`RsaKeyKind`] -- enum of all known RSA public keys (retail + devkit),
-//!   with verify/sign helpers
+//! - [`symmetric`]: AES-128-CBC/ECB, SHA-1, and `XeCryptRotSumSha` (the
+//!   rolling checksum + SHA-1 hash used for XEX ImageInfo signatures)
+//! - [`keyvault`]: console keyvault parser (owned and zerocopy variants)
+//! - [`xex_sig`]: XEX2 header signatures (`XeCryptBnQwBeSig`)
+//! - [`RsaKeyKind`]: Xbox 360 RSA keys (retail + devkit) with verify/sign
+//!   helpers. Signing requires a devkit Executable, PIRS or LIVE key. Public
+//!   keys for devkit Console, Dvdx2 and XMacs and retail XMacs are not
+//!   implemented; requesting them panics.
 //!
 //! # Example: verifying an XContent signature
 //!
@@ -72,7 +75,7 @@ pub enum XContentSignatureType {
 	/// XeKeysConsoleSignatureVerification using the console cert RSA key.
 	Console,
 	/// Microsoft LIVE-signed package ("LIVE"). Signed by Microsoft's
-	/// content servers. Verified with the LIVE RSA key (exp=65537).
+	/// content servers. Verified with the LIVE RSA key (retail exp=65537, devkit exp=3).
 	Live,
 	/// Offline strong-signed package ("PIRS"). Signed by Microsoft's
 	/// build tools. Verified with the PIRS RSA key (exp=3).

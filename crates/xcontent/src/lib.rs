@@ -21,7 +21,8 @@
 //! println!("Type:    {:?}", package.header.metadata.content_type);
 //! println!("Version: {}", package.header.metadata.version);
 //!
-//! // Verify the signature (tries retail and devkit keys)
+//! // Verify a LIVE/PIRS signature (tries retail and devkit keys).
+//! // CON verification is not implemented and panics.
 //! match package.verify_signature(&data) {
 //!     Ok(kind) => println!("Signed by {:?} console type", kind),
 //!     Err(e) => println!("Signature invalid: {}", e),

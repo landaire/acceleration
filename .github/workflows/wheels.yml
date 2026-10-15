@@ -1,12 +1,12 @@
 name: Wheels
 
 # Two-stage pipeline:
-#   1. `rust-build`  — per-target static lib + diplomat-generated C++
-#                       headers. Python-version-agnostic; cacheable.
-#   2. `wheels`      — per-target cibuildwheel run. Fans out to every
-#                       supported Python version internally. Downloads
-#                       the Stage 1 artifact for its target so no Rust
-#                       toolchain is needed in this job.
+#   1. `rust-build`: per-target static lib + diplomat-generated C++
+#      headers. Python-version-agnostic; cacheable.
+#   2. `wheels`: per-target cibuildwheel run. Fans out to every
+#      supported Python version internally. Downloads the Stage 1
+#      artifact for its target so no Rust toolchain is needed in this
+#      job.
 
 on:
   push:
@@ -25,11 +25,9 @@ permissions:
   contents: read
 
 jobs:
-  # ────────────────────────────────────────────────────────────────────
   # Stage 1: Build Rust artifacts (static lib + generated headers).
   # One job per target. Output is packaged into an artifact Stage 2
   # can drop into place.
-  # ────────────────────────────────────────────────────────────────────
   rust-build:
     strategy:
       fail-fast: false
@@ -69,8 +67,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          # Segment the cache per target so the linux-manylinux,
-          # macos-arm, macos-x86, and windows archives don't fight over
+          # Segment the cache per target so the linux_x86_64,
+          # macos_universal2 and windows_x86_64 jobs don't fight over
           # the same key.
           shared-key: ${{ matrix.artifact }}
 
@@ -113,7 +111,7 @@ jobs:
         run: |
           mkdir -p rust-artifacts/target/release
           mkdir -p rust-artifacts/crates/xex2-ffi/bindings
-          # .a on unix, .lib on windows — just glob what cargo emits.
+          # .a on unix, .lib on windows; glob what cargo emits.
           cp target/release/*xex2_ffi* rust-artifacts/target/release/ 2>/dev/null || true
           cp -r crates/xex2-ffi/bindings/cpp rust-artifacts/crates/xex2-ffi/bindings/cpp
           ls -la rust-artifacts/target/release/
@@ -125,12 +123,10 @@ jobs:
           path: rust-artifacts/
           retention-days: 1
 
-  # ────────────────────────────────────────────────────────────────────
   # Stage 2: cibuildwheel per target, iterating Python versions.
-  # No Rust toolchain needed in this job — artifacts from Stage 1 are
+  # No Rust toolchain needed in this job; artifacts from Stage 1 are
   # dropped into their workspace-relative locations before cibuildwheel
   # runs.
-  # ────────────────────────────────────────────────────────────────────
   wheels:
     needs: rust-build
     strategy:

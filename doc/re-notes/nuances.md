@@ -24,7 +24,7 @@
 - The `0xe0000`-byte boot region (flash header plus SB, SC, SD, SE) at `HDD:\xboxromw2d.bin` is selected on cold reboot. Shadowboot is attempted when bit `0x0200` of `XboxHardwareInfo+0x0e` is clear; after the shadowed boot the field read `0x029e`.
 - The shadowed system mounts the console NAND file system. Flash root files cannot be changed through a shadowboot image.
 - SD verifies SE against the 20-byte value at SD plaintext offset `0x24c` and halts on mismatch. The value is RotSumSha over `SE[0..0x10]` and the RC4-decrypted SE body up to the size rounded to 16 bytes, which includes flash bytes past the SE end. A changed SE needs an updated SD digest; SD authentication is not established.
-- `host:\` is a debugger-backed development-host loader namespace, not a disk partition or normal XBDM drive mapping.
+- `host:\` is the kernel debugger's host file namespace, served over kdnet by an attached kd host, not a disk partition or normal XBDM drive mapping. Without an attached host the open fails at once.
 - The inspected retail build 17559 kernel has no development shadowboot media table. This result does not classify every historical retail build.
 - XEX images loaded in `0x90000000..0x9fffffff` must carry ImageInfo flag `0x10000000`; images elsewhere must not.
 - The console rejects uncompressed XEX data (format 0). Uncompressed images use the Basic format.

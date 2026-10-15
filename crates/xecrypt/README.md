@@ -7,7 +7,11 @@ Xbox 360 cryptographic primitives. Implements the subset of the XeCrypt API used
 - AES-128-CBC encrypt/decrypt (`xe_crypt_aes_cbc_encrypt`, `xe_crypt_aes_cbc_decrypt`)
 - AES-128-ECB encrypt/decrypt
 - SHA-1 hashing
-- RSA signature verification for XContent packages (LIVE, PIRS, CON)
+- RSA signature verification for LIVE and PIRS XContent packages (CON verification is not implemented)
+- Keyvault parsing (owned and zero-copy) via `keyvault`
+- XEX2 header signature signing and verification (`XeCryptBnQwBeSig`) via `xex_sig`
+- RSA signing with devkit keys
+- `serde` feature: `Serialize` for keyvault, certificate and signature types
 - Devkit and retail key support
 
 ## Usage

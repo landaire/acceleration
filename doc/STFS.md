@@ -14,9 +14,9 @@ The hash tree has up to three levels, determined by the total number of allocate
 
 | Level | Name in code | Covers | Condition |
 |-------|-------------|--------|-----------|
-| 0 (First) | Level-0 | Up to 0xAA (170) data blocks | `allocated <= 0xAA` |
-| 1 (Second) | Level-1 | Up to 0xAA^2 (28,900) data blocks | `allocated <= 0x70E4` |
-| 2 (Third) | Level-2 | Up to 0xAA^3 (4,913,000) data blocks | `allocated <= 0x4AF768` |
+| 0 | `HashTableLevel::First` | Up to 0xAA (170) data blocks | `allocated <= 0xAA` |
+| 1 | `HashTableLevel::Second` | Up to 0xAA^2 (28,900) data blocks | `allocated <= 0x70E4` |
+| 2 | `HashTableLevel::Third` | Up to 0xAA^3 (4,913,000) data blocks | `allocated <= 0x4AF768` |
 
 Each level-0 hash table contains 0xAA entries, one per data block it covers. Each level-1 table contains entries covering level-0 tables (each entry's hash is the SHA-1 of a level-0 hash table block). Level-2 covers level-1 tables the same way.
 
@@ -51,7 +51,7 @@ Male packages have two copies of each hash table block. The "active index" selec
 The active index is stored in different places depending on the level:
 
 - **Top-level table**: `(volume_descriptor.block_separation & 2) >> 1` (bit 1 of block_separation)
-- **Tables below the top**: Bit 6 (0x40) of the parent hash entry's status byte, shifted right by 6
+- **Tables below the top**: Bit 6 (0x40) of the parent hash entry's status byte, shifted right by 6. The stfs crate reads the parent bit only one level below the top table; deeper tables use index 0.
 
 The active index shifts the hash table's address by `active_index << 12` (one block width) from its base position.
 
@@ -63,7 +63,7 @@ To find the hash entry for data block N:
 
 1. Compute the backing hash block number for level-0:
    - For `N < 0xAA`: block 0
-   - For `N >= 0xAA`: `(N / 0xAA) * block_step[0] + ((N / 0xAA^2) + 1) << sex`, plus an additional `1 << sex` if `N >= 0xAA^2`
+   - For `N >= 0xAA`: `(N / 0xAA) * block_step[0] + (((N / 0xAA^2) + 1) << sex)`, plus an additional `1 << sex` if `N >= 0xAA^2`
 
 2. Convert to a file address:
    ```
@@ -85,7 +85,7 @@ To find the hash entry for data block N:
 Logical data block numbers don't map 1:1 to file offsets because hash tables are interleaved. `compute_data_block_num` converts a logical block number to a "true" block number that accounts for the hash table blocks occupying space in the file:
 
 ```
-true_block = ((N + 0xAA) / 0xAA) << sex + N
+true_block = (((N + 0xAA) / 0xAA) << sex) + N
 ```
 
 With additional corrections for blocks past the first and second hash tree level boundaries. The file offset is then:

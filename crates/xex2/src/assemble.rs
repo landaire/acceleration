@@ -38,8 +38,8 @@ use rootcause::IntoReport;
 const OPT_INDEX_START: usize = 0x18;
 const PAGE_ALIGN: usize = 0x1000;
 /// Default LZX window for compressed XEX output. 64 KB matches what most
-/// real XEX files ship with; callers needing a different size should go
-/// through [`crate::builder::Xex2Builder`] (future API).
+/// real XEX files ship with; callers building a new XEX with a different
+/// window can use [`crate::builder::Xex2Builder::compress_with`].
 const DEFAULT_LZX_WINDOW: u32 = 0x10000;
 
 /// Assemble a new XEX swapping the data region / FileFormatInfo under the

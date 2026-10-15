@@ -13,6 +13,15 @@ Common types for Xbox 360 (Xenon) file formats. Provides newtypes for identifier
 - `VirtualAddress` - 32-bit virtual memory address
 - `AesKey` - 16-byte AES-128 key
 - `Version` - Xbox version (major.minor.build.revision packed in u32)
+- `ContentId` - 20-byte XContent content identifier (hex serialized)
+- `Sha1Hash` - 20-byte SHA-1 digest (hex serialized)
+- `FileOffset` - absolute offset into an on-disk file
+- `GameRegion` - game region bitflags (keyvault and XEX)
+- FILETIME helpers: `filetime_from_xe_bytes`, `filetime_to_unix_secs`
+
+## Feature Flags
+
+- `jiff` - `filetime_to_timestamp` and `timestamp_to_filetime` conversions to and from `jiff::Timestamp`
 
 ## License
 

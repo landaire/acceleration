@@ -322,6 +322,7 @@ pub struct XContentPackage {
 }
 
 impl XContentPackage {
+	/// Not implemented; panics.
 	pub fn to_vfs_path<T>(&self, _data: Arc<T>) -> VfsPath
 	where
 		T: AsRef<[u8]> + Send + Sync + 'static,
@@ -329,6 +330,7 @@ impl XContentPackage {
 		todo!("port to new stfs VFS API")
 	}
 
+	/// Not implemented; panics.
 	pub fn to_vfs<T>(&self, _data: Arc<T>) -> Box<dyn vfs::FileSystem>
 	where
 		T: AsRef<[u8]> + Send + Sync + 'static,
@@ -505,8 +507,8 @@ pub enum FileSystemKind {
 	/// Secure Transacted File System. Used by CON/LIVE/PIRS packages
 	/// for savegames, DLC, title updates, and profile data.
 	Stfs = 0,
-	/// Streamed VOD. Used for large on-demand content like Games on
-	/// Demand and video.
+	/// Secure Virtual Optical Disc. Used for large disc-image content like
+	/// Games on Demand and video.
 	Svod,
 	/// FAT-based filesystem. Used on hard drives and USB storage.
 	Fatx,

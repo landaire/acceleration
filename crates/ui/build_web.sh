@@ -34,7 +34,7 @@ FOLDER_NAME=${PWD##*/}
 CRATE_NAME="acceleration_ui"
 CRATE_NAME_SNAKE_CASE="${CRATE_NAME//-/_}" # for those who name crates with-kebab-case
 
-# This is required to enable the web_sys clipboard API which egui_web uses
+# eframe needs this to use the web_sys clipboard API
 # https://rustwasm.github.io/wasm-bindgen/api/web_sys/struct.Clipboard.html
 # https://rustwasm.github.io/docs/wasm-bindgen/web-sys/unstable-apis.html
 export RUSTFLAGS=--cfg=web_sys_unstable_apis
@@ -42,20 +42,20 @@ export RUSTFLAGS=--cfg=web_sys_unstable_apis
 # Clear output from old stuff:
 rm -f "docs/${CRATE_NAME_SNAKE_CASE}_bg.wasm"
 
-echo "Building rust…"
+echo "Building rust..."
 BUILD=release
 cargo build -p "${CRATE_NAME}" --release --lib --target wasm32-unknown-unknown
 
 # Get the output directory (in the workspace it is in another location)
 TARGET=$(cargo metadata --format-version=1 | jq --raw-output .target_directory)
 
-echo "Generating JS bindings for wasm…"
+echo "Generating JS bindings for wasm..."
 TARGET_NAME="${CRATE_NAME_SNAKE_CASE}.wasm"
 WASM_PATH="${TARGET}/wasm32-unknown-unknown/${BUILD}/${TARGET_NAME}"
 wasm-bindgen "${WASM_PATH}" --out-dir docs --no-modules --no-typescript
 
 if [[ "${FAST}" == false ]]; then
-  echo "Optimizing wasm…"
+  echo "Optimizing wasm..."
   # to get wasm-opt:  apt/brew/dnf install binaryen
   wasm-opt "docs/${CRATE_NAME}_bg.wasm" -O2 --fast-math -o "docs/${CRATE_NAME}_bg.wasm" # add -g to get debug symbols
 fi

@@ -91,10 +91,10 @@ fn generate_text(len: usize, seed: u32) -> Vec<u8> {
 	out
 }
 
-/// Degenerate best case: a single 107-byte phrase repeated to fill `len`.
-/// After chunk 1 every position matches back at offset 107 with length
-/// MAX_MATCH, and every match encodes to the same main-tree symbol, so
-/// this compresses to the LZ77+Huffman best case (~270x). Kept as a
+/// Degenerate best case: a single 102-byte phrase repeated to fill `len`.
+/// After the first repetition every position matches back at offset 102 with
+/// length MAX_MATCH, and every match encodes to the same main-tree symbol, so
+/// this compresses to the LZ77+Huffman best case (see README). Kept as a
 /// sanity-check ceiling; it is **not** representative of realistic text.
 fn generate_pathological_text(len: usize) -> Vec<u8> {
 	let phrase = b"The quick brown fox jumps over the lazy dog. \

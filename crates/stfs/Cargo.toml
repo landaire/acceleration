@@ -9,7 +9,7 @@ authors = ["Lander Brandt <landerbrandt@gmail.com>"]
 readme = "README.md"
 description = "Parser for Xbox 360 STFS (Secure Transacted File System) packages"
 keywords = ["xbox360", "stfs", "xbox", "parser"]
-categories = ["parser-implementations", "no-std"]
+categories = ["parser-implementations"]
 include = ["src/**", "README.md"]
 
 [lib]
@@ -37,3 +37,6 @@ futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

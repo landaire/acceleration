@@ -16,9 +16,8 @@
 //! use stfs::{BytesStfsReader, StfsPackageReader};
 //!
 //! let data = std::fs::read("savegame.bin")?;
-//! // XContent header is 0x971A bytes; STFS data starts after it
-//! let stfs_start = 0x971A;
-//! let reader = BytesStfsReader::open(&data[stfs_start..])?;
+//! // Pass the whole package: the XContent header is parsed from offset 0.
+//! let reader = BytesStfsReader::open(data.as_slice())?;
 //!
 //! for entry in reader.package().file_table.entries.iter() {
 //!     println!("{} ({} bytes)", entry.name, entry.file_size);
@@ -43,6 +42,10 @@
 //!
 //! - `vfs` -- enables [`stfs_vfs`] (builds a `VfsTree` from the file table
 //!   and implements `vfs::FileSystem`).
+//! - `async-vfs`: also implements `vfs::async_vfs::AsyncFileSystem` for
+//!   `StfsVfs`. Implies `vfs`.
+//! - `base64-serde`: serializes byte-array fields as base64 strings instead
+//!   of raw serde bytes.
 
 pub mod error;
 pub mod file_table;

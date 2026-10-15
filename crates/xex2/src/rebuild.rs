@@ -8,12 +8,13 @@
 //!
 //! Edits come in two flavors:
 //! - **Length-preserving edits** (limit recipes, per-field overrides of fields
-//!   that stay the same size): fast path, expressed as a [`Patch`] that streams
+//!   that stay the same size, encryption, target machine, PE replacement on an
+//!   uncompressed source): fast path, expressed as a [`Patch`] that streams
 //!   through source bytes.
-//! - **Transformative edits** (recompression, re-encryption, PE replacement):
-//!   require a full rebuild. These currently return
-//!   [`Xex2Error::RebuildTransformNotImplemented`][crate::error::Xex2Error::RebuildTransformNotImplemented]
-//!   until Phase 2+ transforms land.
+//! - **Transformative edits** (compression changes, or PE replacement on a
+//!   compressed source): require a full rebuild via `assemble`. Basic
+//!   compression targets or sources and Delta sources return
+//!   [`Xex2Error::RebuildTransformNotImplemented`][crate::error::Xex2Error::RebuildTransformNotImplemented].
 
 use std::io::Write;
 

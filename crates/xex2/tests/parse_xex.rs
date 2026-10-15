@@ -2,7 +2,7 @@ use xex2::Xex2;
 use xex2::header::CompressionType;
 
 /// Load a XEX fixture from the local `xex_files/` corpus. Returns `None`
-/// when the file is absent — that directory is gitignored (it holds real
+/// when the file is absent; that directory is gitignored (it holds real
 /// console executables that can't be committed), so CI and fresh clones
 /// don't have it. Tests use `load_or_skip!` to skip cleanly in that case.
 ///
@@ -21,7 +21,7 @@ fn load_xex(name: &str) -> Option<(Vec<u8>, Xex2)> {
 }
 
 /// Unwrap a fixture load, or return early from the test when the corpus is
-/// missing — mirrors the Python suite's "skip when the fixture isn't
+/// missing; mirrors the Python suite's "skip when the fixture isn't
 /// present" behaviour so a fresh clone and CI still run green.
 macro_rules! load_or_skip {
 	($name:expr) => {
@@ -648,13 +648,13 @@ fn builder_produces_encrypted_compressed_xex() {
 
 #[test]
 fn basic_compression_transform_not_implemented() {
-	// afplayer.xex is Basic-compressed. Basic ↔ anything isn't wired up yet;
+	// afplayer.xex is Basic-compressed. Basic <-> anything isn't wired up yet;
 	// confirm we still bail cleanly rather than produce garbage.
 	let (data, xex) = load_or_skip!("afplayer.xex");
 	let mut sink = Vec::new();
 	let result =
 		xex.rebuild(&data).target_compression(xex2::writer::TargetCompression::Uncompressed).write_to(&mut sink);
-	assert!(result.is_err(), "basic → uncompressed transform shouldn't be supported yet");
+	assert!(result.is_err(), "basic -> uncompressed transform shouldn't be supported yet");
 }
 
 #[test]
@@ -683,7 +683,7 @@ fn rebuild_decompresses_normal_xex() {
 
 #[test]
 fn rebuild_compresses_uncompressed_xex() {
-	// Start from a Normal XEX → decompress → compress. The compressed
+	// Start from a Normal XEX -> decompress -> compress. The compressed
 	// rebuild must round-trip back to the same PE bytes.
 	let (data, xex) = load_or_skip!("xshell twi.xex");
 	let original_pe = xex.extract_basefile(&data).unwrap();

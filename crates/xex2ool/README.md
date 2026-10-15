@@ -5,11 +5,9 @@ Built on top of the [`xex2`](../xex2) parser/rebuilder crate.
 
 ## Install
 
-```
-cargo install --path crates/xex2ool
-```
-
-or from the workspace:
+Each [GitHub release](https://github.com/landaire/acceleration/releases)
+has executables for Linux, macOS and Windows. To build from crates.io
+instead:
 
 ```
 cargo install xex2ool
@@ -19,13 +17,13 @@ cargo install xex2ool
 
 | Command                     | What it does                                                                                          |
 | --------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `info [-e] <file>`          | Header fields, security info, optional-header dump. `-e` for extended output.                         |
+| `info [-e] <file>`          | Header fields, execution info, resources, import libraries. `-e` adds optional headers and security info. |
 | `basefile <file> [-o OUT]`  | Extract the decrypted, decompressed PE payload.                                                       |
 | `resources <file> [-o DIR]` | Write every XEX resource to `DIR` (defaults to `.`).                                                  |
-| `imports <file>`            | List import libraries and their imported ordinals / names.                                            |
+| `imports <file>`            | List import libraries with their versions and raw IAT / thunk address pairs.                          |
 | `idc <file> [-o OUT]`       | Generate an IDA Pro IDC script to import symbols into a disassembly.                                  |
 | `xml <file>`                | Dump XEX metadata as XML (matches the legacy `xextool` layout).                                       |
-| `patch <file> [flags]`      | Modify the XEX: compression mode, encryption, target machine, restrictions, delta patches. See below. |
+| `patch <file> [flags]`      | Modify the XEX: compression mode, encryption, target machine, restrictions. See below.                |
 
 `info` and `imports` accept `-f json` (global flag) to emit JSON
 instead of formatted tables, for scripting. The other subcommands ignore
@@ -54,9 +52,6 @@ xex2ool patch game.xex --retail -o game-retail.xex
 xex2ool patch game.xex --encrypt
 xex2ool patch game.xex --decrypt
 
-# Apply a delta-patch XEX (.xexp) and emit a merged standalone XEX
-xex2ool patch original.xex --apply-patch patch.xexp --merge-patch -o merged.xex
-
 # Generate an IDA Pro script next to the file
 xex2ool idc game.xex
 ```
@@ -81,27 +76,29 @@ everything at once.
 | `-z`, `--zero-media-id`  | Zero the media ID field                |
 | `-a`, `--all`            | All of the above                       |
 
-Because re-signing is handled by the embedded `xex2` crate, the output
-round-trips through a real Xbox 360 signature chain and remains a valid
-XEX.
+`xex2` recomputes the affected hashes and re-signs the security info
+with the devkit key. The output loads on devkits and on consoles that
+accept devkit-signed XEXs; retail consoles reject the signature.
 
 ## Compression modes
 
-`xex2ool patch` supports switching between LZX's three XEX compression
-modes. These are mutually exclusive:
+`xex2ool patch` can switch a XEX between uncompressed and Normal (LZX)
+compression. These flags are mutually exclusive:
 
 | Flag               | Meaning                                                                   |
 | ------------------ | ------------------------------------------------------------------------- |
 | `--compress`       | Normal (LZX) compression, via the `lzxc` encoder.                         |
-| `--decompress`     | No compression — emit the PE image verbatim.                              |
-| `--basic-compress` | Basic compression (zero-padded raw blocks); not recommended for shipping. |
+| `--decompress`     | No compression; emit the PE image verbatim.                                |
+| `--basic-compress` | Basic compression (zero-padded raw blocks). Not implemented; fails.       |
 
 ## Output formats
 
 - Default: human-readable tables (`tabled`) for `info`, `imports`.
 - `--format json` (or `-f json`): structured JSON, suitable for piping
-  into `jq` or other tools. The JSON shape mirrors the `serde`
-  representation of the `xex2` types.
+  into `jq` or other tools. `imports` emits the `serde` form of
+  `xex2::imports::ImportTable`. `info` emits an object of selected fields
+  whose nested values (execution info, TLS, resources, security info) use
+  the `serde` form of the `xex2` types.
 - `xml`: emits the legacy `xextool` XML layout, for drop-in compatibility
   with existing RE workflows.
 

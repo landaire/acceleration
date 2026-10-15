@@ -8,8 +8,9 @@
 //!
 //! # Features
 //!
-//! - `jiff` (default off) -- enables [`filetime_to_timestamp`] for converting
-//!   Windows FILETIME values to `jiff::Timestamp`.
+//! - `jiff` (default off): enables `filetime_to_timestamp` and
+//!   `timestamp_to_filetime` for converting between Windows FILETIME values
+//!   and `jiff::Timestamp`.
 
 mod serde_hex;
 
@@ -26,10 +27,10 @@ use serde::Serializer;
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TitleId(pub u32);
 
-/// Per-installation media identifier (32-bit).
+/// Media identifier (32-bit).
 ///
-/// Unique per copy of a game -- two physical copies of the same title have
-/// different media IDs. Used for anti-piracy checks.
+/// Identifies the disc or media build a title or content package belongs
+/// to. XEX execution info and XContent headers both carry it.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaId(pub u32);
 
@@ -322,11 +323,8 @@ impl<'de> Deserialize<'de> for GameRegion {
 	}
 }
 
-/// Windows FILETIME: 100-nanosecond intervals since 1601-01-01 00:00:00 UTC.
-///
-/// The Xbox 360 stores FILETIME values with each u32 half in little-endian
-/// byte order, arranged as (high, low). Use [`filetime_from_xe_bytes`] to
-/// decode from raw XEX header bytes.
+/// Number of FILETIME ticks (100 ns intervals since 1601-01-01 00:00:00 UTC)
+/// at the Unix epoch, 1970-01-01 00:00:00 UTC.
 pub const FILETIME_UNIX_EPOCH_DELTA: u64 = 116_444_736_000_000_000;
 
 /// Decode a FILETIME from Xbox 360 on-disk format: two little-endian u32s

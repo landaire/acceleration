@@ -1,12 +1,14 @@
 //! Plan in-place modifications to an XEX file as a [`Patch`].
 //!
-//! This module handles the small-edit branch of the modification story:
-//! flipping ImageInfo bits, zeroing media_id, and re-signing. The edits are
-//! length-preserving and local to SecurityInfo, so they're expressed as a
-//! [`Patch`] of [`PatchOp::Write`][crate::patch::PatchOp::Write] ops.
+//! This module handles length-preserving edits: ImageInfo and module flags,
+//! media_id, optional-header blobs (date range, import libraries), encryption
+//! and retail/devkit file-key changes, and in-place PE replacement on
+//! uncompressed sources, followed by hash recomputation and devkit re-signing.
+//! The edits are expressed as a [`Patch`] of
+//! [`PatchOp::Write`][crate::patch::PatchOp::Write] ops.
 //!
-//! For full rebuilds (recompression, re-encryption, replacing the inner PE),
-//! see [`crate::rebuild::Rebuilder`].
+//! Changes that alter file length (compression changes) go through
+//! [`crate::rebuild::Rebuilder`].
 //!
 //! # Example
 //!
@@ -236,9 +238,9 @@ pub(crate) struct EditPlan {
 	/// Target encryption state. `None` = keep current. If the request matches
 	/// the current `file_format_info.encryption_type`, the transform is a no-op.
 	pub target_encryption: Option<TargetEncryption>,
-	/// Replace the inner PE image with these bytes. Requires the source XEX
-	/// to be uncompressed (`CompressionType::None`) and the replacement PE to
-	/// fit within `image_size`; otherwise the rebuild fails. Triggers
+	/// Replace the inner PE image with these bytes. `plan_edits` handles only
+	/// uncompressed sources (`CompressionType::None`); `Rebuilder` routes
+	/// compressed sources through `assemble`. Triggers
 	/// regeneration of page descriptors and `image_hash` using the kernel-
 	/// verified chain formula in [`crate::page_descriptors`].
 	pub replace_pe: Option<Vec<u8>>,
@@ -494,8 +496,8 @@ fn apply_blob_edits_and_rehash(
 
 /// Replace the PE image and regenerate page descriptors + image_hash.
 ///
-/// Requires the source XEX to be uncompressed + unencrypted, since we only
-/// rewrite data bytes verbatim. Attempts to preserve the existing
+/// Requires the source XEX to be uncompressed, and either unencrypted or
+/// decrypted by this plan, since we only rewrite data bytes verbatim. Attempts to preserve the existing
 /// descriptor grouping as a template so the new table has the same shape.
 fn apply_pe_replacement(
 	xex: &Xex2,

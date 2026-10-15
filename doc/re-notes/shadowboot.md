@@ -87,10 +87,10 @@ The source compressor produced a `0xb7f84`-byte SE stage. Acceleration's valid L
 
 ## Live kernel and hypervisor-alias acquisition
 
-The mapped `xboxkrnl.exe` range was read in `0x1000`-byte XBDM `getmem` requests by the read-only xeedee command:
+The mapped `xboxkrnl.exe` range was read in `0x1000`-byte XBDM `getmem` requests by the read-only openxbdm command:
 
 ```text
-xeedee --host deanxbox --no-progress dump-module xboxkrnl.exe /tmp/xboxkrnl.exe
+openxbdm --host deanxbox --no-progress dump-module xboxkrnl.exe /tmp/xboxkrnl.exe
 ```
 
 - Base `0x80040000`.
@@ -144,7 +144,7 @@ The digest is RotSumSha (console borrow rule) over `SE[0..0x10]` and the RC4-dec
 
 ### `host:\` namespace
 
-`host:\` is not a disk partition or a normal XBDM drive mapping. The live development console returned `SysCache0`, `SysCache1`, `SysCache2`, `E`, `DEVKIT`, `HDD`, `MUINT`, `INTUSB` from `drivelist`; it did not return `HOST`. The kernel lists `host:\xboxromw2d.bin` separately from the native `\Device\...` candidates and contains `host:` beside debug-loader `LDRX` diagnostics. This identifies it as a debugger-backed development-host namespace. The early-boot transport and host service protocol remain unknown.
+`host:\` is not a disk partition or a normal XBDM drive mapping. The live development console returned `SysCache0`, `SysCache1`, `SysCache2`, `E`, `DEVKIT`, `HDD`, `MUINT`, `INTUSB` from `drivelist`; it did not return `HOST`. It is the kernel debugger's host file namespace: with a kd host attached over kdnet, the kernel sends open, read, and close requests for `host:` paths as kd host file I/O packets (type `0xb`), and without one the open fails with `0xc0000354` before anything is sent. The openxbdm repository records the packet format in `docs/re-notes/kd.md`. A stock build 16547 boot with a host attached requests `host:\xboxromw2d.bin` from `0x80081348`; the shadowboot loader `0x80081168` allocates from the file size in the host's open reply. Serving a shadowboot image through the host has not been tested.
 
 ### Retail boundary
 

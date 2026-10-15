@@ -156,11 +156,11 @@ enum Commands {
 		#[arg(short, long)]
 		output: Option<PathBuf>,
 
-		/// Apply a delta patch (.xexp) file
+		/// Apply a delta patch (.xexp) file (not implemented; fails)
 		#[arg(long)]
 		apply_patch: Option<PathBuf>,
 
-		/// Merge patch into standalone XEX
+		/// Merge patch into standalone XEX (not implemented; fails)
 		#[arg(long, requires = "apply_patch")]
 		merge_patch: bool,
 
@@ -188,7 +188,7 @@ enum Commands {
 		#[arg(long, conflicts_with_all = ["compress", "basic_compress"])]
 		decompress: bool,
 
-		/// Use basic compression (zero-padded blocks)
+		/// Use basic compression (zero-padded blocks; not implemented, fails)
 		#[arg(long, conflicts_with_all = ["compress", "decompress"])]
 		basic_compress: bool,
 

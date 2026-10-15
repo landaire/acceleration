@@ -1,3 +1,3 @@
 This folder contains the files required for the web app.
 
-The reason the folder is called "docs" is because that is the name that GitHub requires in order to host a web page from the `master` branch of a repository. You can test the `eframe_template` at <https://emilk.github.io/eframe_template/>.
+It holds index.html, sw.js, manifest.json, the icons, and the wasm-bindgen output written by ../build_web.sh. The web build does not currently compile; see ../README.md.

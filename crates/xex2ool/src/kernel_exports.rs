@@ -1,8 +1,7 @@
 //! Lookup table mapping Xbox 360 kernel export ordinals to function names.
 //!
-//! Reference table kept on-hand for future `imports` / `idc` output; the
-//! entries aren't all wired up to call sites yet, but we don't want to
-//! recompile it back from RE notes every time we need one.
+//! Reference table kept on hand for future `imports` / `idc` output. No
+//! code calls it yet.
 #![allow(dead_code)]
 
 /// Look up the name of a kernel function by its ordinal.

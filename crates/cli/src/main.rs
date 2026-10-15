@@ -17,7 +17,7 @@ use xcontent::xecrypt::XContentKeyMaterial;
 #[derive(Debug, Subcommand)]
 enum Commands {
 	Info {
-		/// Show additional header information
+		/// Has no effect
 		#[arg(short, long)]
 		long: bool,
 		#[arg(long)]
@@ -27,16 +27,16 @@ enum Commands {
 	},
 	/// Lists files
 	List {
-		/// Present an ASCII tree view of the files
+		/// Present a tree view of the files, drawn with Unicode box-drawing characters
 		#[arg(short, long)]
 		tree: bool,
-		/// Show extra information about the files
+		/// Has no effect; the flat listing always shows size and dates
 		#[arg(short, long)]
 		long: bool,
-		/// Recurse into child directories
+		/// Has no effect; --tree always recurses and the flat listing shows only root entries
 		#[arg(short, long)]
 		recursive: bool,
-		/// Path to print information about
+		/// Directory to start the --tree view from (ignored without --tree)
 		path: Option<String>,
 	},
 	Extract {
@@ -101,9 +101,9 @@ fn main() -> anyhow::Result<()> {
 			"{: <padding$} {}",
 			"Hash Valid:",
 			if let Ok(console_kind) = signature_verification {
-				format!("✅ ({:?})", console_kind)
+				format!("\u{2705} ({:?})", console_kind)
 			} else {
-				"❌".to_string()
+				"\u{274c}".to_string()
 			},
 			padding = GENERAL_PADDING,
 		);
@@ -291,12 +291,12 @@ fn main() -> anyhow::Result<()> {
 					let mut first = true;
 					while let Some(child) = children.pop() {
 						let tree_char = if children.is_empty() {
-							"└──"
+							"\u{2514}\u{2500}\u{2500}"
 						} else if first {
 							first = false;
-							"├──"
+							"\u{251c}\u{2500}\u{2500}"
 						} else {
-							"├──"
+							"\u{251c}\u{2500}\u{2500}"
 						};
 
 						let children = tree.remove(child.as_str());

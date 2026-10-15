@@ -1,7 +1,10 @@
 //! Hot loop for profiling. Generates synthetic binary-shaped data on the
 //! fly, so no external file is required.
 //!
-//! Run with: `cargo instruments --release --example profile_compress -t "Time Profiler"`
+//! Run with `cargo run --release -p lzxc --example profile_compress` under any
+//! profiler (on macOS: `cargo instruments --release --example profile_compress
+//! -t "Time Profiler"`). `ITERS` (default 20) and `BYTES` (default 3145728)
+//! set the iteration count and input size.
 
 use lzxc::Encoder;
 use lzxc::MAX_CHUNK_SIZE;
