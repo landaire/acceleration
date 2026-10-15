@@ -1,7 +1,10 @@
-# The crate ships the import library that the windows crates link against;
-# its build script only adds the directory to the link search path.
+# The crate holds the import library that windows-targets names in its
+# #[link] attributes. Its build script only adds the crate's lib directory to
+# the search path, and Buck2 drops a search path outside the build script's
+# OUT_DIR, so the directory goes to the linker of every executable that links
+# the crate instead. Each version in third-party/rust/BUCK needs a section
+# that names its archive.
 buildscript.run = false
 
-[[prebuilt_cxx_library]]
-name = "windows"
-static_libs = ["lib/*.lib"]
+['cfg(version = "=0.48.5")']
+linker_flags = ["/LIBPATH:$(location :windows_x86_64_msvc-0.48.5.crate)/lib"]

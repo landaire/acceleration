@@ -24082,7 +24082,6 @@ cargo.http_archive(
     name = "windows_x86_64_msvc-0.48.5.crate",
     sha256 = "ed94fce61571a4006852b7389a063ab983c02eb1bb37b47f8272ce92d06d9538",
     strip_prefix = "windows_x86_64_msvc-0.48.5",
-    sub_targets = ["lib/windows.0.48.5.lib"],
     urls = ["https://static.crates.io/crates/windows_x86_64_msvc/0.48.5/download"],
     visibility = [],
 )
@@ -24110,19 +24109,10 @@ cargo.rust_library(
         "CARGO_PKG_VERSION_PATCH": "5",
         "CARGO_PKG_VERSION_PRE": "",
     },
+    linker_flags = ["/LIBPATH:$(location :windows_x86_64_msvc-0.48.5.crate)/lib"],
     platform = {
         "windows-msvc": dict(),
     },
-    visibility = [],
-    deps = [":windows_x86_64_msvc-0.48-windows-windows.0.48.5.lib"],
-)
-
-cargo.prebuilt_cxx_library(
-    name = "windows_x86_64_msvc-0.48-windows-windows.0.48.5.lib",
-    platform = {
-        "windows-msvc": dict(),
-    },
-    static_lib = ":windows_x86_64_msvc-0.48.5.crate[lib/windows.0.48.5.lib]",
     visibility = [],
 )
 

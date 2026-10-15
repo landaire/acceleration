@@ -41,8 +41,18 @@ def _platform_gated(name: str, kwargs: dict) -> dict:
     return kwargs | {"compatible_with": [_PLATFORM_OS[platform] for platform in sorted(platforms)]}
 
 def _rust_library(name: str, **kwargs):
-    # Proc macros are not limited: they run on the execution platform, and
-    # the prelude configures them where no target platform applies.
+    # A fixup's linker_flags are meant for the executables that link the
+    # crate; the prelude passes only exported_linker_flags to them.
+    if "linker_flags" in kwargs:
+        kwargs["exported_linker_flags"] = kwargs.pop("linker_flags")
+    for platform, attrs in kwargs.get("platform", {}).items():
+        if "linker_flags" in attrs:
+            fail("{}: platform {} sets linker_flags; set them for all platforms".format(name, platform))
+
+    # Proc macros are not limited: the prelude wraps each in an alias that
+    # takes no compatibility attributes, and an alias of a limited macro fails
+    # analysis on other hosts. A macro that only another host uses is
+    # outside the graph of //crates/... on this host.
     if not kwargs.get("proc_macro"):
         kwargs = _platform_gated(name, kwargs)
     _cargo.rust_library(name = name, **kwargs)
