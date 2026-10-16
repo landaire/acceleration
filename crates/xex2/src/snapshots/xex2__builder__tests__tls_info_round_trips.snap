@@ -1,0 +1,12 @@
+---
+source: crates/xex2/src/builder.rs
+expression: "format!(\"{index}\\n\\nTlsInfo blob: {words}\")"
+---
+0x000003ff FileFormatInfo: 16 bytes
+0x00010100 EntryPoint: inline 0x82001000
+0x00010201 ImageBaseAddress: inline 0x82000000
+0x000103ff ImportLibraries: 12 bytes
+0x00020104 TlsInfo: 16 bytes
+0x00040006 ExecutionInfo: 24 bytes
+
+TlsInfo blob: 00000040 82001000 00000020 00000010

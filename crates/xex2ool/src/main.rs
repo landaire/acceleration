@@ -521,7 +521,7 @@ fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
 		info.insert("bounding_path".into(), serde_json::to_value(path)?);
 	}
 	if let Some(tls) = header.tls_info() {
-		info.insert("tls_info".into(), serde_json::to_value(&tls)?);
+		info.insert("tls_info".into(), serde_json::to_value(tls)?);
 	}
 	if let Some(res) = header.resource_info() {
 		info.insert("resources".into(), serde_json::to_value(&res)?);

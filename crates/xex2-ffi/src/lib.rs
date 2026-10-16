@@ -193,13 +193,12 @@ mod ffi {
 				.ok_or_else(|| Box::new(Xex2Error("no DefaultHeapSize optional header".into())))
 		}
 
-		/// `DefaultFsCacheSize` optional header. Always returns an error: the key's
-		/// size class parses as a data blob, not an inline value.
+		/// `DefaultFsCacheSize` optional header, if present.
 		pub fn default_fs_cache_size(&self) -> Result<u32, Box<Xex2Error>> {
 			self.0
 				.parsed
 				.header
-				.get_optional_inline(xex2::header::OptionalHeaderKey::DefaultFsCacheSize)
+				.default_fs_cache_size()
 				.ok_or_else(|| Box::new(Xex2Error("no DefaultFsCacheSize optional header".into())))
 		}
 

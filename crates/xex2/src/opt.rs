@@ -53,13 +53,27 @@ macro_rules! impl_bitflags_serialize {
 	};
 }
 
-#[derive(Debug)]
+/// `TlsInfo` optional header: a fixed 16-byte record with no size prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct TlsInfo {
 	pub slot_count: u32,
 	pub raw_data_address: u32,
 	pub data_size: u32,
 	pub raw_data_size: u32,
+}
+
+impl TlsInfo {
+	pub(crate) const SIZE: usize = 16;
+
+	pub(crate) fn to_bytes(self) -> [u8; Self::SIZE] {
+		let mut out = [0u8; Self::SIZE];
+		out[0..4].copy_from_slice(&self.slot_count.to_be_bytes());
+		out[4..8].copy_from_slice(&self.raw_data_address.to_be_bytes());
+		out[8..12].copy_from_slice(&self.data_size.to_be_bytes());
+		out[12..16].copy_from_slice(&self.raw_data_size.to_be_bytes());
+		out
+	}
 }
 
 #[derive(Debug)]
@@ -593,11 +607,7 @@ pub struct PageHeapOptions {
 impl Xex2Header {
 	pub fn tls_info(&self) -> Option<TlsInfo> {
 		let data = self.get_optional_data(OptionalHeaderKey::TlsInfo)?;
-		if data.len() < 20 {
-			return None;
-		}
-		let mut c = Cursor::new(data);
-		let _size = c.read_u32::<BigEndian>().ok()?;
+		let mut c = Cursor::new(data.get(..TlsInfo::SIZE)?);
 		Some(TlsInfo {
 			slot_count: c.read_u32::<BigEndian>().ok()?,
 			raw_data_address: c.read_u32::<BigEndian>().ok()?,
@@ -701,13 +711,7 @@ impl Xex2Header {
 	}
 
 	pub fn default_fs_cache_size(&self) -> Option<u32> {
-		let data = self.get_optional_data(OptionalHeaderKey::DefaultFsCacheSize)?;
-		if data.len() < 8 {
-			return None;
-		}
-		let mut c = Cursor::new(data);
-		let _size = c.read_u32::<BigEndian>().ok()?;
-		c.read_u32::<BigEndian>().ok()
+		self.get_optional_inline(OptionalHeaderKey::DefaultFsCacheSize)
 	}
 
 	pub fn default_heap_size(&self) -> Option<u32> {

@@ -31,6 +31,7 @@ use crate::imports::ImportLibrary;
 use crate::imports::serialize_import_libraries;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
+use crate::opt::TlsInfo;
 use crate::page_descriptors;
 use crate::page_descriptors::SectionType;
 use byteorder::BigEndian;
@@ -77,6 +78,7 @@ pub struct Xex2Builder {
 	imports: Vec<ImportLibrary>,
 	bounding_path: Option<BoundingPath>,
 	export_table: Option<VirtualAddress>,
+	tls_info: Option<TlsInfo>,
 }
 
 /// Resolved device path the loaded file must match. On a flash `\SystemRoot`
@@ -117,6 +119,7 @@ impl Xex2Builder {
 			imports: Vec::new(),
 			bounding_path: None,
 			export_table: None,
+			tls_info: None,
 		}
 	}
 
@@ -129,6 +132,13 @@ impl Xex2Builder {
 	/// Record the address of the in-image export table in the security info.
 	pub fn export_table(mut self, addr: VirtualAddress) -> Self {
 		self.export_table = Some(addr);
+		self
+	}
+
+	/// Emit a `TlsInfo` optional header. The kernel sizes the per-thread TLS
+	/// slot array from `slot_count`; without the header a title has no slots.
+	pub fn tls_info(mut self, tls: TlsInfo) -> Self {
+		self.tls_info = Some(tls);
 		self
 	}
 
@@ -216,6 +226,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// - 0x00010100 EntryPoint (inline u32) -- if provided
 	// - 0x00010201 ImageBaseAddress (inline u32)
 	// - 0x000103FF ImportLibraries (variable)
+	// - 0x00020104 TlsInfo (0x10 bytes of data) -- if provided
 	// - 0x00040006 ExecutionInfo (0x18 bytes of data)
 	//
 	// Each entry is keyed by (key_u32, value_u32). The low byte of the key
@@ -252,7 +263,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// Compute file layout:
 	//   0x00..0x18: main header
 	//   0x18..:     optional header index (8 bytes per entry)
-	//   data blobs: ExecutionInfo, ImportLibraries, FileFormatInfo
+	//   data blobs: BoundingPath, ExecutionInfo, ImportLibraries, FileFormatInfo, TlsInfo
 	//   security_info
 	//   pad to page_align
 	//   PE data
@@ -261,7 +272,8 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 
 	// Calculate where blobs will land. Start placing them right after the
 	// optional-header index.
-	let entry_count = 4 + b.entry_point.is_some() as usize + b.bounding_path.is_some() as usize;
+	let entry_count =
+		4 + b.entry_point.is_some() as usize + b.bounding_path.is_some() as usize + b.tls_info.is_some() as usize;
 	let mut cursor = OPT_INDEX_START + entry_count * 8;
 
 	// BoundingPath: u32 blob size, NUL-terminated path, zero padding.
@@ -293,12 +305,19 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	cursor += file_format.len();
 	cursor = align_up(cursor, 4);
 
+	if let Some(tls) = b.tls_info {
+		entries.push(OptEntry::Data { key: OptionalHeaderKey::TlsInfo as u32, offset: cursor as u32 });
+		blob_bytes.push(BlobPlacement { offset: cursor, bytes: tls.to_bytes().to_vec() });
+		cursor += TlsInfo::SIZE;
+	}
+
 	// EntryPoint: inline value.
 	if let Some(entry) = b.entry_point {
 		entries.push(OptEntry::Inline { key: OptionalHeaderKey::EntryPoint as u32, value: entry.0 });
 	}
 	entries.push(OptEntry::Inline { key: OptionalHeaderKey::ImageBaseAddress as u32, value: b.load_address.0 });
-	// The console loader expects the index in ascending key order.
+	// The kernel looks keys up with a binary search, so the index must be in
+	// ascending key order.
 	entries.sort_by_key(|entry| match *entry {
 		OptEntry::Inline { key, .. } | OptEntry::Data { key, .. } => key,
 	});
@@ -654,6 +673,7 @@ fn file_format_info_basic(encryption: EncryptionType, runs: &[BasicRun]) -> Vec<
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::header::OptionalHeaderValue;
 
 	/// Build a little-endian PE that populates only the header fields
 	/// [`page_section_types`] reads. Each section is `(virtual_address,
@@ -737,6 +757,50 @@ mod tests {
 			.unwrap();
 		let parsed = crate::Xex2::parse(&xex).unwrap();
 		assert_eq!(parsed.security_info.image_info.export_table_address, 0x91f01800);
+	}
+
+	#[test]
+	fn tls_info_round_trips() {
+		let mut pe = synthetic_pe(&[(0x1000, 0x1000, SCN_MEM_EXECUTE)]);
+		pe.resize(0x2000, 0);
+		let tls = TlsInfo { slot_count: 64, raw_data_address: 0x82001000, data_size: 0x20, raw_data_size: 0x10 };
+		let xex = Xex2Builder::new(pe)
+			.load_address(VirtualAddress(0x82000000))
+			.entry_point(VirtualAddress(0x82001000))
+			.image_flags(ImageFlags::SMALL_PAGES)
+			.tls_info(tls)
+			.build()
+			.unwrap();
+		let parsed = crate::Xex2::parse(&xex).unwrap();
+		assert_eq!(parsed.header.tls_info(), Some(tls));
+
+		// Index entries in file order, as the kernel's binary search sees them.
+		let index = (0..parsed.header.optional_header_count as usize)
+			.map(|i| {
+				let off = OPT_INDEX_START + i * 8;
+				let key = BigEndian::read_u32(&xex[off..off + 4]);
+				let name = OptionalHeaderKey::from_u32(key).map_or_else(|| "Unknown".to_owned(), |k| k.to_string());
+				let value = match &parsed.header.optional_headers[&key] {
+					OptionalHeaderValue::Inline(v) => format!("inline {v:#010x}"),
+					OptionalHeaderValue::Data(bytes) => format!("{} bytes", bytes.len()),
+				};
+				format!("{key:#010x} {name}: {value}")
+			})
+			.collect::<Vec<_>>()
+			.join("\n");
+		// The raw blob pins the field order the kernel reads.
+		let OptionalHeaderValue::Data(blob) = &parsed.header.optional_headers[&(OptionalHeaderKey::TlsInfo as u32)]
+		else {
+			panic!("TLS info is not a data blob");
+		};
+		let words = blob
+			.as_chunks::<4>()
+			.0
+			.iter()
+			.map(|word| format!("{:08x}", u32::from_be_bytes(*word)))
+			.collect::<Vec<_>>()
+			.join(" ");
+		insta::assert_snapshot!(format!("{index}\n\nTlsInfo blob: {words}"));
 	}
 
 	#[test]
