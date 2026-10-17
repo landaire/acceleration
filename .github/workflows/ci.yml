@@ -19,9 +19,6 @@ on:
 # Nix nor a bazel-remote build, so it runs bootstrap.ps1 and builds without
 # the action cache.
 
-env:
-  ACTION_CACHE_DIR: ${{ github.workspace }}/../buck2-action-cache
-
 jobs:
   unix:
     name: ${{ matrix.name }}
@@ -55,9 +52,13 @@ jobs:
 
       # Action keys cover the C compiler wrappers but not the compiler that
       # they run from PATH, so each runner image keeps its own cache.
+      # actions/cache rejects paths with `..`, and the directory stays
+      # outside the Buck2 project.
       - name: Name the action cache
         id: action-cache
-        run: echo "prefix=buck2-action-cache-$ImageOS-$ImageVersion-${{ runner.arch }}-" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "prefix=buck2-action-cache-$ImageOS-$ImageVersion-${{ runner.arch }}-" >> "$GITHUB_OUTPUT"
+          echo "ACTION_CACHE_DIR=$RUNNER_TEMP/buck2-action-cache" >> "$GITHUB_ENV"
 
       - name: Restore the Buck2 action cache
         uses: actions/cache/restore@v4
