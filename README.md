@@ -1,6 +1,14 @@
 # acceleration
 
-Libraries / utilities for Xbox 360 file formats.
+Libraries and tools for Xbox 360 file formats.
+
+## tl;dr
+
+- Parse, rebuild, convert and sign XEX2 executables with the `xex2` crate or the `xex2ool` CLI.
+- Compress with LZX (`lzxc`), and use the kernel's AES, RSA and RotSumSha primitives (`xecrypt`).
+- Read STFS packages (CON/LIVE/PIRS) and browse them as a filesystem (`xcontent`, `stfs`).
+- Inspect devkit flash captures and compile deanxbox shadowboot images (`xflash`, `shadowboot`).
+- Prebuilt executables for Linux, macOS and Windows on every release, a Nix flake, and `cargo install` for the published tools.
 
 ## Crates
 
@@ -18,17 +26,11 @@ Libraries / utilities for Xbox 360 file formats.
 
 ## Executables
 
-Each [GitHub release](https://github.com/landaire/acceleration/releases) has
-an archive for Linux x86_64, macOS arm64 and Windows x86_64 with
-`acceleration`, `acceleration_ui`, `xex2ool`, `xflash` and `shadowboot`. The
-published tools also install from crates.io, for example
-`cargo install xex2ool`.
+Each [GitHub release](https://github.com/landaire/acceleration/releases) has an archive for Linux x86_64, macOS arm64 and Windows x86_64 with `acceleration`, `acceleration_ui`, `xex2ool`, `xflash` and `shadowboot`. The published tools also install from crates.io, for example `cargo install xex2ool`.
 
 ### Nix
 
-The flake builds `acceleration`, `xex2ool`, `xflash` and `shadowboot` from
-source on x86_64 and aarch64 Linux and on macOS arm64. The package of each
-tool has its name; `default` has all four.
+The flake builds `acceleration`, `xex2ool`, `xflash` and `shadowboot` from source on x86_64 and aarch64 Linux and on macOS arm64. The package of each tool has its name; `default` has all four.
 
 Run one tool:
 
@@ -79,8 +81,7 @@ xex2ool patch game.xex --encrypt    --output game-encrypted.xex
 xex2ool patch game.xex --devkit     --output game-devkit.xex
 ```
 
-Per-field edits are exposed as flags; see `xex2ool patch --help` for the
-full list (region, media, bounding-path removal, date range, etc.).
+Per-field edits are exposed as flags; see `xex2ool patch --help` for the full list (region, media, bounding-path removal, date range, etc.).
 
 ## Flash and shadowboot tools
 
@@ -102,31 +103,25 @@ shadowboot \
 
 See [`crates/shadowboot/README.md`](crates/shadowboot/README.md) for the layer contract and [`doc/re-notes`](doc/re-notes/) for the verified deanxbox format record.
 
+## Releases
+
+A `vX.Y.Z` tag that names the workspace version publishes a GitHub release with the archives. Every day the `nightly` pre-release is rebuilt from the default branch when the branch has changed since the last one. Its archives are named `acceleration-nightly-<target>`.
+
 ## Building
 
-Buck2 builds, tests and lints the workspace on Linux x86_64, macOS arm64
-and Windows x86_64. It downloads the Rust release that `rust-toolchain.toml`
-names, a pinned nightly rustfmt, and a Python interpreter. The host
-provides the C and C++ compiler drivers, which also link: `cc`, `c++` and
-`ar` on Linux, Xcode's `clang` and `clang++` on macOS, and the Visual Studio
-build tools on Windows.
+[Buck2](https://buck2.build/) builds, tests and lints the workspace on Linux x86_64, macOS arm64 and Windows x86_64. You don't need to install it. Run `bin/buck2` (`bin\buck2.cmd` on Windows) wherever this file says `buck2`, or add `bin` to your `PATH`. The first run downloads [DotSlash](https://dotslash-cli.com) and the Buck2 release that `toolchains/buck2` pins into `.tools`. Buck2 then downloads the Rust release that `rust-toolchain.toml` names, a pinned nightly rustfmt, a Python interpreter, and every crate it needs.
 
-Each workspace crate has a generated `crates/<name>/BUCK`; the crates.io
-dependencies are in the generated `third-party/rust/BUCK`. Cargo.toml stays
-the description of every crate, and Cargo only resolves the workspace when
-the build files are regenerated. A crate with optional features also has
-`-all-features` variants of its library and binaries, so that builds and
-lints cover the optional code.
+You do need a few host tools:
 
-With [devenv](https://devenv.sh), `devenv shell` provides Buck2, reindeer,
-Python, and the same Rust release for Cargo and rust-analyzer; the C
-compiler stays the host's. Without devenv, install:
+- The C and C++ compiler drivers, which also link: `cc`, `c++` and `ar` on Linux, Xcode's `clang` and `clang++` on macOS, or Visual Studio Build Tools with the C++ workload on Windows.
+- `curl`.
+- Python 3.11 or later for the `build_defs` scripts.
+- rustup, only to build with Cargo.
+- [reindeer](https://github.com/facebookincubator/reindeer), only to regenerate the build files after you change a `Cargo.toml`.
 
-- Buck2, the release that `toolchains/buck2_release.json` names. The test
-  rules require that release or a later one.
-- Python 3.11 or later.
-- rustup, which installs the release that `rust-toolchain.toml` names, and
-  [reindeer](https://github.com/facebookincubator/reindeer).
+`./bootstrap.sh` (`bootstrap.ps1` on Windows) does the first-run setup by hand and lists any host tools it can't find.
+
+With [devenv](https://devenv.sh), `devenv shell` provides Buck2, reindeer, Python, and the same Rust release for Cargo and rust-analyzer; the C compiler stays the host's.
 
 | Command | Purpose |
 | --- | --- |
@@ -140,18 +135,12 @@ compiler stays the host's. Without devenv, install:
 | `build_defs/update_buck_files.py` | Regenerate the build files after a change to a `Cargo.toml` or `Cargo.lock`. |
 | `toolchains/update_rust_release.py` | Regenerate `toolchains/rust_release.bzl` after a change to the channel in `rust-toolchain.toml` or to `RUSTFMT_NIGHTLY` in the script. |
 
-Buck2 builds no benchmarks; `cargo bench -p lzxc` runs them. The Python
-bindings build with Cargo; see [`bindings/python`](bindings/python/).
+Each workspace crate has a generated `crates/<name>/BUCK`, and the crates.io dependencies are in the generated `third-party/rust/BUCK`. `Cargo.toml` stays the description of every crate. A crate with optional features also has `-all-features` variants of its library and binaries, so builds and lints cover the optional code.
 
-## Releases
+Buck2 builds no benchmarks; `cargo bench -p lzxc` runs them. The Python bindings build with Cargo; see [`bindings/python`](bindings/python/).
 
-A `vX.Y.Z` tag that names the workspace version publishes a GitHub release
-with the archives. Every day the `nightly` pre-release is rebuilt from the
-default branch when the branch has changed since the last one; its archives
-are named `acceleration-nightly-<target>`.
+To move to another Buck2 release, replace `toolchains/buck2` with the `buck2` DotSlash file of that release, `https://github.com/facebook/buck2/releases/download/<tag>/buck2`. To move to another DotSlash release, change the version and SHA-256 values in both bootstrap scripts and run them again.
 
 ## License
 
-Licensed under either of Apache License, Version 2.0
-([LICENSE-APACHE](LICENSE-APACHE)) or MIT license
-([LICENSE-MIT](LICENSE-MIT)) at your option.
+Licensed under either of Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE)) or MIT license ([LICENSE-MIT](LICENSE-MIT)) at your option.
