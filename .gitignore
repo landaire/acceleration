@@ -14,6 +14,8 @@ bindings/python/uv.lock
 bindings/python/.pytest_cache/
 **/__pycache__/
 /.buckconfig.local
+# DotSlash and the Buck2 it fetches (bootstrap.sh, bootstrap.ps1).
+/.tools
 /.devenv
 /.devenv.flake.nix
 /devenv.local.nix

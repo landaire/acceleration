@@ -10,12 +10,14 @@ on:
 # Cargo only resolves the workspace for reindeer and
 # build_defs/update_buck_files.py.
 #
-# On Linux and macOS, the devenv `ci` profile provides Buck2, reindeer,
-# Cargo, Python and bazel-remote, and Cachix holds the Nix store paths.
-# bazel-remote serves Buck2's action cache from a directory that
-# actions/cache keeps between runs; runs on main save it, and pull requests
-# read the latest one. Windows has neither Nix nor a bazel-remote build, so
-# it installs Buck2 directly and builds without the action cache.
+# Every platform runs Buck2 through bin/buck2, which fetches the release
+# that toolchains/buck2 pins with DotSlash. On Linux and macOS, the devenv
+# `ci` profile provides reindeer, Cargo, Python and bazel-remote, and
+# Cachix holds the Nix store paths. bazel-remote serves Buck2's action
+# cache from a directory that actions/cache keeps between runs; runs on
+# main save it, and pull requests read the latest one. Windows has neither
+# Nix nor a bazel-remote build, so it runs bootstrap.ps1 and builds without
+# the action cache.
 
 env:
   ACTION_CACHE_DIR: ${{ github.workspace }}/../buck2-action-cache
@@ -104,13 +106,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Buck2
-        shell: pwsh
-        run: ./ci/install-buck2.ps1 -InstallDir C:\buck2
-
       - name: Copy the checkout to a short path
         shell: pwsh
-        run: ./ci/prepare-windows-runner.ps1 -Source $env:GITHUB_WORKSPACE -Destination C:\a -AlsoExclude C:\buck2
+        run: ./ci/prepare-windows-runner.ps1 -Source $env:GITHUB_WORKSPACE -Destination C:\a
+
+      - name: Install DotSlash and Buck2
+        shell: pwsh
+        working-directory: C:\a
+        run: |
+          ./bootstrap.ps1
+          Add-Content -Path $env:GITHUB_PATH -Value C:\a\bin
 
       - name: Build
         working-directory: C:\a

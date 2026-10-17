@@ -1,3 +1,7 @@
+# bin/buck2 runs the Buck2 release that toolchains/buck2 pins.
+[env]
+_.path = ["{{config_root}}/bin"]
+
 [tasks.build]
 description = "Builds the workspace crates with Buck2"
 run = "buck2 build //crates/..."

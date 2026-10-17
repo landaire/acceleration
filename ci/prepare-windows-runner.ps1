@@ -15,14 +15,13 @@ Prepares a GitHub-hosted Windows runner for Buck2 and copies the checkout to a s
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Source,
-    [Parameter(Mandatory = $true)][string]$Destination,
-    # Other directories to exclude from scanning, for example where Buck2 is installed.
-    [string[]]$AlsoExclude = @()
+    [Parameter(Mandatory = $true)][string]$Destination
 )
 
 $ErrorActionPreference = "Stop"
 
-$exclusions = @($Destination) + $AlsoExclude
+# Destination also holds .tools, where bootstrap.ps1 puts DotSlash and Buck2.
+$exclusions = @($Destination)
 if ($env:RUNNER_TEMP) {
     $exclusions += $env:RUNNER_TEMP
 }

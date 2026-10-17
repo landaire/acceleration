@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# The wrapper that runs the pinned Buck2 release.
+BUCK2 = ROOT / "bin" / ("buck2.cmd" if sys.platform == "win32" else "buck2")
 
 # Rules of the workspace crates, including their tests.
 WORKSPACE_TARGETS = 'kind("^rust_(library|binary|test)$", root//crates/...)'
@@ -78,7 +80,7 @@ def check_clippy(buck2_path):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--buck2", default="buck2", help="the buck2 executable")
+    parser.add_argument("--buck2", default=str(BUCK2), help="the buck2 executable (default: bin/buck2)")
     parser.add_argument("--format", action="store_true", help="rewrite the files with rustfmt instead of checking")
     args = parser.parse_args()
 

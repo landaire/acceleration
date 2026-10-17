@@ -23,4 +23,4 @@
   execution_platforms = prelude//platforms:default
 
 [project]
-  ignore = .git, .jj, buck-out, target, xex_files, bindings/python/.venv, bindings/python/build
+  ignore = .git, .jj, .tools, buck-out, target, xex_files, bindings/python/.venv, bindings/python/build

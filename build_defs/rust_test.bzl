@@ -2,7 +2,7 @@
 
 Each libtest case is listed and run in its own process, and Buck2 reports a
 result and duration for each case. This requires buck2 2026-10-01 or later;
-toolchains/buck2_release.json pins such a release.
+the DotSlash file toolchains/buck2 pins such a release.
 """
 
 load("@prelude//rules.bzl", "clone_rule")

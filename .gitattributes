@@ -1,0 +1,6 @@
+# The bootstrap scripts and the DotSlash file run on every platform: shell
+# scripts need LF and batch files CRLF, whatever core.autocrlf says.
+*.sh text eol=lf
+bin/buck2 text eol=lf
+toolchains/buck2 text eol=lf
+*.cmd -text

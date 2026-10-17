@@ -66,13 +66,14 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - name: Install Buck2
-        shell: pwsh
-        run: ./ci/install-buck2.ps1 -InstallDir C:\buck2
-
       - name: Copy the checkout to a short path
         shell: pwsh
-        run: ./ci/prepare-windows-runner.ps1 -Source $env:GITHUB_WORKSPACE -Destination C:\a -AlsoExclude C:\buck2
+        run: ./ci/prepare-windows-runner.ps1 -Source $env:GITHUB_WORKSPACE -Destination C:\a
+
+      - name: Install DotSlash and Buck2
+        shell: pwsh
+        working-directory: C:\a
+        run: ./bootstrap.ps1
 
       - name: Build and archive the executables
         shell: pwsh
