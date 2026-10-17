@@ -5,9 +5,10 @@ Libraries and tools for Xbox 360 file formats.
 ## tl;dr
 
 - Parse, rebuild, convert and sign XEX2 executables with the `xex2` crate or the `xex2ool` CLI.
-- Compress with LZX (`lzxc`), and use the kernel's AES, RSA and RotSumSha primitives (`xecrypt`).
+- Compress with LZX (`lzxc`)
+- Reimplement the kernel's AES, RSA and RotSumSha primitives (`xecrypt`).
 - Read STFS packages (CON/LIVE/PIRS) and browse them as a filesystem (`xcontent`, `stfs`).
-- Inspect devkit flash captures and compile deanxbox shadowboot images (`xflash`, `shadowboot`).
+- Inspect devkit flash captures and compile shadowboot images (`xflash`, `shadowboot`).
 - Prebuilt executables for Linux, macOS and Windows on every release, a Nix flake, and `cargo install` for the published tools.
 
 ## Crates
@@ -109,7 +110,9 @@ A `vX.Y.Z` tag that names the workspace version publishes a GitHub release with 
 
 ## Building
 
-[Buck2](https://buck2.build/) builds, tests and lints the workspace on Linux x86_64, macOS arm64 and Windows x86_64. You don't need to install it. Run `bin/buck2` (`bin\buck2.cmd` on Windows) wherever this file says `buck2`, or add `bin` to your `PATH`. The first run downloads [DotSlash](https://dotslash-cli.com) and the Buck2 release that `toolchains/buck2` pins into `.tools`. Buck2 then downloads the Rust release that `rust-toolchain.toml` names, a pinned nightly rustfmt, a Python interpreter, and every crate it needs.
+[Buck2](https://buck2.build/) builds, tests and lints the workspace on Linux x86_64, macOS arm64 and Windows x86_64.
+
+If you do not have a package manager that makes buck2 easily available, run `bin/buck2` (`bin\buck2.cmd` on Windows) wherever this file says `buck2`, or add `bin` to your `PATH`. The first run downloads [DotSlash](https://dotslash-cli.com) and the Buck2 release that `toolchains/buck2` pins into `.tools`. Buck2 then downloads the Rust release that `rust-toolchain.toml` names, a pinned nightly rustfmt, a Python interpreter, and every crate it needs.
 
 You do need a few host tools:
 
