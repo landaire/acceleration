@@ -55,8 +55,8 @@ pub fn generate_xml(xex: &Xex2) -> String {
 			writeln!(
 				out,
 				"    <resource name=\"{}\" address=\"{:#010x}\" size=\"{:#x}\"/>",
-				escape_xml(&r.name),
-				r.address,
+				escape_xml(&r.name.to_string()),
+				r.address.0,
 				r.size
 			)
 			.unwrap();

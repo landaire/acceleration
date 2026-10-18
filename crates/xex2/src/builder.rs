@@ -31,7 +31,9 @@ use crate::imports::ImportLibrary;
 use crate::imports::serialize_import_libraries;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
+use crate::opt::ResourceEntry;
 use crate::opt::TlsInfo;
+use crate::opt::resource_info_bytes;
 use crate::page_descriptors;
 use crate::page_descriptors::SectionType;
 use byteorder::BigEndian;
@@ -79,6 +81,8 @@ pub struct Xex2Builder {
 	bounding_path: Option<BoundingPath>,
 	export_table: Option<VirtualAddress>,
 	tls_info: Option<TlsInfo>,
+	/// Entries of the `ResourceInfo` header. Empty omits the header.
+	resources: Vec<ResourceEntry>,
 }
 
 /// Resolved device path the loaded file must match. On a flash `\SystemRoot`
@@ -120,6 +124,7 @@ impl Xex2Builder {
 			bounding_path: None,
 			export_table: None,
 			tls_info: None,
+			resources: Vec::new(),
 		}
 	}
 
@@ -139,6 +144,14 @@ impl Xex2Builder {
 	/// slot array from `slot_count`; without the header a title has no slots.
 	pub fn tls_info(mut self, tls: TlsInfo) -> Self {
 		self.tls_info = Some(tls);
+		self
+	}
+
+	/// Emit a `ResourceInfo` optional header. Each entry names a region of
+	/// the image that `XexGetModuleSection` returns by name; the region's
+	/// bytes must already be in the PE image at its address.
+	pub fn resources(mut self, resources: Vec<ResourceEntry>) -> Self {
+		self.resources = resources;
 		self
 	}
 
@@ -221,6 +234,7 @@ const PAGE_ALIGN: usize = 0x1000;
 
 fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// Optional headers we emit, indexed in ascending key order:
+	// - 0x000002FF ResourceInfo (variable) -- if provided
 	// - 0x000003FF FileFormatInfo (Basic runs or the Normal LZX descriptor)
 	// - 0x000080FF BoundingPath (variable) -- if provided
 	// - 0x00010100 EntryPoint (inline u32) -- if provided
@@ -263,7 +277,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// Compute file layout:
 	//   0x00..0x18: main header
 	//   0x18..:     optional header index (8 bytes per entry)
-	//   data blobs: BoundingPath, ExecutionInfo, ImportLibraries, FileFormatInfo, TlsInfo
+	//   data blobs: BoundingPath, ExecutionInfo, ImportLibraries, FileFormatInfo, TlsInfo, ResourceInfo
 	//   security_info
 	//   pad to page_align
 	//   PE data
@@ -272,8 +286,12 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 
 	// Calculate where blobs will land. Start placing them right after the
 	// optional-header index.
-	let entry_count =
-		4 + b.entry_point.is_some() as usize + b.bounding_path.is_some() as usize + b.tls_info.is_some() as usize;
+	let resource_info = checked_resource_info(&b)?;
+	let entry_count = 4
+		+ b.entry_point.is_some() as usize
+		+ b.bounding_path.is_some() as usize
+		+ b.tls_info.is_some() as usize
+		+ resource_info.is_some() as usize;
 	let mut cursor = OPT_INDEX_START + entry_count * 8;
 
 	// BoundingPath: u32 blob size, NUL-terminated path, zero padding.
@@ -309,6 +327,13 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 		entries.push(OptEntry::Data { key: OptionalHeaderKey::TlsInfo as u32, offset: cursor as u32 });
 		blob_bytes.push(BlobPlacement { offset: cursor, bytes: tls.to_bytes().to_vec() });
 		cursor += TlsInfo::SIZE;
+	}
+
+	if let Some(resources) = resource_info {
+		let len = resources.len();
+		entries.push(OptEntry::Data { key: OptionalHeaderKey::ResourceInfo as u32, offset: cursor as u32 });
+		blob_bytes.push(BlobPlacement { offset: cursor, bytes: resources });
+		cursor += len;
 	}
 
 	// EntryPoint: inline value.
@@ -564,6 +589,37 @@ fn page_section_types(pe: &[u8], page_size: u32, page_count: u32) -> Result<Vec<
 		.collect())
 }
 
+/// Serialize the `ResourceInfo` blob, or `None` without resources. The kernel
+/// returns the first entry whose name matches, so a repeated name would hide
+/// later entries. It returns the stored address without checking it, so an
+/// entry outside the image would point at unmapped memory.
+fn checked_resource_info(b: &Xex2Builder) -> Result<Option<Vec<u8>>> {
+	if b.resources.is_empty() {
+		return Ok(None);
+	}
+
+	let image_start = u64::from(b.load_address.0);
+	let image_end = image_start + b.pe.len() as u64;
+
+	for (idx, entry) in b.resources.iter().enumerate() {
+		if b.resources[..idx].iter().any(|earlier| earlier.name == entry.name) {
+			return Err(Xex2Error::DuplicateResourceName { name: entry.name }.into_report());
+		}
+
+		let start = u64::from(entry.address.0);
+		if start < image_start || start + u64::from(entry.size) > image_end {
+			return Err(Xex2Error::ResourceOutsideImage {
+				name: entry.name,
+				address: entry.address.0,
+				size: entry.size,
+			}
+			.into_report());
+		}
+	}
+
+	Ok(Some(resource_info_bytes(&b.resources)))
+}
+
 fn bounding_path_bytes(path: &BoundingPath) -> Vec<u8> {
 	let size = align_up(4 + path.as_str().len() + 1, 4);
 	let mut out = Vec::with_capacity(size);
@@ -674,6 +730,8 @@ fn file_format_info_basic(encryption: EncryptionType, runs: &[BasicRun]) -> Vec<
 mod tests {
 	use super::*;
 	use crate::header::OptionalHeaderValue;
+	use crate::opt::ResourceInfo;
+	use crate::opt::ResourceName;
 
 	/// Build a little-endian PE that populates only the header fields
 	/// [`page_section_types`] reads. Each section is `(virtual_address,
@@ -834,5 +892,87 @@ mod tests {
 	fn bounding_path_rejects_control_bytes() {
 		let err = BoundingPath::new("a\0b").unwrap_err();
 		assert!(matches!(err.current_context(), Xex2Error::InvalidBoundingPath { .. }));
+	}
+
+	fn resource(name: &str, address: u32, size: u32) -> ResourceEntry {
+		ResourceEntry { name: ResourceName::new(name).unwrap(), address: VirtualAddress(address), size }
+	}
+
+	fn build_with_resources(resources: Vec<ResourceEntry>) -> Result<Vec<u8>> {
+		let mut pe = synthetic_pe(&[(0x1000, 0x1000, SCN_MEM_EXECUTE)]);
+		pe.resize(0x4000, 0);
+		Xex2Builder::new(pe)
+			.load_address(VirtualAddress(0x82000000))
+			.image_flags(ImageFlags::SMALL_PAGES)
+			.resources(resources)
+			.build()
+	}
+
+	#[test]
+	fn resources_must_lie_inside_the_image() {
+		for (address, size) in [(0x81fff000, 0x10), (0x82003ff0, 0x11)] {
+			let err = build_with_resources(vec![resource("dvd", address, size)]).unwrap_err();
+			assert!(matches!(err.current_context(), Xex2Error::ResourceOutsideImage { .. }));
+		}
+		assert!(build_with_resources(vec![resource("dvd", 0x82003ff0, 0x10)]).is_ok());
+	}
+
+	#[test]
+	fn resource_info_blob_layout() {
+		let resources = vec![
+			resource("dashmain", 0x82002000, 0x1a86),
+			resource("FFFE07D1", 0x82003a00, 0x52),
+			resource("dvd", 0x82003a80, 0x10),
+		];
+		let xex = build_with_resources(resources.clone()).unwrap();
+		let parsed = crate::Xex2::parse(&xex).unwrap();
+		assert_eq!(parsed.header.resource_info(), Some(ResourceInfo { resources }));
+
+		let OptionalHeaderValue::Data(blob) =
+			&parsed.header.optional_headers[&(OptionalHeaderKey::ResourceInfo as u32)]
+		else {
+			panic!("resource info is not a data blob");
+		};
+		// The size word, then one row per 16-byte entry.
+		let (size, entries) = blob.split_at(4);
+		let hex = |bytes: &[u8]| bytes.iter().map(|byte| format!("{byte:02x}")).collect::<Vec<_>>().join(" ");
+		let rows = entries.chunks(16).map(hex).collect::<Vec<_>>().join("\n");
+		let first_key = BigEndian::read_u32(&xex[OPT_INDEX_START..OPT_INDEX_START + 4]);
+		insta::assert_snapshot!(format!("first index key: {first_key:#010x}\n\n{}\n{rows}", hex(size)));
+	}
+
+	#[test]
+	fn resource_names_must_be_unique() {
+		let err = build_with_resources(vec![resource("dvd", 0x82002000, 0x10), resource("dvd", 0x82002010, 0x10)])
+			.unwrap_err();
+		assert!(matches!(err.current_context(), Xex2Error::DuplicateResourceName { .. }));
+	}
+
+	#[test]
+	fn resource_name_is_one_to_eight_bytes_without_nul() {
+		assert!(ResourceName::new("dashmain").is_ok());
+		for name in ["", "dashmain1", "da\0sh"] {
+			let err = ResourceName::new(name).unwrap_err();
+			assert!(matches!(err.current_context(), Xex2Error::InvalidResourceName { .. }));
+		}
+	}
+
+	#[test]
+	fn resource_info_parse_follows_kernel_reads() {
+		let xex = build_with_resources(vec![resource("dvd", 0x82002000, 0x10)]).unwrap();
+		let blob = BigEndian::read_u32(&xex[OPT_INDEX_START + 4..OPT_INDEX_START + 8]) as usize;
+		let parse_with = |edit: &dyn Fn(&mut [u8])| {
+			let mut xex = xex.clone();
+			edit(&mut xex[blob..]);
+			crate::Xex2::parse(&xex).unwrap().header.resource_info()
+		};
+		let dvd = Some(ResourceInfo { resources: vec![resource("dvd", 0x82002000, 0x10)] });
+
+		// Bytes after the name's NUL are ignored.
+		assert_eq!(parse_with(&|blob| blob[8..12].copy_from_slice(b"xyz\0")), dvd);
+		// A partial trailing entry is ignored.
+		assert_eq!(parse_with(&|blob| BigEndian::write_u32(&mut blob[0..4], 4 + 16 + 8)), dvd);
+		// A size word smaller than itself is malformed.
+		assert_eq!(parse_with(&|blob| BigEndian::write_u32(&mut blob[0..4], 3)), None);
 	}
 }

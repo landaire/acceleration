@@ -116,6 +116,10 @@ Observed identifiers, constant across `xbdm.xex`, `xsim.xex`, and older titles:
 
 On a flash `\SystemRoot` boot, `0x800a2f90` requires a BoundingPath optional header (`0x000080ff`) when the load flags include `0x40000000`, and rejects a present header that does not match the resolved device path of the file (`C000008B` and `C00000CC`). The blob is a big-endian size word that counts itself, the NUL-terminated path, and zero padding to 4 bytes. `Xex2Builder::bounding_path` emits it.
 
+## Resource info
+
+The loader does not read the ResourceInfo optional header (`0x000002ff`). Its only reader in kernel 21256 is `XexGetModuleSection` (`0x800a4290`, ordinal `0x196`). The blob is a big-endian size word that counts itself, then `(size - 4) / 16` entries of an 8-byte name, a 4-byte virtual address and a 4-byte size. A name shorter than 8 bytes ends with NUL. The lookup compares names byte for byte, so it is case-sensitive, and returns the first match. It returns the stored address and size without relocating or checking them, so the data must be in the loaded image at that address. `Xex2Builder::resources` emits the header.
+
 ## Allowed media
 
 Allowed media is the word immediately after the `0x74`-byte ImageInfo. It is not covered by the RSA signature; it is covered by the header hash.

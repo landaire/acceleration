@@ -32,13 +32,15 @@ use bitflags::bitflags;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use num_enum::TryFromPrimitive;
+use rootcause::IntoReport;
 #[cfg(feature = "serde")]
 use serde::Serialize;
 #[cfg(feature = "serde")]
 use serde::Serializer;
 use std::io::Cursor;
-use std::io::Read;
+use xenon_types::VirtualAddress;
 
+use crate::error::Xex2Error;
 use crate::header::OptionalHeaderKey;
 use crate::header::Xex2Header;
 
@@ -76,18 +78,118 @@ impl TlsInfo {
 	}
 }
 
-#[derive(Debug)]
+/// `ResourceInfo` optional header: named regions of the loaded image, which
+/// `XexGetModuleSection` looks up by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ResourceInfo {
 	pub resources: Vec<ResourceEntry>,
 }
 
-#[derive(Debug)]
+/// The `ResourceInfo` blob as stored: a size word that counts itself, then one
+/// 16-byte entry per resource.
+pub(crate) fn resource_info_bytes(resources: &[ResourceEntry]) -> Vec<u8> {
+	let size = 4 + resources.len() * ResourceEntry::SIZE;
+	let mut out = Vec::with_capacity(size);
+	out.extend_from_slice(&(size as u32).to_be_bytes());
+	for entry in resources {
+		out.extend_from_slice(&entry.to_bytes());
+	}
+
+	out
+}
+
+/// One resource: its name, absolute virtual address, and size in bytes. The
+/// kernel returns the address as stored, without relocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub struct ResourceEntry {
-	pub name: String,
-	pub address: u32,
+	pub name: ResourceName,
+	pub address: VirtualAddress,
 	pub size: u32,
+}
+
+impl ResourceEntry {
+	pub(crate) const SIZE: usize = 16;
+
+	fn parse(bytes: &[u8; Self::SIZE]) -> Self {
+		let word = |offset: usize| u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap());
+
+		Self {
+			name: ResourceName::from_field(bytes[0..8].try_into().unwrap()),
+			address: VirtualAddress(word(8)),
+			size: word(12),
+		}
+	}
+
+	fn to_bytes(self) -> [u8; Self::SIZE] {
+		let mut out = [0u8; Self::SIZE];
+		out[0..8].copy_from_slice(&self.name.field);
+		out[8..12].copy_from_slice(&self.address.0.to_be_bytes());
+		out[12..16].copy_from_slice(&self.size.to_be_bytes());
+
+		out
+	}
+}
+
+/// Name of a resource: one to eight bytes, none of them NUL. The kernel
+/// compares names byte for byte, so case is significant. A name read from a
+/// file may be empty, because the kernel accepts an all-NUL field.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ResourceName {
+	/// The stored field: the name, then NUL padding to eight bytes.
+	field: [u8; Self::MAX_LEN],
+}
+
+impl ResourceName {
+	pub const MAX_LEN: usize = 8;
+
+	pub fn new(name: impl AsRef<[u8]>) -> crate::error::Result<Self> {
+		let name = name.as_ref();
+		if name.is_empty() || name.len() > Self::MAX_LEN || name.contains(&0) {
+			return Err(Xex2Error::InvalidResourceName { name: name.to_vec() }.into_report());
+		}
+
+		let mut field = [0u8; Self::MAX_LEN];
+		field[..name.len()].copy_from_slice(name);
+
+		Ok(Self { field })
+	}
+
+	/// The kernel reads a stored name up to its first NUL, or all eight bytes
+	/// when there is none, and ignores bytes after the NUL.
+	fn from_field(mut field: [u8; Self::MAX_LEN]) -> Self {
+		if let Some(end) = field.iter().position(|byte| *byte == 0) {
+			field[end..].fill(0);
+		}
+
+		Self { field }
+	}
+
+	pub fn as_bytes(&self) -> &[u8] {
+		let len = self.field.iter().position(|byte| *byte == 0).unwrap_or(Self::MAX_LEN);
+		&self.field[..len]
+	}
+}
+
+impl std::fmt::Debug for ResourceName {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "\"{self}\"")
+	}
+}
+
+/// Escaped as by `<[u8]>::escape_ascii`.
+impl std::fmt::Display for ResourceName {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}", self.as_bytes().escape_ascii())
+	}
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for ResourceName {
+	fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+		s.collect_str(self)
+	}
 }
 
 /// A rating from a specific board.
@@ -616,25 +718,15 @@ impl Xex2Header {
 		})
 	}
 
+	/// The kernel reads `(size - 4) / 16` entries after the size word and
+	/// ignores a partial trailing entry.
 	pub fn resource_info(&self) -> Option<ResourceInfo> {
 		let data = self.get_optional_data(OptionalHeaderKey::ResourceInfo)?;
-		if data.len() < 4 {
-			return None;
-		}
-		let mut c = Cursor::new(data);
-		let size = c.read_u32::<BigEndian>().ok()? as usize;
-		let entry_count = (size - 4) / 16;
-		let mut resources = Vec::with_capacity(entry_count);
-		for _ in 0..entry_count {
-			let mut name_buf = [0u8; 8];
-			c.read_exact(&mut name_buf).ok()?;
-			// Resource names are fixed 8-byte fields; if no null terminator, use full width
-			let name_end = name_buf.iter().position(|b| *b == 0).unwrap_or(8);
-			let name = String::from_utf8_lossy(&name_buf[..name_end]).into_owned();
-			let address = c.read_u32::<BigEndian>().ok()?;
-			let size = c.read_u32::<BigEndian>().ok()?;
-			resources.push(ResourceEntry { name, address, size });
-		}
+		let size = u32::from_be_bytes(data.get(..4)?.try_into().unwrap()) as usize;
+		let entries = data.get(4..size)?;
+
+		let resources = entries.as_chunks::<{ ResourceEntry::SIZE }>().0.iter().map(ResourceEntry::parse).collect();
+
 		Some(ResourceInfo { resources })
 	}
 

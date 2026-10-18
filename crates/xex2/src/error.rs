@@ -2,6 +2,8 @@ use std::fmt;
 
 use rootcause::IntoReport;
 
+use crate::opt::ResourceName;
+
 #[derive(Debug)]
 pub enum Xex2Error {
 	InvalidMagic { found: [u8; 4] },
@@ -19,6 +21,9 @@ pub enum Xex2Error {
 	ExportTableUnaligned { address: u32 },
 	ExportTableOutsideImage { address: u32 },
 	ExportTableNotInCode { address: u32, page: u32 },
+	InvalidResourceName { name: Vec<u8> },
+	DuplicateResourceName { name: ResourceName },
+	ResourceOutsideImage { name: ResourceName, address: u32, size: u32 },
 	InvalidBasefileSize { expected: usize, got: usize },
 	HashMismatch { block_index: usize },
 	SigningFailed,
@@ -84,6 +89,13 @@ impl fmt::Display for Xex2Error {
 			}
 			Self::ExportTableNotInCode { address, page } => {
 				write!(f, "export table at {address:#010x} occupies non-code page {page:#010x}")
+			}
+			Self::InvalidResourceName { name } => {
+				write!(f, "resource name \"{}\" must be 1 to 8 bytes without NUL", name.escape_ascii())
+			}
+			Self::DuplicateResourceName { name } => write!(f, "resource name \"{name}\" appears more than once"),
+			Self::ResourceOutsideImage { name, address, size } => {
+				write!(f, "resource \"{name}\" at {address:#010x} with size {size:#x} extends outside the image")
 			}
 			Self::InvalidBasefileSize { expected, got } => {
 				write!(f, "basefile size mismatch: expected {:#x}, got {:#x}", expected, got)

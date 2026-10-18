@@ -540,7 +540,7 @@ mod ffi {
 
 		/// Virtual address of the resource data.
 		pub fn address(&self) -> u32 {
-			self.entry().address
+			self.entry().address.0
 		}
 
 		/// Size of the resource data in bytes.

@@ -1,0 +1,10 @@
+---
+source: crates/xex2/src/builder.rs
+expression: "format!(\"first index key: {first_key:#010x}\\n\\n{}\\n{rows}\", hex(size))"
+---
+first index key: 0x000002ff
+
+00 00 00 34
+64 61 73 68 6d 61 69 6e 82 00 20 00 00 00 1a 86
+46 46 46 45 30 37 44 31 82 00 3a 00 00 00 00 52
+64 76 64 00 00 00 00 00 82 00 3a 80 00 00 00 10

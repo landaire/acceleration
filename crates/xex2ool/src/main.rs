@@ -393,8 +393,8 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 			.resources
 			.iter()
 			.map(|r| ResourceRow {
-				name: r.name.clone(),
-				address: format!("{:#010x}", r.address),
+				name: r.name.to_string(),
+				address: format!("{:#010x}", r.address.0),
 				size: format!("{:#x}", r.size),
 			})
 			.collect();
@@ -590,14 +590,18 @@ fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
 	fs::create_dir_all(output_dir)?;
 
 	for res in &resources.resources {
-		let offset = (res.address - base_addr.0) as usize;
+		let offset = (res.address.0 - base_addr.0) as usize;
 		if offset + res.size as usize > basefile.len() {
-			eprintln!("Resource {} extends past basefile (addr={:#x} size={:#x})", res.name, res.address, res.size);
+			eprintln!("Resource {} extends past basefile (addr={:#x} size={:#x})", res.name, res.address.0, res.size);
 			continue;
 		}
 
 		let res_data = &basefile[offset..offset + res.size as usize];
-		let out_path = output_dir.join(&res.name);
+		if res.name.as_bytes().is_empty() {
+			eprintln!("Resource at {:#x} has an empty name", res.address.0);
+			continue;
+		}
+		let out_path = output_dir.join(&*String::from_utf8_lossy(res.name.as_bytes()));
 		fs::write(&out_path, res_data)?;
 		println!("Extracted {} ({} bytes)", res.name, res.size);
 	}
