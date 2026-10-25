@@ -26,12 +26,17 @@ struct Arguments {
 	base: PathBuf,
 
 	/// Layer directory containing boot/ inputs
-	#[arg(long, value_name = "DIRECTORY")]
-	layer: PathBuf,
+	#[arg(long, value_name = "DIRECTORY", required_unless_present = "extract")]
+	layer: Option<PathBuf>,
 
 	/// Shadowboot image to create or replace atomically
-	#[arg(long, value_name = "IMAGE")]
-	output: PathBuf,
+	#[arg(long, value_name = "IMAGE", required_unless_present = "extract")]
+	output: Option<PathBuf>,
+
+	/// Instead of compiling, write the hypervisor and kernel of the base SE as
+	/// DIRECTORY/boot/hypervisor.bin and DIRECTORY/boot/xboxkrnl.exe, a layer
+	#[arg(long, value_name = "DIRECTORY", conflicts_with_all = ["layer", "output"])]
+	extract: Option<PathBuf>,
 }
 
 #[derive(Debug, Error)]
@@ -106,6 +111,12 @@ fn main() -> ExitCode {
 fn run(arguments: Arguments) -> Result<()> {
 	let base_file = open_file(&arguments.base, "open base image")?;
 	let base = map_file(&base_file, &arguments.base)?;
+	let (layer_path, output_path) = match (arguments.layer, arguments.output, arguments.extract) {
+		(_, _, Some(directory)) => return extract(&base, &directory),
+		(Some(layer), Some(output), None) => (layer, output),
+		_ => unreachable!("clap requires --layer and --output without --extract"),
+	};
+	let arguments = CompileArguments { base: arguments.base, layer: layer_path, output: output_path };
 	let mapped_layer = load_layer(&arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
 
@@ -140,12 +151,34 @@ fn run(arguments: Arguments) -> Result<()> {
 	temporary.persist(&arguments.output).map_err(|error| io_error("replace output", &arguments.output, error.error))?;
 
 	println!(
-		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={}",
+		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-digest-updated={}",
 		arguments.output.display(),
 		output_size,
 		report.replaced_boot_stages,
 		report.rebuilt_se,
+		report.updated_sd_digest,
 	);
+	Ok(())
+}
+
+struct CompileArguments {
+	base: PathBuf,
+	layer: PathBuf,
+	output: PathBuf,
+}
+
+/// Writes the hypervisor and kernel of the base SE as a layer's boot inputs.
+fn extract(base: &[u8], directory: &Path) -> Result<()> {
+	let image = Image::parse(base)?;
+	let payload = shadowboot::payload(&image)?;
+	let boot = directory.join("boot");
+	fs::create_dir_all(&boot).map_err(|source| io_error("create directory", &boot, source))?;
+	let (hypervisor, kernel) = payload.split_at(shadowboot::HYPERVISOR_SIZE);
+	for (name, bytes) in [("hypervisor.bin", hypervisor), ("xboxkrnl.exe", kernel)] {
+		let path = boot.join(name);
+		fs::write(&path, bytes).map_err(|source| io_error("write", &path, source))?;
+		println!("wrote {} ({:#x} bytes)", path.display(), bytes.len());
+	}
 	Ok(())
 }
 

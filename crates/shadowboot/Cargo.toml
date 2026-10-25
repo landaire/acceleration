@@ -19,6 +19,7 @@ dhat = ["dep:dhat"]
 xflash = { version = "0.4", path = "../xflash", default-features = false }
 lzxc = { version = "0.2", path = "../lzxc" }
 lzxd = "0.2"
+xecrypt = { version = "0.4", path = "../xecrypt" }
 sha-1 = { workspace = true }
 thiserror = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }

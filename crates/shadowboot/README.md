@@ -27,7 +27,17 @@ layer/
 
 The shadowed system mounts the console's own NAND file system, so flash root files are not part of the output and cannot be changed through a shadowboot image.
 
-SD verifies SE with a RotSumSha digest stored in the SD plaintext at offset `0x24c` and halts on mismatch. The digest covers `SE[0..0x10]` and the decrypted SE body up to the size rounded to 16 bytes. A changed SE, including one rebuilt from a replacement hypervisor or kernel, boots only with an SD that carries the matching digest. How SD itself is authenticated has not been established.
+SD verifies SE with a RotSumSha digest stored in the SD plaintext at offset `0x24c` and halts on mismatch (SD 16547 compares them at `0xcd4`). The digest covers `SE[0..0x10]` and the decrypted SE body from `0x20` up to the SE size rounded up to 16 bytes. Flash holds SE up to that aligned end; the bytes after the declared size are zero plaintext, encrypted with the SE key. The compiler writes them for every SE it places, and keeps the base bytes when SE is unchanged.
+
+When the final SE no longer matches the digest in the base SD, the compiler writes the new digest into the base SD plaintext and encrypts SD again with its unchanged key. It first checks that the base SD keeps the digest of the base SE, so the field is where it writes it. A supplied `sd.bin` must already keep the digest of the final SE. How SB authenticates SD has not been established: a console whose SB checks a signature over SD would reject the changed SD.
+
+## Extracting the payload
+
+```text
+shadowboot --base base.bin --extract layer
+```
+
+writes the hypervisor and kernel of the base SE as `layer/boot/hypervisor.bin` and `layer/boot/xboxkrnl.exe`, after checking the SD digest of SE. Replace either file and compile with `--layer layer`.
 
 ## Size limit
 

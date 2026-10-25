@@ -17,6 +17,12 @@ const NONCE_OFFSET: usize = 0x10;
 const NONCE_SIZE: usize = 0x10;
 const SE_OUTPUT_SIZE_OFFSET: usize = 0x28;
 const FRAME_HEADER_SIZE: usize = 4;
+/// SD keeps the digest of SE in its plaintext here. SD 16547 compares the two at 0xcd4 and halts
+/// when they differ.
+const SD_SE_DIGEST: std::ops::Range<usize> = 0x24c..0x260;
+/// The SE digest covers SE up to its size rounded up to this alignment. Flash holds the bytes up
+/// to the aligned end encrypted, with zero plaintext.
+pub const SE_ALIGNMENT: usize = 0x10;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -44,6 +50,10 @@ pub enum Error {
 	CompressedChunkTooLarge { index: usize, size: usize },
 	#[error("encoded SE size {size:#x} exceeds the u32 stage header limit")]
 	StageTooLarge { size: usize },
+	#[error("SD is {size:#x} bytes, too short to hold the SE digest at {offset:#x}", offset = SD_SE_DIGEST.start)]
+	SdTooShort { size: usize },
+	#[error("SE padding has {actual:#x} bytes; SE of size {size:#x} needs {expected:#x}")]
+	PaddingSize { size: usize, expected: usize, actual: usize },
 }
 
 pub fn decode(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<u8>, Error> {
@@ -136,6 +146,58 @@ pub fn encode(sc: &[u8], sd: &[u8], se_template: &[u8], payload: &[u8]) -> Resul
 	let key = derive_key_chain([sc, sd, stage.as_slice()])?;
 	rc4(&key, &mut stage[STAGE_HEADER_SIZE..]);
 	Ok(stage)
+}
+
+/// The bytes that follow SE up to its aligned end: zero plaintext, encrypted with the SE key.
+pub fn padding(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<u8>, Error> {
+	validate_stage_header("SE", se)?;
+	let key = derive_key_chain([sc, sd, se])?;
+	let body = se.len() - STAGE_HEADER_SIZE;
+	let mut stream = vec![0u8; se.len().next_multiple_of(SE_ALIGNMENT) - STAGE_HEADER_SIZE];
+	rc4(&key, &mut stream);
+	Ok(stream.split_off(body))
+}
+
+/// The XeCryptRotSumSha digest that SD keeps of SE: over the first 0x10 bytes of SE and the
+/// decrypted rest from 0x20 up to the aligned end. `padding` is what follows SE up to there.
+pub fn digest(sc: &[u8], sd: &[u8], se: &[u8], padding: &[u8]) -> Result<[u8; 20], Error> {
+	validate_stage_header("SE", se)?;
+	let expected = se.len().next_multiple_of(SE_ALIGNMENT) - se.len();
+	if padding.len() != expected {
+		return Err(Error::PaddingSize { size: se.len(), expected, actual: padding.len() });
+	}
+	let key = derive_key_chain([sc, sd, se])?;
+	let mut body = Vec::with_capacity(se.len() + padding.len() - STAGE_HEADER_SIZE);
+	body.extend_from_slice(&se[STAGE_HEADER_SIZE..]);
+	body.extend_from_slice(padding);
+	rc4(&key, &mut body);
+	Ok(xecrypt::symmetric::xe_crypt_rot_sum_sha(&se[..0x10], &body))
+}
+
+/// The SE digest that SD keeps.
+pub fn sd_se_digest(sc: &[u8], sd: &[u8]) -> Result<[u8; 20], Error> {
+	let plaintext = sd_plaintext(sc, sd)?;
+	Ok(plaintext[SD_SE_DIGEST].try_into().expect("the digest field is 20 bytes"))
+}
+
+/// SD with `digest` as the SE digest that it keeps, encrypted again with its unchanged key.
+pub fn with_sd_se_digest(sc: &[u8], sd: &[u8], digest: &[u8; 20]) -> Result<Vec<u8>, Error> {
+	let mut plaintext = sd_plaintext(sc, sd)?;
+	plaintext[SD_SE_DIGEST].copy_from_slice(digest);
+	let key = derive_key_chain([sc, sd])?;
+	rc4(&key, &mut plaintext[STAGE_HEADER_SIZE..]);
+	Ok(plaintext)
+}
+
+fn sd_plaintext(sc: &[u8], sd: &[u8]) -> Result<Vec<u8>, Error> {
+	validate_stage_header("SD", sd)?;
+	if sd.len() < SD_SE_DIGEST.end {
+		return Err(Error::SdTooShort { size: sd.len() });
+	}
+	let key = derive_key_chain([sc, sd])?;
+	let mut plaintext = sd.to_vec();
+	rc4(&key, &mut plaintext[STAGE_HEADER_SIZE..]);
+	Ok(plaintext)
 }
 
 fn validate_stage_header(stage: &'static str, bytes: &[u8]) -> Result<(), Error> {
@@ -248,6 +310,38 @@ mod tests {
 
 		let encoded = encode(&sc, &sd, &se, &payload).unwrap();
 		assert_eq!(decode(&sc, &sd, &encoded).unwrap(), payload);
+	}
+
+	/// SD keeps the digest of an encoded SE, padded with zero plaintext; a new digest replaces
+	/// only the digest field of the SD plaintext.
+	#[test]
+	fn sd_keeps_the_digest_of_the_padded_se() {
+		let sc = stage(*b"SC", "5145e4b206bf24db95c9986a700531fe");
+		let mut sd = stage(*b"SD", "0d997d744eebd4e0bbee1b37cb0b2244");
+		sd.resize(0x300, 0);
+		sd[0x0c..0x10].copy_from_slice(&0x300u32.to_be_bytes());
+		let se_template = stage(*b"SE", "44678c874924cb86dae7abe047fdf74f");
+		let payload = vec![0x5au8; PAYLOAD_SIZE];
+
+		let se = encode(&sc, &sd, &se_template, &payload).unwrap();
+		let padding = padding(&sc, &sd, &se).unwrap();
+		assert_eq!((se.len() + padding.len()) % SE_ALIGNMENT, 0);
+		let key = derive_key_chain([sc.as_slice(), sd.as_slice(), se.as_slice()]).unwrap();
+		let mut plaintext = [se.as_slice(), padding.as_slice()].concat();
+		rc4(&key, &mut plaintext[STAGE_HEADER_SIZE..]);
+		assert!(plaintext[se.len()..].iter().all(|&byte| byte == 0));
+
+		let digest = digest(&sc, &sd, &se, &padding).unwrap();
+		assert_eq!(
+			digest,
+			xecrypt::symmetric::xe_crypt_rot_sum_sha(&plaintext[..0x10], &plaintext[STAGE_HEADER_SIZE..])
+		);
+		let patched = with_sd_se_digest(&sc, &sd, &digest).unwrap();
+		assert_eq!(sd_se_digest(&sc, &patched).unwrap(), digest);
+		let (before, after) = (sd_plaintext(&sc, &sd).unwrap(), sd_plaintext(&sc, &patched).unwrap());
+		assert_eq!(before[..SD_SE_DIGEST.start], after[..SD_SE_DIGEST.start]);
+		assert_eq!(before[SD_SE_DIGEST.end..], after[SD_SE_DIGEST.end..]);
+		assert!(matches!(super::digest(&sc, &sd, &se, &[0; SE_ALIGNMENT]), Err(Error::PaddingSize { .. })));
 	}
 
 	fn stage(name: [u8; 2], nonce: &str) -> Vec<u8> {

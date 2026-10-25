@@ -8,6 +8,7 @@ use xflash::Image;
 pub use se::HYPERVISOR_SIZE;
 pub use se::KERNEL_SIZE;
 pub use se::PAYLOAD_SIZE;
+pub use se::SE_ALIGNMENT;
 
 /// Largest image the build 16547 kernel can load: its shadowboot buffer is restricted to
 /// physical 0x01000000..0x01800000.
@@ -27,6 +28,8 @@ pub struct BootLayer<'a> {
 pub struct BuildReport {
 	pub replaced_boot_stages: usize,
 	pub rebuilt_se: bool,
+	/// The base SD was written with the digest of the new SE.
+	pub updated_sd_digest: bool,
 }
 
 #[derive(Debug, Error)]
@@ -49,6 +52,12 @@ pub enum Error {
 	BootStageMagic { expected: &'static str, actual: [u8; 2] },
 	#[error("boot stage {stage} is shorter than its 0x10-byte image header")]
 	BootStageHeaderTruncated { stage: &'static str },
+	#[error(
+		"SD of the base image keeps SE digest {stored:02x?}, but its SE has {computed:02x?}; SD does not keep the digest where the compiler writes it"
+	)]
+	BaseSdDigest { stored: [u8; 20], computed: [u8; 20] },
+	#[error("boot stage SD of the layer keeps SE digest {stored:02x?}, but the SE of the image has {computed:02x?}")]
+	SdDigest { stored: [u8; 20], computed: [u8; 20] },
 	#[error("boot stage {stage} declares size {declared:#x}, but its input has size {actual:#x}")]
 	BootStageSize { stage: &'static str, declared: usize, actual: usize },
 	#[error("boot stage sizes overflow the host address space")]
@@ -72,11 +81,45 @@ pub fn compile(image: &Image<'_>, output: &mut [u8], layer: &BootLayer<'_>) -> R
 		return Err(Error::OutputSize { expected: size, actual: output.len() });
 	}
 	output.copy_from_slice(&image.bytes()[..size]);
-	let (replaced_boot_stages, rebuilt_se) = apply_boot_layer(image, output, *layer)?;
-	Ok(BuildReport { replaced_boot_stages, rebuilt_se })
+	apply_boot_layer(image, output, *layer)
 }
 
-fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) -> Result<(usize, bool), Error> {
+/// The decompressed SE payload of `image`: the hypervisor followed by the kernel. SD must keep
+/// the digest of the SE.
+pub fn payload(image: &Image<'_>) -> Result<Vec<u8>, Error> {
+	let stages = image.boot_stages();
+	let sc = image.boot_stage_data(&stages[1]);
+	let sd = image.boot_stage_data(&stages[2]);
+	let se = image.boot_stage_data(&stages[3]);
+	check_base_sd_digest(image, sc, sd, se)?;
+	Ok(se::decode(sc, sd, se)?)
+}
+
+/// The bytes of `image` that follow its SE up to the SE alignment.
+fn base_se_padding<'a>(image: &Image<'a>) -> Result<&'a [u8], Error> {
+	let stage = &image.boot_stages()[3];
+	let end = stage.offset().get() + stage.size().get();
+	let aligned = end.next_multiple_of(SE_ALIGNMENT);
+	let limit = image.header().boot_image_size.get();
+	image
+		.bytes()
+		.get(end..aligned)
+		.filter(|_| aligned <= limit)
+		.ok_or(Error::BootRegionOverflow { end: aligned, limit })
+}
+
+/// Checks that the base SD keeps the digest of the base SE, where the compiler reads and writes
+/// it.
+fn check_base_sd_digest(image: &Image<'_>, sc: &[u8], sd: &[u8], se: &[u8]) -> Result<(), Error> {
+	let stored = se::sd_se_digest(sc, sd)?;
+	let computed = se::digest(sc, sd, se, base_se_padding(image)?)?;
+	if stored != computed {
+		return Err(Error::BaseSdDigest { stored, computed });
+	}
+	Ok(())
+}
+
+fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) -> Result<BuildReport, Error> {
 	let base_stages = image.boot_stages();
 	let base_sb = image.boot_stage_data(&base_stages[0]);
 	let base_sc = image.boot_stage_data(&base_stages[1]);
@@ -139,10 +182,28 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 	};
 	validate_boot_stage(3, se)?;
 
+	// Flash holds SE up to its aligned end; the base keeps its own bytes there.
+	let padding =
+		if se == base_se && !se_key_changed { base_se_padding(image)?.to_vec() } else { se::padding(sc, sd, se)? };
+
+	// SD halts the boot unless it keeps the digest of SE. A layer SD must already keep it; the
+	// base SD is given it.
+	let digest = se::digest(sc, sd, se, &padding)?;
+	let stored = se::sd_se_digest(sc, sd)?;
+	let mut updated_sd = None;
+	if stored != digest {
+		if layer.sd.is_some() {
+			return Err(Error::SdDigest { stored, computed: digest });
+		}
+		check_base_sd_digest(image, base_sc, base_sd, base_se)?;
+		updated_sd = Some(se::with_sd_se_digest(sc, sd, &digest)?);
+	}
+	let sd = updated_sd.as_deref().unwrap_or(sd);
+
 	let stages = [sb, sc, sd, se];
 	let new_end = stages.iter().try_fold(BOOT_CHAIN_OFFSET, |offset, stage| {
 		offset.checked_add(stage.len()).ok_or(Error::BootChainSizeOverflow)
-	})?;
+	})? + padding.len();
 	let boot_limit = image.header().boot_image_size.get();
 	if new_end > boot_limit {
 		return Err(Error::BootRegionOverflow { end: new_end, limit: boot_limit });
@@ -153,17 +214,25 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 		.filter(|value| *value)
 		.count()
 		+ usize::from(rebuilt_se.is_some());
-	if replaced != 0 {
-		let old_end =
-			base_stages.last().map(|stage| stage.offset().get() + stage.size().get()).expect("four base stages");
+	if replaced != 0 || updated_sd.is_some() {
+		let old_end = base_stages
+			.last()
+			.map(|stage| stage.offset().get() + stage.size().get())
+			.expect("four base stages")
+			.next_multiple_of(SE_ALIGNMENT)
+			.min(boot_limit);
 		output[BOOT_CHAIN_OFFSET..old_end.max(new_end)].fill(0);
 		let mut offset = BOOT_CHAIN_OFFSET;
-		for stage in stages {
+		for stage in stages.into_iter().chain([padding.as_slice()]) {
 			output[offset..offset + stage.len()].copy_from_slice(stage);
 			offset += stage.len();
 		}
 	}
-	Ok((replaced, rebuilt_se.is_some()))
+	Ok(BuildReport {
+		replaced_boot_stages: replaced,
+		rebuilt_se: rebuilt_se.is_some(),
+		updated_sd_digest: updated_sd.is_some(),
+	})
 }
 
 fn validate_boot_stage(index: usize, bytes: &[u8]) -> Result<(), Error> {
@@ -235,6 +304,43 @@ mod tests {
 			compile(&image, &mut output, layer).unwrap();
 			assert_eq!(output.len(), size);
 			assert!(output == base[..size]);
+		}
+	}
+
+	/// Runs against a private 60 MiB devkit flash capture named by `SHADOWBOOT_BASE_IMAGE`. A
+	/// recompressed SE and a changed kernel each decompress to their payload, and the compiled
+	/// SD keeps the digest of the new SE.
+	#[test]
+	#[ignore = "requires SHADOWBOOT_BASE_IMAGE"]
+	fn rebuilt_se_round_trips_and_sd_keeps_its_digest() {
+		let path = std::env::var_os("SHADOWBOOT_BASE_IMAGE").expect("SHADOWBOOT_BASE_IMAGE is set");
+		let file = File::open(path).unwrap();
+		let base = unsafe { Mmap::map(&file) }.unwrap();
+		let image = Image::parse(&base).unwrap();
+		let stages = image.boot_stages();
+		let stage = |index: usize| image.boot_stage_data(&stages[index]);
+		let stock = payload(&image).unwrap();
+
+		let recompressed = se::encode(stage(1), stage(2), stage(3), &stock).unwrap();
+		assert_ne!(recompressed.as_slice(), stage(3));
+		let mut kernel = stock[HYPERVISOR_SIZE..].to_vec();
+		kernel[0x1000] ^= 0xff;
+		let mut changed = stock.clone();
+		changed[HYPERVISOR_SIZE..].copy_from_slice(&kernel);
+
+		let cases = [
+			(BootLayer { se: Some(&recompressed), ..BootLayer::default() }, &stock),
+			(BootLayer { kernel: Some(&kernel), ..BootLayer::default() }, &changed),
+		];
+		let mut output = vec![0u8; output_size(&image).unwrap()];
+		for (layer, expected) in &cases {
+			let report = compile(&image, &mut output, layer).unwrap();
+			assert!(report.updated_sd_digest);
+			let mut flash = base.to_vec();
+			flash[..output.len()].copy_from_slice(&output);
+			let compiled = Image::parse(&flash).unwrap();
+			assert!(payload(&compiled).unwrap() == **expected);
+			assert!(compiled.boot_stage_data(&compiled.boot_stages()[1]) == stage(1));
 		}
 	}
 }
