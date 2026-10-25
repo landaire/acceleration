@@ -58,7 +58,7 @@ impl StfsFileTable {
 		let mut block = stfs_vol.file_table_block_num;
 
 		for block_idx in 0..(stfs_vol.file_table_block_count as usize) {
-			let current_addr = hash_meta.block_to_addr(block, sex);
+			let current_addr = hash_meta.block_to_addr(block, sex)?;
 			let block_data = source.read_at(current_addr..current_addr + BLOCK_SIZE)?;
 			let block_data = block_data.as_ref();
 			let mut cursor = Cursor::new(block_data);

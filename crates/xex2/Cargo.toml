@@ -17,8 +17,9 @@ byteorder = { workspace = true }
 serde = { workspace = true, optional = true }
 bitflags = { workspace = true }
 sha-1 = { workspace = true }
+thiserror = { workspace = true }
 num_enum = { workspace = true }
-lzxd = "0.2"
+xenon_lzx = { version = "0.4", path = "../xenon_lzx" }
 lzxc = { version = "0.2", path = "../lzxc" }
 rootcause = "0.12"
 xecrypt = { version = "0.4", path = "../xecrypt" }

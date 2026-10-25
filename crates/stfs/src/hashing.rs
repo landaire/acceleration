@@ -130,7 +130,7 @@ impl StfsHasher {
 		ctx: &HashVerifyContext,
 	) -> Result<BlockHashReport, StfsError> {
 		let entry = ctx.hash_meta.read_block_hash_entry(source, data_block, ctx.sex, ctx.stfs_vol)?;
-		let addr = ctx.hash_meta.block_to_addr(data_block, ctx.sex);
+		let addr = ctx.hash_meta.block_to_addr(data_block, ctx.sex)?;
 		let block_data = source.read_at(addr..addr + BLOCK_SIZE)?;
 		let calculated = Self::hash_block(block_data.as_ref());
 

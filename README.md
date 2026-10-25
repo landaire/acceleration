@@ -15,14 +15,16 @@ Libraries and tools for Xbox 360 file formats.
 
 | Crate | What it does |
 | --- | --- |
-| [`xex2`](crates/xex2/) | XEX2 executable parser, rebuilder, and signer |
+| [`xex2`](crates/xex2/) | XEX2 executable parser, rebuilder, signer, and delta patch (XEXP) application |
 | [`xex2ool`](crates/xex2ool/) | CLI for inspecting and modifying XEX files |
 | [`lzxc`](crates/lzxc/) | LZX compression encoder (round-trips with `lzxd`) |
+| [`xenon_lzx`](crates/xenon_lzx/) | LZX decoder that behaves like the console kernel's, including delta patch reference data |
 | [`xecrypt`](crates/xecrypt/) | AES, RSA, and RotSumSha primitives from the Xbox 360 kernel |
 | [`xflash`](crates/xflash/) | Read-only parser and extractor for the observed 60 MiB devkit flash profile |
 | [`shadowboot`](crates/shadowboot/) | Layer compiler for deanxbox shadowboot images |
 | [`xcontent`](crates/xcontent/) | "STFS" package (CON/LIVE/PIRS) parser |
 | [`stfs`](crates/stfs/) | STFS filesystem/VFS handler |
+| [`system_update`](crates/system_update/) | Installs a system update package over a set of system flash files |
 | [`xenon_types`](crates/xenon_types/) | Shared newtypes (`TitleId`, `Sha1Hash`, `AesKey`, etc.) |
 
 ## Executables
@@ -76,6 +78,7 @@ Basic usage:
 ```
 xex2ool info game.xex                 # show module metadata
 xex2ool basefile game.xex -o game.pe  # extract decrypted+decompressed PE
+xex2ool basefile xam.xex --patch xam.xexp -o xam.pe  # PE of the module a delta patch produces
 xex2ool patch game.xex --decompress --output game-uncompressed.xex
 xex2ool patch game.xex --compress   --output game-compressed.xex
 xex2ool patch game.xex --encrypt    --output game-encrypted.xex
@@ -83,6 +86,16 @@ xex2ool patch game.xex --devkit     --output game-devkit.xex
 ```
 
 Per-field edits are exposed as flags; see `xex2ool patch --help` for the full list (region, media, bounding-path removal, date range, etc.).
+
+## System updates
+
+Install a system update package over a directory of system flash files:
+
+```text
+acceleration su20076000_00000000 apply-update --base flash-1888 --output flash-6717
+```
+
+The package's full files replace or join the base files. Each delta patch is applied to its base module. The result is written as `<name>.headers` and `<name>.basefile`, because the console builds patched modules in memory and never writes them as XEX files.
 
 ## Flash and shadowboot tools
 

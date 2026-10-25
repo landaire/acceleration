@@ -1,183 +1,352 @@
-//! Basefile (inner PE image) extraction.
+//! Basefile (loaded image) extraction.
 //!
-//! XEX files wrap a standard Windows PE executable. The payload can be
-//! plaintext or AES-128-CBC encrypted with a per-file session key (derived
-//! from the image key via the retail or devkit master key). The payload
-//! can also be basic-compressed (data blocks with zero-fill padding) or
-//! LZX-compressed (with 32KB output chunks and a persistent LZX decoder
-//! state across blocks).
+//! XEX files wrap a Windows PE image. The image data may be AES-128-CBC
+//! encrypted with a per-file session key, and stored as Basic runs (data
+//! followed by zero fill) or as a Normal LZX block chain. This module loads
+//! the image the way the kernel loader does (`XexpLoadRawImage` at kernel
+//! 21256 `0x800a5610` and `XexpLoadCompressedImage` at `0x800a5938`),
+//! including the SHA-1 check of every Normal block.
 //!
 //! The primary entry point is [`Xex2::extract_basefile`][crate::Xex2::extract_basefile].
 
-use byteorder::BigEndian;
-use byteorder::ReadBytesExt;
-use std::io::Cursor;
+use std::ops::Range;
 
+use rootcause::IntoReport;
+use sha1::Digest;
+use sha1::Sha1;
+
+use crate::Xex2;
 use crate::crypto;
-use crate::error::IoResultExt;
+use crate::crypto::CbcDecryptor;
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::header::AesKey;
 use crate::header::CompressionType;
 use crate::header::EncryptionType;
 use crate::header::FileFormatInfo;
-use crate::header::SecurityInfo;
+use crate::header::Sha1Hash;
 use crate::header::Xex2Header;
-use rootcause::IntoReport;
+use crate::writer::TargetMachine;
 
-const MIN_DECRYPT_TEST_SIZE: usize = 32;
-const MAX_REASONABLE_BLOCK_SIZE: usize = 0x100000;
+/// The loader decompresses Normal data in frames of at most this size.
+const LZX_FRAME_SIZE: u32 = 0x8000;
+/// Next block size and SHA-1 that begin every Normal block.
 const BLOCK_HEADER_SIZE: usize = 24;
-const CHUNK_SIZE_PREFIX_LEN: usize = 2;
-const LZX_OUTPUT_CHUNK_SIZE: usize = 0x8000;
+/// The DVD sector: the unit of every read the loader makes from a file.
+const SECTOR_SIZE: u32 = 0x800;
+/// Size of the loader's read buffers.
+const MAX_BLOCK_SIZE: u32 = 0x1_0000;
 
-pub fn extract_basefile(data: &[u8], header: &Xex2Header, security_info: &SecurityInfo) -> Result<Vec<u8>> {
-	let file_format = header.file_format_info()?;
-	let encrypted_data = &data[header.data_offset as usize..];
+/// Load the image with the checks the console makes: the header signature
+/// and hash, which also identify the console type and so the master key;
+/// the SHA-1 of every Normal block; and the page descriptors.
+pub(crate) fn extract_basefile(data: &[u8], xex: &Xex2) -> Result<Vec<u8>> {
+	let machine = crate::hashes::verify_headers(data, xex)?;
+	let image = extract_basefile_unchecked(data, xex, machine)?;
+	crate::page_descriptors::verify_chain(&image, &xex.header, &xex.security_info, data)?;
 
-	let keys = crypto::decrypt_file_key(&security_info.image_info.file_key);
+	Ok(image)
+}
 
-	let decrypted = match file_format.encryption_type {
-		EncryptionType::None => encrypted_data.to_vec(),
-		EncryptionType::Normal => {
-			let key = if try_decrypt_with_key(encrypted_data, &keys.retail, &file_format) {
-				keys.retail
-			} else {
-				keys.devkit
-			};
-			crypto::decrypt_data(encrypted_data, &key)
-		}
-	};
+/// Load the image without checking the headers or page descriptors. The
+/// caller names the console type whose master key wraps the file key. The
+/// SHA-1 of every Normal block is still checked, because the block chain
+/// depends on it.
+pub(crate) fn extract_basefile_unchecked(data: &[u8], xex: &Xex2, machine: TargetMachine) -> Result<Vec<u8>> {
+	let format = xex.header.file_format_info()?;
+	let key = session_key(xex, &format, machine)?;
+	let image_size = xex.security_info.image_size;
+	let mut image = allocate(image_size as usize)?;
+	load_image(image_data(data, &xex.header)?, &format, key, image_size, 0..image_size, &mut image)?;
 
-	match file_format.compression_type {
-		CompressionType::None => Ok(decrypted),
-		CompressionType::Basic => decompress_basic(&decrypted, &file_format),
-		CompressionType::Normal => decompress_normal(&decrypted, security_info.image_size, &file_format),
-		CompressionType::Delta => Err(Xex2Error::DecompressionFailed.into_report()),
+	Ok(image)
+}
+
+/// The session key that decrypts the image data on `machine`, or `None` for
+/// unencrypted data.
+pub(crate) fn session_key(xex: &Xex2, format: &FileFormatInfo, machine: TargetMachine) -> Result<Option<AesKey>> {
+	if format.encryption_type == EncryptionType::None {
+		return Ok(None);
+	}
+
+	if format.compression_type == CompressionType::Delta {
+		return Err(Xex2Error::DeltaPatchNeedsBase.into_report());
+	}
+
+	let image_flags = xex.security_info.image_info.image_flags;
+	let master = crypto::master_key(machine, image_flags)
+		.ok_or_else(|| Xex2Error::UnknownMasterKey { machine, image_flags: image_flags.bits() }.into_report())?;
+
+	Ok(Some(crypto::unwrap_key(&xex.security_info.image_info.file_key, &master)))
+}
+
+/// A zeroed buffer, failing with an error instead of aborting when memory is
+/// short.
+pub(crate) fn allocate(size: usize) -> Result<Vec<u8>> {
+	let mut buffer = Vec::new();
+	buffer.try_reserve_exact(size).map_err(|_| Xex2Error::AllocationFailed { size }.into_report())?;
+	buffer.resize(size, 0);
+
+	Ok(buffer)
+}
+
+/// The image data region: everything after the headers.
+pub(crate) fn image_data<'a>(data: &'a [u8], header: &Xex2Header) -> Result<&'a [u8]> {
+	data.get(header.data_offset as usize..).ok_or_else(|| {
+		Xex2Error::InvalidHeaderOffset { offset: header.data_offset, file_size: data.len() }.into_report()
+	})
+}
+
+fn first_block(format: &FileFormatInfo) -> Result<(u32, Sha1Hash)> {
+	match (format.first_block_size, format.first_block_hash) {
+		(Some(size), Some(hash)) => Ok((size, hash)),
+		_ => Err(Xex2Error::InvalidFileFormatInfo.into_report()),
 	}
 }
 
-fn try_decrypt_with_key(data: &[u8], key: &AesKey, format: &FileFormatInfo) -> bool {
-	if data.len() < MIN_DECRYPT_TEST_SIZE {
-		return false;
+/// Load bytes `range` of an image of `image_size` bytes into `out`, which
+/// holds `range.len()` zero bytes. Basic and raw data zero-fill the image
+/// past their data; Normal data leaves bytes past the end of its stream
+/// unwritten, as the loader does.
+pub(crate) fn load_image(
+	data: &[u8],
+	format: &FileFormatInfo,
+	key: Option<AesKey>,
+	image_size: u32,
+	range: Range<u32>,
+	out: &mut [u8],
+) -> Result<()> {
+	if range.start > range.end || range.end > image_size || out.len() != (range.end - range.start) as usize {
+		return Err(Xex2Error::InvalidImageRange { start: range.start, end: range.end, image_size }.into_report());
 	}
 
+	let decryptor = key.map(CbcDecryptor::new);
 	match format.compression_type {
-		CompressionType::Normal => {
-			let first_block = crypto::decrypt_data(&data[..MIN_DECRYPT_TEST_SIZE], key);
-			let mut c = Cursor::new(&first_block);
-			if let Ok(block_size) = c.read_u32::<BigEndian>() {
-				block_size > 0 && (block_size as usize) < MAX_REASONABLE_BLOCK_SIZE
+		CompressionType::None => load_raw(data, decryptor, range, out),
+		CompressionType::Basic => load_basic(data, format, decryptor, range, out),
+		CompressionType::Normal => load_normal(data, format, decryptor, image_size, range, out),
+		CompressionType::Delta => Err(Xex2Error::DeltaPatchNeedsBase.into_report()),
+	}
+}
+
+/// Image data stored as is. The kernel loader rejects this format; it is
+/// read for XEX files that tools write without compression.
+fn load_raw(data: &[u8], decryptor: Option<CbcDecryptor>, range: Range<u32>, out: &mut [u8]) -> Result<()> {
+	let available = data.len().min(range.end as usize);
+	let mut plain = data[..available].to_vec();
+	if let Some(mut decryptor) = decryptor {
+		decryptor.decrypt(&mut plain);
+	}
+
+	copy_overlap(&plain, 0, &range, out);
+
+	Ok(())
+}
+
+/// Basic runs: each run's data then its zero fill, ending with the run whose
+/// zero fill is zero. The image past the last run is zero.
+fn load_basic(
+	data: &[u8],
+	format: &FileFormatInfo,
+	mut decryptor: Option<CbcDecryptor>,
+	range: Range<u32>,
+	out: &mut [u8],
+) -> Result<()> {
+	if format.blocks.last().is_none_or(|run| run.zero_size != 0) {
+		return Err(Xex2Error::InvalidFileFormatInfo.into_report());
+	}
+
+	let mut position = 0u32;
+	let mut data_offset = 0usize;
+	let mut run_buffer = Vec::new();
+	for (run_index, run) in format.blocks.iter().enumerate() {
+		if position >= range.end {
+			break;
+		}
+
+		// Runs are read straight from the file in whole sectors (see
+		// doc/re-notes/xex-loader.md, Basic image data).
+		if !run.data_size.is_multiple_of(SECTOR_SIZE) {
+			return Err(Xex2Error::BasicRunSize { run_index, size: run.data_size }.into_report());
+		}
+
+		let data_end = data_offset + run.data_size as usize;
+		let Some(run_data) = data.get(data_offset..data_end) else {
+			return Err(Xex2Error::DataBlockOutOfRange {
+				block_index: run_index,
+				offset: data_offset,
+				size: run.data_size,
+			}
+			.into_report());
+		};
+
+		run_buffer.clear();
+		run_buffer.extend_from_slice(run_data);
+		if let Some(decryptor) = &mut decryptor {
+			decryptor.decrypt(&mut run_buffer);
+		}
+		copy_overlap(&run_buffer, position, &range, out);
+		position = position.saturating_add(run.data_size);
+		data_offset = data_end;
+
+		zero_overlap(position..position.saturating_add(run.zero_size), &range, out);
+		position = position.saturating_add(run.zero_size);
+		if run.zero_size == 0 {
+			break;
+		}
+	}
+
+	zero_overlap(position..range.end, &range, out);
+
+	Ok(())
+}
+
+/// The Normal block chain: each block starts with the size and SHA-1 of the
+/// next block, then LZX frames prefixed by big-endian 16-bit sizes and ended
+/// by a zero size. Every frame but the last expands to 32 KiB.
+fn load_normal(
+	data: &[u8],
+	format: &FileFormatInfo,
+	decryptor: Option<CbcDecryptor>,
+	image_size: u32,
+	range: Range<u32>,
+	out: &mut [u8],
+) -> Result<()> {
+	let window_size = format.window_size.ok_or_else(|| Xex2Error::InvalidFileFormatInfo.into_report())?;
+	let mut decoder = xenon_lzx::Decoder::new(vec![0u8; window_size as usize], LZX_FRAME_SIZE as usize)
+		.map_err(|e| Xex2Error::Lzx(e).into_report())?;
+	let mut frame_buffer = vec![0u8; LZX_FRAME_SIZE as usize];
+
+	let mut chain = BlockChain::new(data, format, decryptor)?;
+	let mut position = 0u32;
+	let mut image_remaining = image_size;
+	while let Some((block_index, block)) = chain.next_block()? {
+		let mut cursor = BLOCK_HEADER_SIZE;
+		while let Some(size_bytes) = block.get(cursor..cursor + 2) {
+			let frame_size = usize::from(u16::from_be_bytes([size_bytes[0], size_bytes[1]]));
+			if frame_size == 0 {
+				break;
+			}
+
+			if position >= range.end {
+				return Ok(());
+			}
+
+			let Some(frame) = block.get(cursor + 2..cursor + 2 + frame_size) else {
+				return Err(Xex2Error::LzxFrameOutOfRange { block_index, offset: cursor }.into_report());
+			};
+
+			let len = LZX_FRAME_SIZE.min(image_remaining);
+			let frame_end = position + len;
+			let destination = if position >= range.start && frame_end <= range.end {
+				&mut out[(position - range.start) as usize..(frame_end - range.start) as usize]
 			} else {
-				false
+				&mut frame_buffer[..len as usize]
+			};
+			decoder.decompress(frame, destination).map_err(|e| Xex2Error::Lzx(e).into_report())?;
+			if position < range.start || frame_end > range.end {
+				copy_overlap(&frame_buffer[..len as usize], position, &range, out);
 			}
+
+			position = frame_end;
+			image_remaining -= len;
+			cursor += 2 + frame_size;
 		}
-		CompressionType::Basic | CompressionType::None => {
-			let first_block = crypto::decrypt_data(&data[..16], key);
-			first_block[0] == b'M' && first_block[1] == b'Z'
-		}
-		CompressionType::Delta => false,
-	}
-}
-
-fn decompress_basic(data: &[u8], format: &FileFormatInfo) -> Result<Vec<u8>> {
-	let mut output = Vec::new();
-	let mut offset = 0;
-
-	for block in &format.blocks {
-		let data_size = block.data_size as usize;
-		let zero_size = block.zero_size as usize;
-
-		if offset + data_size > data.len() {
-			return Err(Xex2Error::DecompressionFailed.into_report());
-		}
-
-		output.extend_from_slice(&data[offset..offset + data_size]);
-		output.resize(output.len() + zero_size, 0);
-		offset += data_size;
 	}
 
-	Ok(output)
+	Ok(())
 }
 
-pub(crate) fn decompress_normal(data: &[u8], image_size: u32, format: &FileFormatInfo) -> Result<Vec<u8>> {
-	let mut output = Vec::new();
-	let window_size = window_size_from_format(format)?;
-	let first_chunk_size =
-		format.first_block_size.ok_or_else(|| Xex2Error::DecompressionFailed.into_report())? as usize;
-
-	let mut block_offset = 0;
-	let mut block_size = first_chunk_size;
-	let mut lzx = lzxd::Lzxd::new(window_size);
-
-	while block_size > 0 && output.len() < image_size as usize {
-		if block_offset + block_size > data.len() {
-			return Err(Xex2Error::DecompressionFailed.into_report());
-		}
-
-		let block_data = &data[block_offset..block_offset + block_size];
-
-		let next_block_size = read_u32_be(block_data)? as usize;
-
-		let compressed_payload = &block_data[BLOCK_HEADER_SIZE..];
-		let mut payload_offset = 0;
-
-		while payload_offset < compressed_payload.len() && output.len() < image_size as usize {
-			if payload_offset + CHUNK_SIZE_PREFIX_LEN > compressed_payload.len() {
-				break;
-			}
-
-			let chunk_compressed_size =
-				((compressed_payload[payload_offset] as usize) << 8) | compressed_payload[payload_offset + 1] as usize;
-			payload_offset += CHUNK_SIZE_PREFIX_LEN;
-
-			if chunk_compressed_size == 0 {
-				break;
-			}
-
-			if payload_offset + chunk_compressed_size > compressed_payload.len() {
-				return Err(Xex2Error::DecompressionFailed.into_report());
-			}
-
-			let chunk_data = &compressed_payload[payload_offset..payload_offset + chunk_compressed_size];
-			let remaining = image_size as usize - output.len();
-			let out_size = std::cmp::min(remaining, LZX_OUTPUT_CHUNK_SIZE);
-
-			match lzx.decompress_next(chunk_data, out_size) {
-				Ok(decompressed) => {
-					output.extend_from_slice(decompressed);
-				}
-				Err(_) => {
-					return Err(Xex2Error::DecompressionFailed.into_report());
-				}
-			}
-
-			payload_offset += chunk_compressed_size;
-		}
-
-		block_offset += block_size;
-		block_size = next_block_size;
+/// Copy the part of `bytes`, which belong at image offset `position`, that
+/// lies in `range`.
+fn copy_overlap(bytes: &[u8], position: u32, range: &Range<u32>, out: &mut [u8]) {
+	let start = position.max(range.start);
+	let end = position.saturating_add(bytes.len() as u32).min(range.end);
+	if start >= end {
+		return;
 	}
 
-	output.resize(image_size as usize, 0);
-	Ok(output)
+	out[(start - range.start) as usize..(end - range.start) as usize]
+		.copy_from_slice(&bytes[(start - position) as usize..(end - position) as usize]);
 }
 
-fn window_size_from_format(format: &FileFormatInfo) -> Result<lzxd::WindowSize> {
-	let raw = format.window_size.ok_or_else(|| Xex2Error::DecompressionFailed.into_report())?;
-	match raw {
-		0x8000 => Ok(lzxd::WindowSize::KB32),
-		0x10000 => Ok(lzxd::WindowSize::KB64),
-		0x20000 => Ok(lzxd::WindowSize::KB128),
-		0x40000 => Ok(lzxd::WindowSize::KB256),
-		0x80000 => Ok(lzxd::WindowSize::KB512),
-		0x100000 => Ok(lzxd::WindowSize::MB1),
-		0x200000 => Ok(lzxd::WindowSize::MB2),
-		_ => Err(Xex2Error::DecompressionFailed.into_report()),
+fn zero_overlap(span: Range<u32>, range: &Range<u32>, out: &mut [u8]) {
+	let start = span.start.max(range.start);
+	let end = span.end.min(range.end);
+	if start >= end {
+		return;
 	}
+
+	out[(start - range.start) as usize..(end - range.start) as usize].fill(0);
 }
 
-fn read_u32_be(data: &[u8]) -> Result<u32> {
-	let mut c = Cursor::new(data);
-	c.read_u32::<BigEndian>().io()
+/// Blocks of a Normal or Delta data region, decrypted and checked against
+/// the SHA-1 that the previous block (or FileFormatInfo) records.
+pub(crate) struct BlockChain<'a> {
+	data: &'a [u8],
+	decryptor: Option<CbcDecryptor>,
+	offset: usize,
+	next_size: u32,
+	next_hash: Sha1Hash,
+	index: usize,
+	buffer: Vec<u8>,
+}
+
+impl<'a> BlockChain<'a> {
+	pub(crate) fn new(data: &'a [u8], format: &FileFormatInfo, decryptor: Option<CbcDecryptor>) -> Result<Self> {
+		let (next_size, next_hash) = first_block(format)?;
+
+		Ok(Self { data, decryptor, offset: 0, next_size, next_hash, index: 0, buffer: Vec::new() })
+	}
+
+	/// The index and contents of the next decrypted block, or `None` after
+	/// the block whose next size is zero.
+	pub(crate) fn next_block(&mut self) -> Result<Option<(usize, &[u8])>> {
+		if self.next_size == 0 {
+			return Ok(None);
+		}
+
+		// Blocks are read into a 64 KiB buffer in whole sectors (see
+		// doc/re-notes/xex-loader.md, Normal image data).
+		if self.next_size > MAX_BLOCK_SIZE || !self.next_size.is_multiple_of(SECTOR_SIZE) {
+			return Err(Xex2Error::DataBlockSize { block_index: self.index, size: self.next_size }.into_report());
+		}
+
+		let size = self.next_size as usize;
+		let Some(encrypted) = self.data.get(self.offset..self.offset + size) else {
+			return Err(Xex2Error::DataBlockOutOfRange {
+				block_index: self.index,
+				offset: self.offset,
+				size: self.next_size,
+			}
+			.into_report());
+		};
+
+		self.buffer.clear();
+		self.buffer.extend_from_slice(encrypted);
+		if let Some(decryptor) = &mut self.decryptor {
+			decryptor.decrypt(&mut self.buffer);
+		}
+
+		if Sha1Hash(Sha1::digest(&self.buffer).into()) != self.next_hash {
+			return Err(Xex2Error::DataBlockHashMismatch { block_index: self.index }.into_report());
+		}
+
+		if self.buffer.len() < BLOCK_HEADER_SIZE {
+			return Err(Xex2Error::DataBlockOutOfRange {
+				block_index: self.index,
+				offset: self.offset,
+				size: self.next_size,
+			}
+			.into_report());
+		}
+
+		self.next_size = u32::from_be_bytes(self.buffer[0..4].try_into().unwrap());
+		self.next_hash = Sha1Hash(self.buffer[4..BLOCK_HEADER_SIZE].try_into().unwrap());
+		let index = self.index;
+		self.offset += size;
+		self.index += 1;
+
+		Ok(Some((index, &self.buffer)))
+	}
 }

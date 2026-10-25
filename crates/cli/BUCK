@@ -28,6 +28,7 @@ rust_binary(
     features = [],
     deps = [
         "//crates/stfs:stfs",
+        "//crates/system_update:system_update",
         "//crates/xcontent:xcontent",
         "//third-party/rust:anyhow",
         "//third-party/rust:clap",
@@ -35,6 +36,7 @@ rust_binary(
         "//third-party/rust:humansize",
         "//third-party/rust:jiff",
         "//third-party/rust:memmap2",
+        "//third-party/rust:rootcause",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:vfs",
@@ -60,6 +62,7 @@ rust_test(
     },
     deps = [
         "//crates/stfs:stfs",
+        "//crates/system_update:system_update",
         "//crates/xcontent:xcontent",
         "//third-party/rust:anyhow",
         "//third-party/rust:clap",
@@ -67,6 +70,7 @@ rust_test(
         "//third-party/rust:humansize",
         "//third-party/rust:jiff",
         "//third-party/rust:memmap2",
+        "//third-party/rust:rootcause",
         "//third-party/rust:serde",
         "//third-party/rust:serde_json",
         "//third-party/rust:vfs",

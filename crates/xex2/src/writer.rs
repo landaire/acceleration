@@ -637,20 +637,17 @@ fn apply_encryption_transforms(
 	}
 
 	let file_format = xex.header.file_format_info()?;
-	let current_file_key = &xex.security_info.image_info.file_key;
-	let keys = crate::crypto::decrypt_file_key(current_file_key);
-	let current_machine = detect_current_machine(source, xex, &file_format, &keys);
-	let session_key = match current_machine {
-		TargetMachine::Retail => keys.retail,
-		TargetMachine::Devkit => keys.devkit,
-	};
+	let image_flags = xex.security_info.image_info.image_flags;
+	let current_machine = crate::hashes::verify_headers(source, xex)?;
+	let master = master_key_for(current_machine, image_flags)?;
+	let session_key = crate::crypto::unwrap_key(&xex.security_info.image_info.file_key, &master);
 	let resolved_machine = plan.target_machine.unwrap_or(current_machine);
 
 	// Re-wrap under target machine's master key, but only when it would change.
 	if let Some(target) = plan.target_machine
 		&& target != current_machine
 	{
-		let master = master_key_for(resolved_machine);
+		let master = master_key_for(resolved_machine, image_flags)?;
 		let new_file_key = crate::crypto::wrap_file_key(&session_key, &master);
 		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, new_file_key.to_vec());
 	}
@@ -671,7 +668,7 @@ fn apply_encryption_transforms(
 			(EncryptionType::None, TargetEncryption::Encrypted) => {
 				let ciphertext = crate::crypto::encrypt_data(region, &session_key);
 				patch.write(data_off.get(), ciphertext);
-				let master = master_key_for(resolved_machine);
+				let master = master_key_for(resolved_machine, image_flags)?;
 				let wrapped = crate::crypto::wrap_file_key(&session_key, &master);
 				editor.overwrite(patch, ImageInfoOffset::FILE_KEY, wrapped.to_vec());
 				stage_file_format_encryption(xex, source, EncryptionType::Normal, blob_edits)?;
@@ -685,37 +682,9 @@ fn apply_encryption_transforms(
 	Ok(())
 }
 
-fn master_key_for(machine: TargetMachine) -> crate::header::AesKey {
-	match machine {
-		TargetMachine::Retail => crate::crypto::RETAIL_KEY,
-		TargetMachine::Devkit => crate::crypto::DEVKIT_KEY,
-	}
-}
-
-fn detect_current_machine(
-	source: &[u8],
-	xex: &Xex2,
-	file_format: &crate::header::FileFormatInfo,
-	keys: &crate::crypto::DecryptedKeys,
-) -> TargetMachine {
-	use crate::header::CompressionType;
-	if file_format.encryption_type == EncryptionType::None {
-		// Unencrypted: master key unused; pick retail by convention.
-		return TargetMachine::Retail;
-	}
-	let data_off = xex.header.data_offset as usize;
-	let Some(probe) = source.get(data_off..data_off + 16) else {
-		return TargetMachine::Retail;
-	};
-	match file_format.compression_type {
-		CompressionType::Basic | CompressionType::None => {
-			let decrypted = crate::crypto::decrypt_data(probe, &keys.retail);
-			if decrypted.starts_with(b"MZ") { TargetMachine::Retail } else { TargetMachine::Devkit }
-		}
-		// Normal compression: both keys produce similar-looking first blocks;
-		// the heuristic is fuzzier, so default to retail.
-		_ => TargetMachine::Retail,
-	}
+fn master_key_for(machine: TargetMachine, image_flags: crate::opt::ImageFlags) -> Result<crate::header::AesKey> {
+	crate::crypto::master_key(machine, image_flags)
+		.ok_or_else(|| Xex2Error::UnknownMasterKey { machine, image_flags: image_flags.bits() }.into_report())
 }
 
 /// Stage a blob edit that flips the encryption_type field in FileFormatInfo.

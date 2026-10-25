@@ -44,9 +44,11 @@ dependencies = [
  "humansize",
  "jiff",
  "memmap2",
+ "rootcause",
  "serde",
  "serde_json",
  "stfs",
+ "system_update",
  "vfs",
  "xcontent",
 ]
@@ -4539,6 +4541,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "system_update"
+version = "0.4.0"
+dependencies = [
+ "memmap2",
+ "rootcause",
+ "stfs",
+ "thiserror 2.0.21",
+ "xcontent",
+ "xex2",
+]
+
+[[package]]
 name = "tabled"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5844,6 +5858,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xenon_lzx"
+version = "0.4.0"
+dependencies = [
+ "lzxc",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "xenon_types"
 version = "0.4.0"
 dependencies = [
@@ -5861,12 +5883,13 @@ dependencies = [
  "insta",
  "jiff",
  "lzxc",
- "lzxd",
  "num_enum",
  "rootcause",
  "serde",
  "sha-1",
+ "thiserror 2.0.21",
  "xecrypt",
+ "xenon_lzx",
  "xenon_types",
 ]
 
@@ -5886,6 +5909,7 @@ dependencies = [
  "anyhow",
  "bitflags 2.13.2",
  "clap",
+ "memmap2",
  "rootcause",
  "serde_json",
  "tabled",

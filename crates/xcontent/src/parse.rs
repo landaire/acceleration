@@ -3,10 +3,12 @@ use byteorder::LittleEndian;
 use byteorder::ReadBytesExt;
 use sha1::Digest;
 use sha1::Sha1;
+use std::fmt::Debug;
 use std::io::Cursor;
 use std::io::Read;
 use std::sync::Arc;
 use stfs::StfsPackage;
+use stfs::stfs_vfs::StfsVfs;
 use vfs::VfsPath;
 
 use serde::Serialize;
@@ -315,6 +317,28 @@ pub enum XboxFilesystem {
 	Stfs(StfsPackage),
 }
 
+impl XboxFilesystem {
+	/// Filesystem over `data`, the complete package this filesystem was parsed from.
+	pub fn into_vfs<T>(self, data: Arc<T>) -> Box<dyn vfs::FileSystem>
+	where
+		T: AsRef<[u8]> + Debug + Send + Sync + 'static,
+	{
+		match self {
+			XboxFilesystem::Stfs(package) => Box::new(StfsVfs::new(data, package)),
+		}
+	}
+
+	/// Root path of [`into_vfs`][Self::into_vfs].
+	pub fn into_vfs_path<T>(self, data: Arc<T>) -> VfsPath
+	where
+		T: AsRef<[u8]> + Debug + Send + Sync + 'static,
+	{
+		match self {
+			XboxFilesystem::Stfs(package) => VfsPath::new(StfsVfs::new(data, package)),
+		}
+	}
+}
+
 #[derive(Debug, Serialize)]
 pub struct XContentPackage {
 	pub header: XContentHeader,
@@ -322,22 +346,6 @@ pub struct XContentPackage {
 }
 
 impl XContentPackage {
-	/// Not implemented; panics.
-	pub fn to_vfs_path<T>(&self, _data: Arc<T>) -> VfsPath
-	where
-		T: AsRef<[u8]> + Send + Sync + 'static,
-	{
-		todo!("port to new stfs VFS API")
-	}
-
-	/// Not implemented; panics.
-	pub fn to_vfs<T>(&self, _data: Arc<T>) -> Box<dyn vfs::FileSystem>
-	where
-		T: AsRef<[u8]> + Send + Sync + 'static,
-	{
-		todo!("port to new stfs VFS API")
-	}
-
 	pub fn verify_signature(&self, data: &[u8]) -> Result<xecrypt::ConsoleKind, xecrypt::Error> {
 		xecrypt::verify_xcontent_signature(
 			self.header.signature_type,

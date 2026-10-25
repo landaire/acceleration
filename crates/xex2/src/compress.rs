@@ -172,7 +172,7 @@ fn map_window_size(bytes: u32) -> Result<lzxc::WindowSize> {
 		0x80000 => Ok(lzxc::WindowSize::KB512),
 		0x100000 => Ok(lzxc::WindowSize::MB1),
 		0x200000 => Ok(lzxc::WindowSize::MB2),
-		_ => Err(Xex2Error::DecompressionFailed.into_report()),
+		_ => Err(Xex2Error::InvalidWindowSize { size: bytes }.into_report()),
 	}
 }
 
@@ -203,8 +203,12 @@ mod tests {
 			blocks: Vec::new(),
 			window_size: Some(stream.window_size),
 			first_block_size: Some(stream.first_block_size),
+			first_block_hash: Some(stream.first_block_hash),
 		};
-		crate::basefile::decompress_normal(&stream.data, image_size as u32, &format).unwrap()
+		let mut image = vec![0u8; image_size];
+		crate::basefile::load_image(&stream.data, &format, None, image_size as u32, 0..image_size as u32, &mut image)
+			.unwrap();
+		image
 	}
 
 	/// Walk the chain from the FileFormatInfo values and return each block size.

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
+use memmap2::Mmap;
 use tabled::Table;
 use tabled::Tabled;
 use tabled::builder::Builder;
@@ -115,18 +116,41 @@ enum Commands {
 		/// Path to the XEX file
 		file: PathBuf,
 
+		/// Delta patch (.xexp) to apply to the XEX first
+		#[arg(long)]
+		patch: Option<PathBuf>,
+
 		/// Output path (defaults to <input>.pe)
 		#[arg(short, long)]
 		output: Option<PathBuf>,
+
+		/// Also write the patched XEX headers, the first `data_offset` bytes
+		/// of the patched module, to this path
+		#[arg(long, requires = "patch")]
+		headers_output: Option<PathBuf>,
+
+		/// Skip the header signature, header hash and page descriptor checks,
+		/// decrypting with this console type's master key
+		#[arg(long, value_enum, conflicts_with = "patch")]
+		unchecked: Option<Machine>,
 	},
 	/// Extract resources from a XEX
 	Resources {
 		/// Path to the XEX file
 		file: PathBuf,
 
+		/// Delta patch (.xexp) to apply to the XEX first
+		#[arg(long)]
+		patch: Option<PathBuf>,
+
 		/// Output directory (defaults to current directory)
 		#[arg(short, long, default_value = ".")]
 		output_dir: PathBuf,
+
+		/// Skip the header signature, header hash and page descriptor checks,
+		/// decrypting with this console type's master key
+		#[arg(long, value_enum, conflicts_with = "patch")]
+		unchecked: Option<Machine>,
 	},
 	/// List import libraries and their imports
 	Imports {
@@ -204,8 +228,12 @@ fn main() -> anyhow::Result<()> {
 
 	match args.command {
 		Commands::Info { extended, file } => cmd_info(&file, extended, fmt),
-		Commands::Basefile { file, output } => cmd_basefile(&file, output),
-		Commands::Resources { file, output_dir } => cmd_resources(&file, &output_dir),
+		Commands::Basefile { file, patch, output, headers_output, unchecked } => {
+			cmd_basefile(&file, patch.as_ref(), output, headers_output, unchecked)
+		}
+		Commands::Resources { file, patch, output_dir, unchecked } => {
+			cmd_resources(&file, patch.as_ref(), &output_dir, unchecked)
+		}
 		Commands::Imports { file } => cmd_imports(&file, fmt),
 		Commands::Idc { file, output } => cmd_idc(&file, output),
 		Commands::Xml { file } => cmd_xml(&file),
@@ -554,11 +582,67 @@ fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
 	Ok(())
 }
 
-fn cmd_basefile(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
-	let data = fs::read(path)?;
-	let xex = Xex2::parse(&data)?;
+/// A XEX's headers and image, after any delta patch.
+struct Module {
+	xex: Xex2,
+	image: Vec<u8>,
+	/// The headers a delta patch produced.
+	patched_headers: Option<Vec<u8>>,
+}
 
-	let basefile = xex.extract_basefile(&data)?;
+/// Map a file read-only.
+fn map_file(path: &PathBuf) -> anyhow::Result<Mmap> {
+	let file = fs::File::open(path)?;
+	// SAFETY: the mapping is read-only; the tool does not modify the file
+	// while it is mapped.
+	Ok(unsafe { Mmap::map(&file)? })
+}
+
+/// Parse a XEX and extract its image, applying `patch` first when given.
+/// With `unchecked`, the image is extracted for that console type without
+/// verifying the headers or page descriptors.
+fn load_module(path: &PathBuf, patch: Option<&PathBuf>, unchecked: Option<Machine>) -> anyhow::Result<Module> {
+	let data = map_file(path)?;
+	let Some(patch) = patch else {
+		let xex = Xex2::parse(&data[..])?;
+		let image = match unchecked {
+			Some(machine) => xex.extract_basefile_unchecked(&data[..], machine.into())?,
+			None => xex.extract_basefile(&data[..])?,
+		};
+		return Ok(Module { xex, image, patched_headers: None });
+	};
+
+	let patch_data = map_file(patch)?;
+	let patched = xex2::delta::apply_delta_patch(&data, &patch_data, xex2::delta::FILE_HEADER_LIMIT)?;
+	let xex = patched.xex()?;
+
+	Ok(Module { xex, image: patched.image, patched_headers: Some(patched.headers) })
+}
+
+/// Console type, for the master key of an unchecked extraction.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Machine {
+	Retail,
+	Devkit,
+}
+
+impl From<Machine> for xex2::writer::TargetMachine {
+	fn from(machine: Machine) -> Self {
+		match machine {
+			Machine::Retail => Self::Retail,
+			Machine::Devkit => Self::Devkit,
+		}
+	}
+}
+
+fn cmd_basefile(
+	path: &PathBuf,
+	patch: Option<&PathBuf>,
+	output: Option<PathBuf>,
+	headers_output: Option<PathBuf>,
+	unchecked: Option<Machine>,
+) -> anyhow::Result<()> {
+	let module = load_module(path, patch, unchecked)?;
 
 	let out_path = output.unwrap_or_else(|| {
 		let mut p = path.clone();
@@ -566,15 +650,24 @@ fn cmd_basefile(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
 		p
 	});
 
-	fs::write(&out_path, &basefile)?;
-	println!("Wrote {} bytes to {}", basefile.len(), out_path.display());
+	fs::write(&out_path, &module.image)?;
+	println!("Wrote {} bytes to {}", module.image.len(), out_path.display());
+
+	if let (Some(headers_path), Some(headers)) = (headers_output, module.patched_headers) {
+		fs::write(&headers_path, &headers)?;
+		println!("Wrote {} bytes of patched headers to {}", headers.len(), headers_path.display());
+	}
 
 	Ok(())
 }
 
-fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
-	let data = fs::read(path)?;
-	let xex = Xex2::parse(&data)?;
+fn cmd_resources(
+	path: &PathBuf,
+	patch: Option<&PathBuf>,
+	output_dir: &PathBuf,
+	unchecked: Option<Machine>,
+) -> anyhow::Result<()> {
+	let Module { xex, image: basefile, .. } = load_module(path, patch, unchecked)?;
 
 	let resources = match xex.header.resource_info() {
 		Some(r) => r,
@@ -584,7 +677,6 @@ fn cmd_resources(path: &PathBuf, output_dir: &PathBuf) -> anyhow::Result<()> {
 		}
 	};
 
-	let basefile = xex.extract_basefile(&data)?;
 	let base_addr = xex.security_info.image_info.load_address;
 
 	fs::create_dir_all(output_dir)?;

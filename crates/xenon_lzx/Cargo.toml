@@ -1,0 +1,18 @@
+[package]
+name = "xenon_lzx"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
+repository = "https://github.com/landaire/acceleration"
+authors = ["Lander Brandt <landerbrandt@gmail.com>"]
+description = "LZX decoder with the frame, reference-window and E8 behavior of the Xbox 360 kernel's LDI decompressor"
+keywords = ["xbox360", "lzx", "xbox", "decompression"]
+categories = ["compression", "no-std"]
+include = ["src/**"]
+
+[dependencies]
+thiserror = { version = "2.0", default-features = false }
+
+[dev-dependencies]
+lzxc = { version = "0.2", path = "../lzxc" }

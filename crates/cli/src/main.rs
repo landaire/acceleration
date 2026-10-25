@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::ops::Deref;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use clap::Parser;
 use clap::Subcommand;
@@ -11,6 +13,9 @@ use humansize::DECIMAL;
 use jiff::Timestamp;
 use memmap2::MmapOptions;
 use serde_json::json;
+use system_update::FlashFile;
+use system_update::FlashFiles;
+use system_update::UpdatePackage;
 use vfs::VfsPath;
 use xcontent::xecrypt::XContentKeyMaterial;
 
@@ -46,6 +51,16 @@ enum Commands {
 		#[arg(default_value = ".")]
 		output_path: PathBuf,
 	},
+	/// Install a system update package over a directory of system flash files
+	ApplyUpdate {
+		/// Directory holding the files of the system flash volume
+		#[arg(long)]
+		base: PathBuf,
+		/// Directory to write the updated flash files to. A module rebuilt by a
+		/// delta patch is written as `<name>.headers` and `<name>.basefile`.
+		#[arg(long)]
+		output: PathBuf,
+	},
 }
 
 /// Xbox 360 STFS package tool
@@ -61,10 +76,62 @@ struct Args {
 
 const GENERAL_PADDING: usize = 25;
 
+/// The filesystem may not record a time; such entries show `-`.
+fn format_date(time: Option<SystemTime>) -> anyhow::Result<String> {
+	let Some(time) = time else {
+		return Ok("-".to_string());
+	};
+
+	Ok(Timestamp::try_from(time)?.strftime("%Y/%m/%d").to_string())
+}
+
+fn apply_update(package: &[u8], base: &Path, output: &Path) -> anyhow::Result<()> {
+	let mut maps = Vec::new();
+	for entry in std::fs::read_dir(base)? {
+		let entry = entry?;
+		if !entry.file_type()?.is_file() {
+			continue;
+		}
+
+		let file = File::open(entry.path())?;
+		// SAFETY: the mapping is read-only; the tool does not modify the file.
+		let map = unsafe { MmapOptions::new().map(&file)? };
+		maps.push((entry.file_name().to_string_lossy().into_owned(), map));
+	}
+
+	let mut files = FlashFiles::new();
+	for (name, map) in &maps {
+		files.insert(name.as_str(), FlashFile::Supplied(map));
+	}
+
+	let applied = files.apply_update(&UpdatePackage::parse(package)?)?;
+	for name in &applied.patches_without_base {
+		println!("no base module for {}; copied unapplied", name.as_str());
+	}
+
+	std::fs::create_dir_all(output)?;
+	for (name, file) in files.iter() {
+		match file {
+			FlashFile::Supplied(bytes) => std::fs::write(output.join(name.as_str()), bytes)?,
+			FlashFile::Update(bytes) => std::fs::write(output.join(name.as_str()), bytes)?,
+			FlashFile::Patched(module) => {
+				std::fs::write(output.join(format!("{}.headers", name.as_str())), &module.headers)?;
+				std::fs::write(output.join(format!("{}.basefile", name.as_str())), &module.image)?;
+			}
+		}
+	}
+
+	Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
 	let args = Args::parse();
 	let file = File::open(args.file_name)?;
 	let mmap = unsafe { MmapOptions::new().map(&file)? };
+
+	if let Some(Commands::ApplyUpdate { base, output }) = &args.command {
+		return apply_update(&mmap, base, output);
+	}
 
 	let package = xcontent::XContentPackage::parse(&mmap[..])?;
 
@@ -247,10 +314,10 @@ fn main() -> anyhow::Result<()> {
 		return Ok(());
 	}
 
-	let mut path: VfsPath = package.to_vfs_path(Arc::new(mmap));
+	let mut path: VfsPath = package.inner_file_system.into_vfs_path(Arc::new(mmap));
 
 	match args.command.expect("default command should have been handled") {
-		Commands::Info { long: _, json: _, json_pretty: _ } => {
+		Commands::Info { long: _, json: _, json_pretty: _ } | Commands::ApplyUpdate { .. } => {
 			unreachable!("Handled above")
 		}
 		Commands::List { tree: true, long: _, recursive: _, path: start_path } => {
@@ -310,15 +377,12 @@ fn main() -> anyhow::Result<()> {
 				let file = file?;
 				let meta = file.metadata()?;
 				if file.as_str().chars().filter(|c| *c == '/').count() == 1 {
-					let created = Timestamp::try_from(meta.created.unwrap()).expect("invalid timestamp");
-					let accessed = Timestamp::try_from(meta.accessed.unwrap()).expect("invalid timestamp");
-
 					println!(
 						"{} {}b {} {} {}",
 						if file.is_file()? { "f" } else { "d" },
 						meta.len,
-						created.strftime("%Y/%m/%d"),
-						accessed.strftime("%Y/%m/%d"),
+						format_date(meta.created)?,
+						format_date(meta.accessed)?,
 						file.filename()
 					);
 				}

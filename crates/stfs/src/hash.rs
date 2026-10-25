@@ -44,6 +44,8 @@ pub struct HashTableMeta {
 	pub tables_per_level: [usize; 3],
 	pub top_table: HashTable,
 	pub first_table_address: usize,
+	#[serde(skip)]
+	pub allocated_block_count: usize,
 }
 
 impl HashTableMeta {
@@ -67,6 +69,7 @@ impl HashTableMeta {
 			block_step,
 			tables_per_level,
 			first_table_address,
+			allocated_block_count,
 			top_table: HashTable { level: top_level, ..Default::default() },
 		};
 
@@ -145,13 +148,15 @@ impl HashTableMeta {
 		self.block_step[1]
 	}
 
-	pub fn block_to_addr(&self, block: BlockNumber, sex: StfsPackageSex) -> usize {
+	/// File offset of data block `block`. Blocks are numbered from zero up to
+	/// the allocated block count, and block numbers are 24 bits.
+	pub fn block_to_addr(&self, block: BlockNumber, sex: StfsPackageSex) -> Result<usize, StfsError> {
 		let block = block.0;
-		if block > 2usize.pow(24) - 1 {
-			panic!("invalid block: {:#x}", block);
+		if block >= self.allocated_block_count || block >= 1 << 24 {
+			return Err(StfsError::InvalidBlock { block, allocated: self.allocated_block_count });
 		}
 
-		(self.compute_data_block_num(block, sex) * BLOCK_SIZE) + self.first_table_address
+		Ok((self.compute_data_block_num(block, sex) * BLOCK_SIZE) + self.first_table_address)
 	}
 
 	fn compute_data_block_num(&self, block: usize, sex: StfsPackageSex) -> usize {
@@ -165,26 +170,6 @@ impl HashTableMeta {
 				+ ((addr + ((block + DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]) / DATA_BLOCKS_PER_HASH_TREE_LEVEL[2]))
 					<< sex as usize)
 		}
-	}
-
-	pub(crate) fn hash_table_skip_for_address(&self, table_address: usize, sex: StfsPackageSex) -> usize {
-		let mut block_number = (table_address - self.first_table_address) / BLOCK_SIZE;
-
-		if block_number == 0 {
-			return BLOCK_SIZE << sex as usize;
-		}
-
-		if block_number == self.block_step[1] {
-			return 0x3000 << sex as usize;
-		} else if block_number > self.block_step[1] {
-			block_number -= self.block_step[1] + (1 << sex as usize);
-		}
-
-		if block_number == self.block_step[0] || block_number.is_multiple_of(self.block_step[1]) {
-			return 0x2000 << sex as usize;
-		}
-
-		BLOCK_SIZE << sex as usize
 	}
 
 	pub fn read_block_hash_entry<R: ReadAt>(
@@ -247,5 +232,25 @@ impl HashTableMeta {
 				Ok(hash_addr + (((status_byte as usize) & 0x40) << 0x6))
 			}
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn block_addresses_end_at_the_allocated_count() {
+		let meta = HashTableMeta {
+			block_step: StfsPackageSex::Female.block_step(),
+			allocated_block_count: 2,
+			..HashTableMeta::default()
+		};
+
+		assert!(meta.block_to_addr(BlockNumber(1), StfsPackageSex::Female).is_ok());
+		assert!(matches!(
+			meta.block_to_addr(BlockNumber(2), StfsPackageSex::Female),
+			Err(StfsError::InvalidBlock { block: 2, allocated: 2 })
+		));
 	}
 }

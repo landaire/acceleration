@@ -1,0 +1,22 @@
+[package]
+name = "system_update"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
+repository = "https://github.com/landaire/acceleration"
+authors = ["Lander Brandt <landerbrandt@gmail.com>"]
+description = "Applies Xbox 360 system update packages to a set of system flash files"
+keywords = ["xbox360", "xex", "xbox", "update"]
+categories = ["parser-implementations"]
+include = ["src/**"]
+
+[dependencies]
+rootcause = "0.12"
+stfs = { version = "0.4", path = "../stfs" }
+thiserror = { workspace = true }
+xcontent = { version = "0.4", path = "../xcontent" }
+xex2 = { version = "0.4", path = "../xex2" }
+
+[dev-dependencies]
+memmap2 = "0.9"

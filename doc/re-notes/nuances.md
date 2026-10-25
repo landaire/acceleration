@@ -33,3 +33,11 @@
 - The import library `id` must equal the exporting module's export-table module number. Zero fails with `C0000225`.
 - XEX RotSumSha uses a borrow when the difference exceeds the operand, not when the minuend is smaller than the operand.
 - The console verifies XEX signatures in the Montgomery domain without converting back. A valid signature satisfies `s^e * R^-(e-1) mod n == block` with `R = 2^2048`.
+
+## LDI decompressor code tables
+
+The kernel ignores the result of building the main, length and aligned offset tables (kernel 21256 `0x80159150`, `0x801590ec`). Main and length lengths that are neither a complete code nor all zero leave the previous table in place (`0x8015a6e0` rejects them before writing), while each decoded symbol's code length is read from the new lengths. A rejected main code also ends the code reading, so the length lengths and table stay unchanged. The aligned table sums its counts modulo 0x10000 and fills its cleared table until a code no longer fits (`0x8015a9a0`). Tables start zeroed and survive `LDIResetDecompression`. `xenon_lzx` reproduces this, including the kernel's table and node layout. Two cases have no defined result on the console and are errors: a rejected pretree, whose tables are uninitialized stack memory (`0x8015a2d8`), and a code length above 16, which writes past the length counts.
+
+## Patched module base version
+
+After building a patched module the kernel writes the descriptor's source version into the in-memory execution info (`0x800a66c0`). The signed patched headers keep the target version; `xex2::delta` returns them unmodified.

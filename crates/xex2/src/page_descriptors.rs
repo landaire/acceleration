@@ -204,7 +204,7 @@ pub fn verify_chain(pe: &[u8], header: &Xex2Header, security_info: &SecurityInfo
 
 	for i in 0..count {
 		if pd_off + (i + 1) * 24 > source.len() {
-			return Err(Xex2Error::HashMismatch { block_index: i }.into_report());
+			return Err(Xex2Error::PageDescriptorMismatch { descriptor_index: i }.into_report());
 		}
 		let desc_bytes: [u8; 24] = source[pd_off + i * 24..pd_off + (i + 1) * 24].try_into().unwrap();
 		let page_count = u32::from_be_bytes(desc_bytes[0..4].try_into().unwrap()) >> 4;
@@ -213,7 +213,7 @@ pub fn verify_chain(pe: &[u8], header: &Xex2Header, security_info: &SecurityInfo
 
 		let computed = sha1_page_and_descriptor(&pe[pe_cursor..range_end], declared_len, &desc_bytes);
 		if computed != expected {
-			return Err(Xex2Error::HashMismatch { block_index: i }.into_report());
+			return Err(Xex2Error::PageDescriptorMismatch { descriptor_index: i }.into_report());
 		}
 		expected.0.copy_from_slice(&desc_bytes[4..24]);
 		pe_cursor = range_end;

@@ -98,7 +98,8 @@ pub enum CompressionType {
 	/// has a 24-byte header containing the next block's size and a SHA-1
 	/// hash for integrity verification. LZX state persists across blocks.
 	Normal = 2,
-	/// Binary diff against a base XEX. Used by XEXP patch files.
+	/// Delta patch records applied to the image of a base XEX, in the Normal
+	/// block chain. Used by XEXP patch files.
 	Delta = 3,
 }
 
@@ -120,8 +121,12 @@ pub struct FileFormatInfo {
 	pub encryption_type: EncryptionType,
 	pub compression_type: CompressionType,
 	pub blocks: Vec<BasicCompressionBlock>,
+	/// LZX window size, for Normal and Delta compression.
 	pub window_size: Option<u32>,
+	/// Size of the first data block, for Normal and Delta compression.
 	pub first_block_size: Option<u32>,
+	/// SHA-1 of the first data block, for Normal and Delta compression.
+	pub first_block_hash: Option<Sha1Hash>,
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +477,7 @@ impl Xex2Header {
 		let mut blocks = Vec::new();
 		let mut window_size = None;
 		let mut first_block_size = None;
+		let mut first_block_hash = None;
 
 		match compression_type {
 			CompressionType::Basic => {
@@ -482,15 +488,25 @@ impl Xex2Header {
 					});
 				}
 			}
-			CompressionType::Normal => {
+			// Delta data uses the Normal block chain (kernel 21256 `0x800a5ff8`).
+			CompressionType::Normal | CompressionType::Delta => {
 				window_size = Some(c.read_u32::<BigEndian>().io()?);
 				first_block_size = Some(c.read_u32::<BigEndian>().io()?);
-				// Skip the 20-byte hash of the first block
+				let mut hash = [0u8; 20];
+				c.read_exact(&mut hash).io()?;
+				first_block_hash = Some(Sha1Hash(hash));
 			}
-			_ => {}
+			CompressionType::None => {}
 		}
 
-		Ok(FileFormatInfo { encryption_type, compression_type, blocks, window_size, first_block_size })
+		Ok(FileFormatInfo {
+			encryption_type,
+			compression_type,
+			blocks,
+			window_size,
+			first_block_size,
+			first_block_hash,
+		})
 	}
 }
 

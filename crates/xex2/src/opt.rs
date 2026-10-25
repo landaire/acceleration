@@ -576,6 +576,15 @@ bitflags! {
 		/// (shared page 0x8E038614 bit 8 clear). Corresponds to
 		/// xextool's `-k`.
 		const SIGNED_KEYVAULT_REQUIRED = 0x0800_0000;
+		/// Either bit makes the hypervisor unwrap the file key with the
+		/// second master key (hypervisor 17559 `0x29a68`). Their other
+		/// purpose is not identified. A console without hypervisor flag
+		/// `0x8` accepts both bits or neither (`0x2cc98`). System modules
+		/// in flash set both.
+		const SECOND_MASTER_KEY        = 0x0000_0006;
+		/// Selects the `XBOXREVXEX` signature salt instead of `XBOX360XEX`
+		/// (hypervisor 17559 `0x29a68`, kernel 21256 `0x800a0980`).
+		const REVOCATION_SALT          = 0x8000_0000;
 	}
 }
 #[cfg(feature = "serde")]

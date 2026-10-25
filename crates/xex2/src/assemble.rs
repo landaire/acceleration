@@ -21,8 +21,6 @@ use crate::compress;
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::hashes;
-use crate::header::CompressionType;
-use crate::header::EncryptionType;
 use crate::header::OptionalHeaderKey;
 use crate::header::OptionalHeaderValue;
 use crate::header::SecurityInfo;
@@ -57,10 +55,15 @@ pub fn rebuild_with_compression(
 	replace_pe: Option<Vec<u8>>,
 ) -> Result<Vec<u8>> {
 	let original_ff = xex.header.file_format_info()?;
+	let machine = crate::hashes::verify_headers(source, xex)?;
 
 	let pe: Vec<u8> = match replace_pe {
 		Some(new_pe) => new_pe,
-		None => crate::basefile::extract_basefile(source, &xex.header, &xex.security_info)?,
+		None => {
+			let image = crate::basefile::extract_basefile_unchecked(source, xex, machine)?;
+			page_descriptors::verify_chain(&image, &xex.header, &xex.security_info, source)?;
+			image
+		}
 	};
 
 	// Generate descriptors up front so the match arms below can *move* `pe`
@@ -75,10 +78,7 @@ pub fn rebuild_with_compression(
 	// Preserve the source's encryption state here. Re-encryption is separate
 	// and handled by `plan_edits` on the assembled output.
 	let encryption = original_ff.encryption_type;
-	let session_key = (encryption == EncryptionType::Normal).then(|| {
-		let keys = crate::crypto::decrypt_file_key(&xex.security_info.image_info.file_key);
-		pick_session_key(source, xex, &original_ff, &keys)
-	});
+	let session_key = crate::basefile::session_key(xex, &original_ff, machine)?;
 	let (data_region, ff_blob) = match target_compression {
 		TargetCompression::Uncompressed => {
 			let data = match session_key {
@@ -140,30 +140,6 @@ fn existing_descriptor_template(source: &[u8], xex: &Xex2) -> Option<Vec<page_de
 		});
 	}
 	Some(out)
-}
-
-fn pick_session_key(
-	source: &[u8],
-	xex: &Xex2,
-	ff: &crate::header::FileFormatInfo,
-	keys: &crate::crypto::DecryptedKeys,
-) -> crate::header::AesKey {
-	// Minimal probe: try retail; fall back to devkit if the first block looks
-	// wrong. Mirrors `basefile::try_decrypt_with_key`'s heuristic.
-	let data_off = xex.header.data_offset as usize;
-	let probe_len = 32.min(source.len().saturating_sub(data_off));
-	let probe = &source[data_off..data_off + probe_len];
-	let looks_valid = |k: &crate::header::AesKey| {
-		if probe.len() < 16 {
-			return false;
-		}
-		let plain = crate::crypto::decrypt_data(&probe[..16], k);
-		match ff.compression_type {
-			CompressionType::None | CompressionType::Basic => plain.starts_with(b"MZ"),
-			_ => true,
-		}
-	};
-	if looks_valid(&keys.retail) { keys.retail } else { keys.devkit }
 }
 
 /// Tracks blob placements + the resulting security / data offsets.

@@ -59,32 +59,26 @@ impl StfsPackage {
 		writer: &mut W,
 		entry: &StfsFileEntry,
 	) -> Result<(), StfsError> {
-		let start_address = self.hash_table_meta.block_to_addr(entry.starting_block_num, self.sex);
+		let mut data_remaining = entry.file_size;
+		let mut block = entry.starting_block_num.0;
 
-		let blocks_until_hash_table =
-			(self.hash_table_meta.compute_first_level_backing_hash_block_number(entry.starting_block_num.0, self.sex)
-				+ self.hash_table_meta.block_step[0])
-				- ((start_address - self.hash_table_meta.first_table_address) / BLOCK_SIZE);
-
-		if entry.block_count <= blocks_until_hash_table {
-			// Single contiguous read
-			let data = source.read_at(start_address..start_address + entry.file_size)?;
-			writer.write_all(data.as_ref())?;
-		} else {
-			// File is broken up by hash tables
-			let mut data_remaining = entry.file_size;
-			let mut next_address = start_address;
-
-			while data_remaining > 0 {
-				let read_len = std::cmp::min(HASHES_PER_HASH_TABLE * BLOCK_SIZE, data_remaining);
-
-				let data = source.read_at(next_address..next_address + read_len)?;
-				writer.write_all(data.as_ref())?;
-
-				data_remaining -= read_len;
-				next_address += read_len;
-				next_address += self.hash_table_meta.hash_table_skip_for_address(next_address, self.sex);
+		// Hash tables interrupt the data blocks, so read each physically contiguous run of blocks separately.
+		while data_remaining > 0 {
+			let run_start = self.hash_table_meta.block_to_addr(BlockNumber(block), self.sex)?;
+			let mut run_len = 0;
+			loop {
+				run_len += std::cmp::min(BLOCK_SIZE, data_remaining - run_len);
+				block += 1;
+				if run_len == data_remaining
+					|| self.hash_table_meta.block_to_addr(BlockNumber(block), self.sex)? != run_start + run_len
+				{
+					break;
+				}
 			}
+
+			let data = source.read_at(run_start..run_start + run_len)?;
+			writer.write_all(data.as_ref())?;
+			data_remaining -= run_len;
 		}
 
 		Ok(())
@@ -107,7 +101,7 @@ impl StfsPackage {
 
 		for _ in 0..block_count {
 			let read_len = std::cmp::min(BLOCK_SIZE, data_remaining);
-			let block_address = self.hash_table_meta.block_to_addr(block, self.sex);
+			let block_address = self.hash_table_meta.block_to_addr(block, self.sex)?;
 
 			let data = source.read_at(block_address..block_address + read_len)?;
 			writer.write_all(data.as_ref())?;

@@ -51,6 +51,7 @@ pub(crate) mod basefile;
 pub mod builder;
 pub(crate) mod compress;
 pub(crate) mod crypto;
+pub mod delta;
 pub mod error;
 pub mod hashes;
 pub mod header;
@@ -106,14 +107,25 @@ impl Xex2 {
 		Ok(Xex2 { header, security_info })
 	}
 
-	/// Decrypt and decompress the inner PE image.
-	///
-	/// Tries the retail AES key first, then falls back to the devkit key.
-	/// For compressed XEXs, performs basic block decompression or LZX
-	/// decompression based on the file format info. The result starts
-	/// with the `MZ` PE signature.
+	/// Decrypt and decompress the inner PE image with the checks the
+	/// console makes: the header signature and hash, the SHA-1 of every
+	/// Normal block, and the page descriptors. The executable key that
+	/// verifies the signature selects the retail or development master key.
 	pub fn extract_basefile(&self, data: impl AsRef<[u8]>) -> Result<Vec<u8>> {
-		basefile::extract_basefile(data.as_ref(), &self.header, &self.security_info)
+		basefile::extract_basefile(data.as_ref(), self)
+	}
+
+	/// Decrypt and decompress the inner PE image without verifying the
+	/// header signature, header hash or page descriptors. `machine` names
+	/// the console type whose master key wraps the file key; the checked
+	/// [`extract_basefile`][Self::extract_basefile] learns it from the
+	/// signature. Normal block hashes are still checked.
+	pub fn extract_basefile_unchecked(
+		&self,
+		data: impl AsRef<[u8]>,
+		machine: writer::TargetMachine,
+	) -> Result<Vec<u8>> {
+		basefile::extract_basefile_unchecked(data.as_ref(), self, machine)
 	}
 
 	/// Start a streaming rebuild of this XEX.

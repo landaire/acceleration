@@ -16,9 +16,13 @@ use rsa::traits::PublicKeyParts;
 use sha1::Digest;
 use sha1::Sha1;
 
-/// Salt for a normal XEX signature. The hypervisor selects "XBOXREVXEX"
-/// instead for revocation-required images; that form is not implemented.
+/// Salt for a normal XEX signature.
 pub const SALT_XEX: &[u8; 10] = b"XBOX360XEX";
+
+/// Salt the hypervisor and kernel select instead of [`SALT_XEX`] when image
+/// flag `0x80000000` is set (hypervisor 17559 `0x29a68`, kernel 21256
+/// `0x800a0980`). Signing with it is not implemented.
+pub const SALT_XEX_REVOCATION: &[u8; 10] = b"XBOXREVXEX";
 
 fn rc4(key: &[u8], data: &mut [u8]) {
 	let mut s: [u8; 256] = core::array::from_fn(|i| i as u8);

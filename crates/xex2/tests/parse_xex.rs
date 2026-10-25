@@ -714,3 +714,21 @@ fn rebuild_compresses_uncompressed_xex() {
 	let rebuilt_pe = rebuilt.extract_basefile(&recompressed).unwrap();
 	assert_eq!(rebuilt_pe, original_pe, "compressed rebuild must round-trip the PE");
 }
+
+/// Applies a console delta patch: `XEX_DELTA_BASE` names the base XEX,
+/// `XEX_DELTA_PATCH` the XEXP, and `XEX_DELTA_BASEFILE` the expected image of
+/// the patched module. `apply_delta_patch` itself checks the patched headers'
+/// signature and the image's page descriptors.
+#[test]
+#[ignore = "requires XEX_DELTA_BASE, XEX_DELTA_PATCH and XEX_DELTA_BASEFILE"]
+fn delta_patch_rebuilds_patched_image() {
+	let read = |name: &str| std::fs::read(std::env::var_os(name).unwrap_or_else(|| panic!("{name} is set"))).unwrap();
+	let base = read("XEX_DELTA_BASE");
+	let patch = read("XEX_DELTA_PATCH");
+	let expected = read("XEX_DELTA_BASEFILE");
+
+	let patched = xex2::delta::apply_delta_patch(&base, &patch, xex2::delta::FILE_HEADER_LIMIT).unwrap();
+
+	assert!(patched.image == expected);
+	assert_eq!(patched.xex().unwrap().security_info.image_size as usize, expected.len());
+}

@@ -13,7 +13,9 @@ memmap2 = "0.9"
 clap = { version = "4.6.1", features = ["derive"] }
 anyhow = { workspace = true }
 serde = { workspace = true }
+rootcause = { version = "0.12", features = ["compat-anyhow1"] }
 stfs = { version = "0.4", path = "../stfs" }
+system_update = { version = "0.4", path = "../system_update" }
 xcontent = { version = "0.4", path = "../xcontent" }
 jiff = "0.2"
 hex = "0.4.3"

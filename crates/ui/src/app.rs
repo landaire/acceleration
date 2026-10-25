@@ -18,6 +18,7 @@ use rfd::AsyncFileDialog;
 #[cfg(not(target_arch = "wasm32"))]
 use rfd::FileDialog;
 use vfs::VfsPath;
+use xcontent::XContentHeader;
 use xcontent::XContentPackage;
 
 #[cfg(target_arch = "wasm32")]
@@ -35,11 +36,7 @@ extern "C" {
 
 #[derive(Debug)]
 struct XContentPackageReference {
-	/// Held so the memory backing `parsed` / `fs` stays alive for the VFS's
-	/// lifetime. The field is never read directly.
-	#[allow(dead_code)]
-	data: Arc<Vec<u8>>,
-	parsed: XContentPackage,
+	header: XContentHeader,
 	fs: VfsPath,
 }
 
@@ -127,8 +124,8 @@ async fn open_stfs_package(sender: Sender<BackgroundTaskMessage>) -> anyhow::Res
 
 		let data = Arc::new(file.read().await);
 		let parsed_package = XContentPackage::parse(data.as_slice())?;
-		let fs = parsed_package.to_vfs_path(Arc::clone(&data));
-		let package_ref = XContentPackageReference { data, parsed: parsed_package, fs };
+		let fs = parsed_package.inner_file_system.into_vfs_path(data);
+		let package_ref = XContentPackageReference { header: parsed_package.header, fs };
 
 		sender
 			.send(BackgroundTaskMessage::StfsPackageRead(file_path, Arc::new(package_ref)))
@@ -307,8 +304,7 @@ impl eframe::App for AccelerationApp {
 				// let pixels = display_image_buffer.as_flat_samples();
 
 				// *stfs_package_display_image = Some(ColorImage::from_rgba_unmultiplied(size, pixels.as_slice()));
-				*stfs_package_display_image =
-					Some(received_stfs_package.parsed.header.metadata.thumbnail_image.clone());
+				*stfs_package_display_image = Some(received_stfs_package.header.metadata.thumbnail_image.clone());
 
 				// let title_image =
 				// 	ImageReader::new(Cursor::new(received_stfs_package.parsed.header.metadata.title_image.as_slice()))
@@ -319,7 +315,7 @@ impl eframe::App for AccelerationApp {
 				// let pixels = title_image_buffer.as_flat_samples();
 
 				// *stfs_package_title_image = Some(ColorImage::from_rgba_unmultiplied(size, pixels.as_slice()));
-				*stfs_package_title_image = Some(received_stfs_package.parsed.header.metadata.title_image.clone());
+				*stfs_package_title_image = Some(received_stfs_package.header.metadata.title_image.clone());
 
 				*active_stfs_file = Some(file_path);
 				*stfs_package = Some(received_stfs_package);
@@ -403,8 +399,7 @@ impl eframe::App for AccelerationApp {
 			}
 
 			if let Some(stfs_package_ref) = stfs_package.as_ref() {
-				let parsed_package = &stfs_package_ref.parsed;
-				let metadata = &parsed_package.header.metadata;
+				let metadata = &stfs_package_ref.header.metadata;
 
 				ui.horizontal(|ui| {
 					ui.label("Name:");

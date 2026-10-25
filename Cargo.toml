@@ -4,6 +4,7 @@ members = [
 	"crates/cli",
 	"crates/lzxc",
 	"crates/stfs",
+	"crates/system_update",
 	"crates/shadowboot",
 	"crates/ui",
 	"crates/xcontent",
@@ -12,6 +13,7 @@ members = [
 	"crates/xflash",
 	"crates/xex2-ffi",
 	"crates/xex2ool",
+	"crates/xenon_lzx",
 	"crates/xenon_types",
 	"third-party/rust",
 ]
