@@ -31,6 +31,10 @@ SD verifies SE with a RotSumSha digest stored in the SD plaintext at offset `0x2
 
 When the final SE no longer matches the digest in the base SD, the compiler writes the new digest into the base SD plaintext and encrypts SD again with its unchanged key. It first checks that the base SD keeps the digest of the base SE, so the field is where it writes it. A supplied `sd.bin` must already keep the digest of the final SE. How SB authenticates SD has not been established: a console whose SB checks a signature over SD would reject the changed SD.
 
+`--rebuild-se` recompresses and re-encrypts SE and updates the base SD digest
+even when the plaintext payload is unchanged. This isolates boot-chain
+packaging from payload changes. It cannot be combined with `boot/se.bin`.
+
 ## Extracting the payload
 
 ```text
@@ -49,6 +53,7 @@ The build 16547 kernel loads the whole file into physically contiguous memory re
 shadowboot \
   --base base.bin \
   --layer layer \
+  [--rebuild-se] \
   --output shadowboot.bin
 ```
 
@@ -83,7 +88,7 @@ The evidence is the `0x240000`-byte devkit kernel with SHA-256 `bd57560a12f07eee
 
 ## Loader availability
 
-`host:\` is the kernel debugger's host file namespace, not a console disk partition or an XBDM drive. With a kernel debugger host attached over kdnet, the kernel sends the open, read, and close requests for `host:\xboxromw2d.bin` to that host as kd host file I/O packets; the openxbdm repository records the packet format in `docs/re-notes/kd.md`. The shadowboot loader sizes its allocation from the file size in the host's open reply. Without an attached host the open fails at once and the loader tries the next candidate. A stock boot of the build 16547 devkit kernel with a host attached requests `host:\xboxromw2d.bin`; loading a shadowboot image served that way has not been tested. `openxbdm-kd host --file 'host:\xboxromw2d.bin=shadowboot.bin'` would serve the file without writing the console disk. Use `HDD:\xboxromw2d.bin` for the verified deployment.
+`host:\` is the kernel debugger's host file namespace, not a console disk partition or an XBDM drive. With a kernel debugger host attached over kdnet, the kernel sends the open, read, and close requests for `host:\xboxromw2d.bin` to that host as kd host file I/O packets; the openxbdm repository records the packet format in `docs/re-notes/kd.md`. The shadowboot loader sizes its allocation from the file size in the host's open reply. Without an attached host the open fails at once and the loader tries the next candidate. On 2026-10-26 a stock build 16547 kernel accepted all `0xe0000` bytes of its own boot image from `openxbdm-kd host --file 'host:\xboxromw2d.bin=shadowboot.bin'`, completed the shadow boot, loaded `xshell.xex`, and returned through XBDM with boot flag `0x0200` set.
 
 The inspected retail build 17559 kernel does not contain `xboxrom`, `INIT_SHADOWBOOT`, `shadow kernel`, or an equivalent HDD-root loader path. Its SHA-256 is `e1d1c87dbcbec01c71c5400cc129a462fa46738d267e29151a91c5354bdf6cb8`. This establishes that the development media loader is absent from that retail build. It does not establish behavior for every historical retail kernel.
 

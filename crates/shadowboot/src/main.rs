@@ -33,6 +33,9 @@ struct Arguments {
 	#[arg(long, value_name = "IMAGE", required_unless_present = "extract")]
 	output: Option<PathBuf>,
 
+	/// Recompress SE and update its SD digest even when the payload is unchanged
+	#[arg(long, conflicts_with = "extract")]
+	rebuild_se: bool,
 	/// Instead of compiling, write the hypervisor and kernel of the base SE as
 	/// DIRECTORY/boot/hypervisor.bin and DIRECTORY/boot/xboxkrnl.exe, a layer
 	#[arg(long, value_name = "DIRECTORY", conflicts_with_all = ["layer", "output"])]
@@ -116,7 +119,12 @@ fn run(arguments: Arguments) -> Result<()> {
 		(Some(layer), Some(output), None) => (layer, output),
 		_ => unreachable!("clap requires --layer and --output without --extract"),
 	};
-	let arguments = CompileArguments { base: arguments.base, layer: layer_path, output: output_path };
+	let arguments = CompileArguments {
+		base: arguments.base,
+		layer: layer_path,
+		output: output_path,
+		rebuild_se: arguments.rebuild_se,
+	};
 	let mapped_layer = load_layer(&arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
 
@@ -129,6 +137,7 @@ fn run(arguments: Arguments) -> Result<()> {
 		se: mapped_layer.boot.se.as_deref(),
 		hypervisor: mapped_layer.boot.hypervisor.as_deref(),
 		kernel: mapped_layer.boot.kernel.as_deref(),
+		rebuild_se: arguments.rebuild_se,
 	};
 
 	// A bare file name has an empty parent: the current directory.
@@ -165,6 +174,7 @@ struct CompileArguments {
 	base: PathBuf,
 	layer: PathBuf,
 	output: PathBuf,
+	rebuild_se: bool,
 }
 
 /// Writes the hypervisor and kernel of the base SE as a layer's boot inputs.

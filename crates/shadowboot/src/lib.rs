@@ -22,6 +22,8 @@ pub struct BootLayer<'a> {
 	pub se: Option<&'a [u8]>,
 	pub hypervisor: Option<&'a [u8]>,
 	pub kernel: Option<&'a [u8]>,
+	/// Recompress the base SE payload even when no component bytes change.
+	pub rebuild_se: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +44,8 @@ pub enum Error {
 	OutputSize { expected: usize, actual: usize },
 	#[error("boot layer supplies SE together with a hypervisor or kernel replacement")]
 	SeReplacementConflict,
+	#[error("boot layer supplies SE and also requests rebuilding SE")]
+	SeRebuildConflict,
 	#[error("boot stage {stage} changes the downstream key state, so boot stage {required} must also be supplied")]
 	BootStageDependency { stage: &'static str, required: &'static str },
 	#[error("boot stage {stage} is unchanged even though {upstream} changes its body key")]
@@ -129,6 +133,9 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 	if layer.se.is_some() && (layer.hypervisor.is_some() || layer.kernel.is_some()) {
 		return Err(Error::SeReplacementConflict);
 	}
+	if layer.se.is_some() && layer.rebuild_se {
+		return Err(Error::SeRebuildConflict);
+	}
 	if let Some(hypervisor) = layer.hypervisor {
 		validate_component_size("hypervisor", HYPERVISOR_SIZE, hypervisor.len())?;
 	}
@@ -160,7 +167,7 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 		validate_boot_stage(3, se)?;
 		drop(se::decode(sc, sd, se)?);
 		se
-	} else if layer.hypervisor.is_some() || layer.kernel.is_some() || se_key_changed {
+	} else if layer.hypervisor.is_some() || layer.kernel.is_some() || se_key_changed || layer.rebuild_se {
 		let mut payload = se::decode(base_sc, base_sd, base_se)?;
 		let mut payload_changed = false;
 		if let Some(hypervisor) = layer.hypervisor {
@@ -171,7 +178,7 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 			payload_changed |= payload[HYPERVISOR_SIZE..] != *kernel;
 			payload[HYPERVISOR_SIZE..].copy_from_slice(kernel);
 		}
-		if payload_changed || se_key_changed {
+		if payload_changed || se_key_changed || layer.rebuild_se {
 			rebuilt_se = Some(se::encode(sc, sd, base_se, &payload)?);
 			rebuilt_se.as_deref().expect("rebuilt SE assigned")
 		} else {
@@ -329,10 +336,13 @@ mod tests {
 		changed[HYPERVISOR_SIZE..].copy_from_slice(&kernel);
 
 		let cases = [
+			(BootLayer { rebuild_se: true, ..BootLayer::default() }, &stock),
 			(BootLayer { se: Some(&recompressed), ..BootLayer::default() }, &stock),
 			(BootLayer { kernel: Some(&kernel), ..BootLayer::default() }, &changed),
 		];
 		let mut output = vec![0u8; output_size(&image).unwrap()];
+		let conflict = BootLayer { se: Some(stage(3)), rebuild_se: true, ..BootLayer::default() };
+		assert!(matches!(compile(&image, &mut output, &conflict), Err(Error::SeRebuildConflict)));
 		for (layer, expected) in &cases {
 			let report = compile(&image, &mut output, layer).unwrap();
 			assert!(report.updated_sd_digest);
