@@ -5914,6 +5914,7 @@ dependencies = [
  "rootcause",
  "serde_json",
  "tabled",
+ "tempfile",
  "xenon_types",
  "xex2",
 ]

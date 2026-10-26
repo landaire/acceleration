@@ -51,31 +51,41 @@ fn parse_import_table(data: &[u8]) -> Option<ImportTable> {
 		return None;
 	}
 	let mut c = Cursor::new(data);
-	let _total_size = c.read_u32::<BigEndian>().ok()?;
+	let total_size = c.read_u32::<BigEndian>().ok()? as usize;
 	let string_table_size = c.read_u32::<BigEndian>().ok()? as usize;
-	let library_count = c.read_u32::<BigEndian>().ok()? as usize;
+	let _string_count = c.read_u32::<BigEndian>().ok()? as usize;
+	if !(12..=data.len()).contains(&total_size) {
+		return None;
+	}
 
-	let str_start = 12;
-	let str_data = &data[str_start..str_start + string_table_size];
+	let str_start = 12usize;
+	let str_end = str_start.checked_add(string_table_size)?;
+	if str_end > total_size {
+		return None;
+	}
+	let str_data = data.get(str_start..str_end)?;
 	let names: Vec<String> = str_data
 		.split(|b| *b == 0)
 		.filter(|s| !s.is_empty())
 		.map(|s| String::from_utf8_lossy(s).into_owned())
 		.collect();
 
-	let mut lib_offset = str_start + string_table_size;
-	if !lib_offset.is_multiple_of(4) {
-		lib_offset += 4 - (lib_offset % 4);
+	let lib_offset = str_end.checked_add(3)? & !3;
+	if lib_offset > total_size {
+		return None;
 	}
+	let mut lib_offset = lib_offset;
 
-	let mut libraries = Vec::with_capacity(library_count);
-
-	for _ in 0..library_count {
-		if lib_offset + 40 > data.len() {
-			break;
+	let mut libraries = Vec::new();
+	while lib_offset < total_size {
+		if lib_offset + 40 > total_size {
+			return None;
 		}
-		let mut c = Cursor::new(&data[lib_offset..]);
+		let mut c = Cursor::new(&data[lib_offset..total_size]);
 		let entry_size = c.read_u32::<BigEndian>().ok()? as usize;
+		if entry_size < 40 || lib_offset.checked_add(entry_size)? > total_size {
+			return None;
+		}
 		let mut digest_bytes = [0u8; 20];
 		c.read_exact(&mut digest_bytes).ok()?;
 		let digest = Sha1Hash(digest_bytes);
@@ -84,28 +94,26 @@ fn parse_import_table(data: &[u8]) -> Option<ImportTable> {
 		let version_min = Version::from(c.read_u32::<BigEndian>().ok()?);
 		let name_index = c.read_u16::<BigEndian>().ok()? as usize;
 		let record_count = c.read_u16::<BigEndian>().ok()? as usize;
+		if 40usize.checked_add(record_count.checked_mul(4)?)? > entry_size {
+			return None;
+		}
 
 		let name = names.get(name_index)?.clone();
-
 		let mut records = Vec::with_capacity(record_count);
 		for _ in 0..record_count {
 			records.push(c.read_u32::<BigEndian>().ok()?);
 		}
-
 		libraries.push(ImportLibrary { name, digest, import_id, version, version_min, records });
-
 		lib_offset += entry_size;
 	}
 
 	Some(ImportTable { libraries })
 }
 
-/// Serialize an `ImportLibraries` optional-header blob (key `0x000103FF`).
-///
-/// Layout is the inverse of [`parse_import_table`]: a 12-byte header
-/// (`total_size`, `string_table_size`, `library_count`), a NUL-terminated
-/// name table padded to 4 bytes, then one variable-length record per library.
-/// Each library's `name_index` is its position in `libraries`.
+/// Layout is a 12-byte header (`total_size`, `string_table_size`,
+/// `string_count`), a NUL-terminated name table padded to 4 bytes, then
+/// variable-length library records through `total_size`. The string count is
+/// not the library count; multiple records may reference one name.
 pub fn serialize_import_libraries(libraries: &[ImportLibrary]) -> Vec<u8> {
 	// Each name is NUL-terminated and padded to a 4-byte boundary; the loader
 	// advances by `strlen + 1` then rounds up to 4, so names must start aligned.
@@ -141,4 +149,39 @@ pub fn serialize_import_libraries(libraries: &[ImportLibrary]) -> Vec<u8> {
 	out.extend_from_slice(&strings);
 	out.extend_from_slice(&lib_blobs);
 	out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn parses_more_libraries_than_names() {
+		let mut data = Vec::new();
+		data.extend_from_slice(&96u32.to_be_bytes());
+		data.extend_from_slice(&4u32.to_be_bytes());
+		data.extend_from_slice(&1u32.to_be_bytes());
+		data.extend_from_slice(b"x\0\0\0");
+		for _ in 0..2 {
+			data.extend_from_slice(&40u32.to_be_bytes());
+			data.extend_from_slice(&[0u8; 32]);
+			data.extend_from_slice(&0u16.to_be_bytes());
+			data.extend_from_slice(&0u16.to_be_bytes());
+		}
+
+		let table = parse_import_table(&data).unwrap();
+		assert_eq!(table.libraries.len(), 2);
+		assert!(table.libraries.iter().all(|library| library.name == "x"));
+	}
+
+	#[test]
+	fn rejects_string_table_past_declared_size() {
+		let mut data = Vec::new();
+		data.extend_from_slice(&12u32.to_be_bytes());
+		data.extend_from_slice(&4u32.to_be_bytes());
+		data.extend_from_slice(&1u32.to_be_bytes());
+		data.extend_from_slice(b"x\0\0\0");
+
+		assert!(parse_import_table(&data).is_none());
+	}
 }

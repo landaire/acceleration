@@ -41,6 +41,14 @@ impl Patch {
 		self.ops.push(PatchOp { offset, bytes: bytes.into() });
 	}
 
+	pub(crate) fn overlaps(&self, range: std::ops::Range<usize>) -> bool {
+		self.ops.iter().any(|op| {
+			let start = op.offset as usize;
+			let end = start.saturating_add(op.bytes.len());
+			start < range.end && range.start < end
+		})
+	}
+
 	/// Apply the patch to an owned buffer.
 	pub fn apply_to_vec(&self, buf: &mut Vec<u8>) -> Result<()> {
 		self.apply_to_slice(buf.as_mut_slice())
@@ -56,6 +64,28 @@ impl Patch {
 					.into_report());
 			}
 			buf[start..end].copy_from_slice(&op.bytes);
+		}
+		Ok(())
+	}
+
+	/// Apply complete operations that lie inside `prefix`. Operations starting
+	/// at its end belong to the following region and are ignored.
+	pub(crate) fn apply_to_prefix(&self, prefix: &mut [u8]) -> Result<()> {
+		for op in self.sorted_non_overlapping()? {
+			let start = op.offset as usize;
+			if start >= prefix.len() {
+				continue;
+			}
+			let end = start + op.bytes.len();
+			if end > prefix.len() {
+				return Err(Xex2Error::PatchOutOfBounds {
+					offset: op.offset,
+					len: op.bytes.len(),
+					buf_len: prefix.len(),
+				}
+				.into_report());
+			}
+			prefix[start..end].copy_from_slice(&op.bytes);
 		}
 		Ok(())
 	}

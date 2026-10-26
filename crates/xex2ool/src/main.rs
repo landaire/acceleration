@@ -1,4 +1,6 @@
 use std::fs;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 
 use clap::Parser;
@@ -9,6 +11,7 @@ use tabled::Table;
 use tabled::Tabled;
 use tabled::builder::Builder;
 use tabled::settings::Style;
+use tempfile::Builder as TempFileBuilder;
 use xex2::Xex2;
 
 mod idc;
@@ -187,6 +190,16 @@ enum Commands {
 		/// Merge patch into standalone XEX (not implemented; fails)
 		#[arg(long, requires = "apply_patch")]
 		merge_patch: bool,
+		/// Replace the bounding path, relocating its header data if necessary
+		#[arg(long)]
+		set_bounding_path: Option<String>,
+		/// Apply a verified patch to the extracted PE image
+		#[arg(long)]
+		image_patch: Option<PathBuf>,
+
+		/// Add resource metadata as NAME=ADDRESS:SIZE
+		#[arg(long)]
+		add_resource: Vec<String>,
 
 		/// Convert to devkit format
 		#[arg(long, conflicts_with = "retail")]
@@ -242,6 +255,9 @@ fn main() -> anyhow::Result<()> {
 			output,
 			apply_patch,
 			merge_patch,
+			set_bounding_path,
+			image_patch,
+			add_resource,
 			devkit,
 			retail,
 			encrypt,
@@ -267,7 +283,19 @@ fn main() -> anyhow::Result<()> {
 				(_, _, true) => Some(xex2::writer::TargetCompression::Basic),
 				_ => None,
 			};
-			cmd_patch(&file, output, apply_patch, merge_patch, machine, compression, encryption, &limits)
+			cmd_patch(
+				&file,
+				output,
+				apply_patch,
+				merge_patch,
+				set_bounding_path,
+				image_patch,
+				add_resource,
+				machine,
+				compression,
+				encryption,
+				&limits,
+			)
 		}
 	}
 }
@@ -758,6 +786,9 @@ fn cmd_patch(
 	output: Option<PathBuf>,
 	apply_patch: Option<PathBuf>,
 	merge_patch: bool,
+	set_bounding_path: Option<String>,
+	image_patch: Option<PathBuf>,
+	add_resources: Vec<String>,
 	machine: Option<xex2::writer::TargetMachine>,
 	compression: Option<xex2::writer::TargetCompression>,
 	encryption: Option<xex2::writer::TargetEncryption>,
@@ -775,7 +806,16 @@ fn cmd_patch(
 
 	let limits = xex2::writer::RemoveLimits::from(limits);
 	let out_path = output.unwrap_or_else(|| path.clone());
-	let mut out_file = std::fs::File::create(&out_path)?;
+	let patched_pe = if let Some(patch_path) = image_patch {
+		let patch_data = fs::read(patch_path)?;
+		let image_patch = xex2::image_patch::ImagePatch::parse(&patch_data)?;
+		let mut pe = xex.extract_basefile(&data)?;
+		image_patch.apply(&mut pe, xex.security_info.image_info.load_address)?;
+		Some(pe)
+	} else {
+		None
+	};
+	let resources = add_resources.into_iter().map(|spec| parse_resource(&spec)).collect::<anyhow::Result<Vec<_>>>()?;
 	let mut rb = xex.rebuild(&data).remove_limits(limits);
 	if let Some(e) = encryption {
 		rb = rb.target_encryption(e);
@@ -786,10 +826,55 @@ fn cmd_patch(
 	if let Some(m) = machine {
 		rb = rb.target_machine(m);
 	}
-	rb.write_to(&mut out_file)?;
+	if let Some(path) = set_bounding_path {
+		rb = rb.set_bounding_path(xex2::builder::BoundingPath::new(path)?);
+	}
+	if let Some(pe) = patched_pe {
+		rb = rb.replace_pe(pe);
+	}
+	for resource in resources {
+		rb = rb.add_resource(resource);
+	}
+	let parent = out_path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
+	let output_permissions = match fs::metadata(&out_path) {
+		Ok(metadata) => Some(metadata.permissions()),
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+		Err(error) => return Err(error.into()),
+	};
+	let mut builder = TempFileBuilder::new();
+	#[cfg(unix)]
+	if output_permissions.is_none() {
+		use std::os::unix::fs::PermissionsExt;
+		builder.permissions(fs::Permissions::from_mode(0o666));
+	}
+	let mut out_file = builder.tempfile_in(parent)?;
+	rb.write_to(out_file.as_file_mut())?;
+	out_file.as_file_mut().flush()?;
+	if let Some(permissions) = output_permissions {
+		out_file.as_file().set_permissions(permissions)?;
+	}
+	out_file.persist(&out_path).map_err(|error| error.error)?;
 	println!("Wrote patched XEX to {}", out_path.display());
 
 	Ok(())
+}
+
+fn parse_resource(spec: &str) -> anyhow::Result<xex2::opt::ResourceEntry> {
+	let (name, location) = spec.split_once('=').ok_or_else(|| anyhow::anyhow!("resource must be NAME=ADDRESS:SIZE"))?;
+	let (address, size) =
+		location.split_once(':').ok_or_else(|| anyhow::anyhow!("resource must be NAME=ADDRESS:SIZE"))?;
+	let parse_u32 = |value: &str| {
+		if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+			u32::from_str_radix(hex, 16)
+		} else {
+			value.parse()
+		}
+	};
+	Ok(xex2::opt::ResourceEntry {
+		name: xex2::opt::ResourceName::new(name)?,
+		address: xenon_types::VirtualAddress(parse_u32(address)?),
+		size: parse_u32(size)?,
+	})
 }
 
 fn cmd_idc(path: &PathBuf, output: Option<PathBuf>) -> anyhow::Result<()> {
@@ -834,5 +919,58 @@ fn format_flags<F: bitflags::Flags<Bits = u32> + Copy>(flags: F, names: &[(F, &s
 		format!("{:#010x}", flags.bits())
 	} else {
 		format!("{:#010x}\n{}", flags.bits(), set.join("\n"))
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn invalid_in_place_image_patch_preserves_input() {
+		let directory = tempfile::tempdir().unwrap();
+		let input_path = directory.path().join("default.xex");
+		let patch_path = directory.path().join("invalid.xepatch");
+		let mut pe = vec![0u8; 64 * 1024];
+		pe[0..2].copy_from_slice(b"MZ");
+		let source = xex2::builder::Xex2Builder::new(pe).build().unwrap();
+		fs::write(&input_path, &source).unwrap();
+		fs::write(&patch_path, b"invalid image patch").unwrap();
+
+		let result = cmd_patch(
+			&input_path,
+			None,
+			None,
+			false,
+			None,
+			Some(patch_path),
+			Vec::new(),
+			None,
+			None,
+			None,
+			&LimitArgs::default(),
+		);
+
+		assert!(result.is_err());
+		assert_eq!(fs::read(input_path).unwrap(), source);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn in_place_patch_preserves_permissions() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let directory = tempfile::tempdir().unwrap();
+		let input_path = directory.path().join("default.xex");
+		let mut pe = vec![0u8; 64 * 1024];
+		pe[0..2].copy_from_slice(b"MZ");
+		let source = xex2::builder::Xex2Builder::new(pe).build().unwrap();
+		fs::write(&input_path, source).unwrap();
+		fs::set_permissions(&input_path, fs::Permissions::from_mode(0o755)).unwrap();
+
+		cmd_patch(&input_path, None, None, false, None, None, Vec::new(), None, None, None, &LimitArgs::default())
+			.unwrap();
+
+		assert_eq!(fs::metadata(input_path).unwrap().permissions().mode() & 0o777, 0o755);
 	}
 }

@@ -36,6 +36,7 @@ rust_binary(
         "//third-party/rust:rootcause",
         "//third-party/rust:serde_json",
         "//third-party/rust:tabled",
+        "//third-party/rust:tempfile",
     ],
     labels = [
         "bin",
@@ -66,5 +67,6 @@ rust_test(
         "//third-party/rust:rootcause",
         "//third-party/rust:serde_json",
         "//third-party/rust:tabled",
+        "//third-party/rust:tempfile",
     ],
 )

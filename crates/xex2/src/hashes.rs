@@ -40,13 +40,26 @@ use crate::writer::TargetMachine;
 /// 2. `[0, security_offset + 8)` -- the outer XEX header (including the
 ///    optional-header index) plus the first two fields of SecurityInfo
 ///    (`header_size` and `image_size`).
-pub fn compute_header_hash(source: &[u8], header: &Xex2Header, _security_info: &SecurityInfo) -> Sha1Hash {
+pub fn compute_header_hash(source: &[u8], header: &Xex2Header, security_info: &SecurityInfo) -> Result<Sha1Hash> {
 	let sec = header.security_offset as usize;
 	let data_off = header.data_offset as usize;
+	let hash_start = sec.checked_add(0x17c);
+	let prefix_end = sec.checked_add(8);
+	if data_off > source.len()
+		|| hash_start.is_none_or(|start| start > data_off)
+		|| prefix_end.is_none_or(|end| end > source.len())
+	{
+		return Err(Xex2Error::SecurityInfoOutOfBounds {
+			security_offset: header.security_offset,
+			security_size: security_info.header_size,
+			header_size: header.data_offset,
+		}
+		.into_report());
+	}
 	let mut hasher = Sha1::new();
-	hasher.update(&source[sec + 0x17c..data_off]);
-	hasher.update(&source[0..sec + 8]);
-	Sha1Hash(hasher.finalize().into())
+	hasher.update(&source[hash_start.unwrap()..data_off]);
+	hasher.update(&source[..prefix_end.unwrap()]);
+	Ok(Sha1Hash(hasher.finalize().into()))
 }
 
 /// Verify the headers the way the console does before it loads a module:
@@ -111,7 +124,7 @@ pub fn verify_headers(source: &[u8], xex: &Xex2) -> Result<TargetMachine> {
 		return Err(Xex2Error::SignatureInvalid { salt: salt_name }.into_report());
 	};
 
-	let computed = compute_header_hash(source, header, security_info);
+	let computed = compute_header_hash(source, header, security_info)?;
 	let expected = security_info.image_info.header_hash;
 	if computed != expected {
 		return Err(Xex2Error::HeaderHashMismatch { expected, computed }.into_report());
@@ -215,20 +228,23 @@ pub(crate) fn library_entry_offsets(blob: &[u8]) -> Option<Vec<LibraryEntrySpan>
 	if blob.len() < 12 {
 		return None;
 	}
+	let total_size = u32::from_be_bytes(blob[0..4].try_into().ok()?) as usize;
+	if !(12..=blob.len()).contains(&total_size) {
+		return None;
+	}
 	let strtab_size = u32::from_be_bytes(blob[4..8].try_into().ok()?) as usize;
-	let lib_count = u32::from_be_bytes(blob[8..12].try_into().ok()?) as usize;
-	let mut off = 12 + strtab_size;
+	let mut off = 12usize.checked_add(strtab_size)?;
 	if !off.is_multiple_of(4) {
 		off += 4 - (off % 4);
 	}
 
-	let mut out = Vec::with_capacity(lib_count);
-	for _ in 0..lib_count {
-		if off + 4 > blob.len() {
+	let mut out = Vec::new();
+	while off < total_size {
+		if off + 4 > total_size {
 			return None;
 		}
 		let size = u32::from_be_bytes(blob[off..off + 4].try_into().ok()?) as usize;
-		if off + size > blob.len() || size < 4 {
+		if size < 4 || off.checked_add(size)? > total_size {
 			return None;
 		}
 		out.push(LibraryEntrySpan { offset: off, size });

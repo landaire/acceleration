@@ -23,7 +23,7 @@ cargo install xex2ool
 | `imports <file>`            | List import libraries with their versions and raw IAT / thunk address pairs.                          |
 | `idc <file> [-o OUT]`       | Generate an IDA Pro IDC script to import symbols into a disassembly.                                  |
 | `xml <file>`                | Dump XEX metadata as XML (matches the legacy `xextool` layout).                                       |
-| `patch <file> [flags]`      | Modify the XEX: compression mode, encryption, target machine, restrictions. See below.                |
+| `patch <file> [flags]`      | Modify the XEX: image patches, resources, compression, encryption, target machine and restrictions. See below. |
 
 `info` and `imports` accept `-f json` (global flag) to emit JSON
 instead of formatted tables, for scripting. The other subcommands ignore
@@ -52,9 +52,17 @@ xex2ool patch game.xex --retail -o game-retail.xex
 xex2ool patch game.xex --encrypt
 xex2ool patch game.xex --decrypt
 
+# Apply verified image writes and describe bytes appended by the patch as a resource
+xex2ool patch game.xex \
+  --image-patch game.xepatch \
+  --add-resource 'assets=0x92800000:0x20000' \
+  --devkit --decrypt -o game-patched.xex
+
 # Generate an IDA Pro script next to the file
 xex2ool idc game.xex
 ```
+
+Omitting `-o` replaces the input only after the rebuilt XEX is complete. Existing output permissions are retained.
 
 ## Restriction removal
 
@@ -90,6 +98,20 @@ compression. These flags are mutually exclusive:
 | `--compress`       | Normal (LZX) compression, via the `lzxc` encoder.                         |
 | `--decompress`     | No compression; emit the PE image verbatim.                                |
 | `--basic-compress` | Basic compression (zero-padded raw blocks). Not implemented; fails.       |
+
+## Image patches and resources
+
+`--image-patch <file>` applies an `XEX2PAT` version 1 patch to the extracted image before the XEX is rebuilt. The big-endian format contains:
+
+- `XEX2PAT\0`
+- version 1, source image base and source image size as 32-bit words
+- the source image SHA-1
+- a 32-bit record count
+- records containing a 32-bit virtual address, 32-bit byte count and replacement bytes
+
+The source base, size and SHA-1 must match. Records must not overlap. A record beyond the source image appends zero-filled bytes up to its address. The final image size must remain aligned to the source XEX page size. Every record must remain in the source image's 256 MiB virtual-address region.
+
+`--add-resource NAME=ADDRESS:SIZE` adds XEX resource metadata. Repeat the flag to add several resources. It does not supply the resource bytes: `ADDRESS..ADDRESS+SIZE` must already be part of the loaded image, commonly because an image-patch record added them. Names must fit the eight-byte XEX resource name field.
 
 ## Output formats
 

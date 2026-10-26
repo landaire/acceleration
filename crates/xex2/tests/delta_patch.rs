@@ -179,7 +179,7 @@ impl Fixture {
 		patch[DESCRIPTOR_OFFSET..DESCRIPTOR_OFFSET + descriptor.len()].copy_from_slice(&descriptor);
 
 		let parsed = Xex2::parse(&patch).unwrap();
-		let header_hash = xex2::hashes::compute_header_hash(&patch, &parsed.header, &parsed.security_info);
+		let header_hash = xex2::hashes::compute_header_hash(&patch, &parsed.header, &parsed.security_info).unwrap();
 		let image_info_start = SECURITY_OFFSET + 0x108;
 		patch[image_info_start + 0x5C..image_info_start + 0x70].copy_from_slice(&*header_hash);
 		if spec.sign {

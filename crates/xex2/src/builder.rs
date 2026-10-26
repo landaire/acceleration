@@ -460,7 +460,7 @@ fn build_inner(b: Xex2Builder) -> Result<Vec<u8>> {
 	// We need a Xex2Header value to call compute_header_hash -- re-parse.
 	let parsed = crate::header::Xex2Header::parse(&out[..])?;
 	let parsed_sec = crate::header::SecurityInfo::parse(&out[..], parsed.security_offset as usize)?;
-	let header_hash = hashes::compute_header_hash(&out, &parsed, &parsed_sec);
+	let header_hash = hashes::compute_header_hash(&out, &parsed, &parsed_sec)?;
 	out[ii_start + 0x5C..ii_start + 0x70].copy_from_slice(&*header_hash);
 
 	let image_info = &out[ii_start..ii_start + 0x74];
@@ -620,7 +620,7 @@ fn checked_resource_info(b: &Xex2Builder) -> Result<Option<Vec<u8>>> {
 	Ok(Some(resource_info_bytes(&b.resources)))
 }
 
-fn bounding_path_bytes(path: &BoundingPath) -> Vec<u8> {
+pub(crate) fn bounding_path_bytes(path: &BoundingPath) -> Vec<u8> {
 	let size = align_up(4 + path.as_str().len() + 1, 4);
 	let mut out = Vec::with_capacity(size);
 	out.extend_from_slice(&(size as u32).to_be_bytes());

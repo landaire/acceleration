@@ -28,6 +28,28 @@ pub enum Xex2Error {
 	CompressedChunkTooLarge { size: usize },
 	#[error("bounding path {path:?} must be non-empty printable ASCII")]
 	InvalidBoundingPath { path: String },
+	#[error("XEX header has no free {size:#x}-byte region for a relocated optional header")]
+	NoOptionalHeaderSpace { size: usize },
+	#[error("optional header key {current:#010x} follows larger key {previous:#010x}")]
+	OptionalHeaderOrder { previous: u32, current: u32 },
+	#[error("invalid image patch magic")]
+	InvalidImagePatchMagic,
+	#[error("unsupported image patch version {version}")]
+	UnsupportedImagePatchVersion { version: u32 },
+	#[error("image patch is truncated at {offset:#x}: need {needed:#x} bytes, have {available:#x}")]
+	ImagePatchTruncated { offset: usize, needed: usize, available: usize },
+	#[error("image patch has {len:#x} trailing bytes")]
+	ImagePatchTrailingData { len: usize },
+	#[error("image patch expects image base {expected:#010x}, got {actual:#010x}")]
+	ImagePatchBase { expected: u32, actual: u32 },
+	#[error("image patch expects image size {expected:#x}, got {actual:#x}")]
+	ImagePatchSize { expected: usize, actual: usize },
+	#[error("image patch source SHA-1 mismatch: expected {expected}, got {actual}")]
+	ImagePatchHash { expected: Sha1Hash, actual: Sha1Hash },
+	#[error("image patch write at {address:#010x}+{len:#x} is outside the image address region")]
+	ImagePatchAddress { address: u32, len: usize },
+	#[error("image patch contains overlapping writes")]
+	ImagePatchOverlap,
 	#[error("export table at {address:#010x} is not 4-byte aligned")]
 	ExportTableUnaligned { address: u32 },
 	#[error("export table at {address:#010x} extends outside the image")]
@@ -40,6 +62,8 @@ pub enum Xex2Error {
 	DuplicateResourceName { name: ResourceName },
 	#[error("resource \"{name}\" at {address:#010x} with size {size:#x} extends outside the image")]
 	ResourceOutsideImage { name: ResourceName, address: u32, size: u32 },
+	#[error("resource metadata is malformed")]
+	InvalidResourceInfo,
 	#[error("basefile size mismatch: expected {expected:#x}, got {got:#x}")]
 	InvalidBasefileSize { expected: usize, got: usize },
 	#[error("page descriptor {descriptor_index} does not match its pages")]
@@ -50,9 +74,7 @@ pub enum Xex2Error {
 	PatchOutOfBounds { offset: u64, len: usize, buf_len: usize },
 	#[error("patch has overlapping writes")]
 	PatchOverlap,
-	#[error(
-		"requested rebuild transform is not implemented (Basic or Delta compression, or PE replacement on an encrypted source)"
-	)]
+	#[error("requested rebuild transform is not implemented (Basic or Delta compression)")]
 	RebuildTransformNotImplemented,
 	#[error("malformed basefile PE: {0}")]
 	MalformedBasefilePe(BasefileDefect),
@@ -114,6 +136,8 @@ pub enum Xex2Error {
 	SignatureInvalid { salt: &'static str },
 	#[error("header hash {computed} does not match ImageInfo {expected}")]
 	HeaderHashMismatch { expected: Sha1Hash, computed: Sha1Hash },
+	#[error("image size {image_size:#x} exceeds the 32-bit XEX field")]
+	ImageSizeTooLarge { image_size: usize },
 	#[error("image size {image_size:#x} is not a multiple of the {page_size:#x}-byte page")]
 	ImageSizeAlignment { image_size: u32, page_size: u32 },
 	#[error("load address {address:#010x} is not 64 KiB aligned")]

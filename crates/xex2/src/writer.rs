@@ -33,6 +33,8 @@ use byteorder::ByteOrder;
 use rootcause::IntoReport;
 
 use crate::Xex2;
+use crate::builder::BoundingPath;
+use crate::builder::bounding_path_bytes;
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::hashes;
@@ -42,6 +44,8 @@ use crate::header::OptionalHeaderKey;
 use crate::opt::AllowedMediaTypes;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
+use crate::opt::ResourceEntry;
+use crate::opt::resource_info_bytes;
 use crate::patch::Patch;
 use xenon_types::FileOffset;
 
@@ -231,6 +235,8 @@ pub(crate) struct EditPlan {
 	pub file_key: Option<xenon_types::AesKey>,
 	pub load_address: Option<xenon_types::VirtualAddress>,
 	pub date_range: Option<DateRangeEdit>,
+	pub bounding_path: Option<BoundingPath>,
+	pub added_resources: Vec<ResourceEntry>,
 	pub cleared_optional_headers: Vec<OptionalHeaderKey>,
 	/// Target machine for the file key wrap. `None` = keep current. If the
 	/// request matches the detected current machine, the transform is a no-op.
@@ -257,6 +263,8 @@ impl EditPlan {
 			&& self.file_key.is_none()
 			&& self.load_address.is_none()
 			&& self.date_range.is_none()
+			&& self.bounding_path.is_none()
+			&& self.added_resources.is_empty()
 			&& self.cleared_optional_headers.is_empty()
 			&& self.target_machine.is_none()
 			&& self.target_encryption.is_none()
@@ -302,17 +310,308 @@ pub(crate) fn plan_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<P
 	let mut image_info_buf = source[image_info_span.as_range()].to_vec();
 	let mut editor = ImageInfoEditor::new(&mut image_info_buf, sec);
 
-	apply_limits(plan, &mut patch, &mut editor);
-	apply_field_overrides(plan, &mut patch, &mut editor);
+	apply_limits(plan, &mut editor);
+	apply_field_overrides(plan, &mut editor);
 	apply_encryption_transforms(xex, source, plan, &mut patch, &mut editor, &mut blob_edits)?;
+	prepare_blob_edits(xex, source, plan, &mut editor, &mut blob_edits);
+
+	let inserts_resource_header =
+		!plan.added_resources.is_empty() && xex.header.get_optional_header(OptionalHeaderKey::ResourceInfo).is_none();
+	if inserts_resource_header {
+		stage_added_resources(xex, source, plan, &mut blob_edits, &mut patch)?;
+	} else {
+		stage_bounding_path(xex, source, plan, &mut patch)?;
+		stage_added_resources(xex, source, plan, &mut blob_edits, &mut patch)?;
+	}
+
 	apply_pe_replacement(xex, source, plan, &mut patch, &mut editor)?;
-	apply_blob_edits_and_rehash(xex, source, plan, &mut patch, &mut editor, &mut blob_edits);
+	stage_blob_writes(&mut patch, &blob_edits);
+
+	let header_end = xex.header.data_offset as usize;
+	if header_end <= source.len() {
+		let mut header = source[..header_end].to_vec();
+		patch.apply_to_prefix(&mut header)?;
+		let header_hash = hashes::compute_header_hash(&header, &xex.header, &xex.security_info)?;
+		editor.overwrite(ImageInfoOffset::HEADER_HASH, header_hash.to_vec());
+	}
 
 	if editor.changed {
 		sign_and_stage(sec, editor.buffer, &mut patch)?;
 	}
 
 	Ok(patch)
+}
+
+fn stage_bounding_path(xex: &Xex2, source: &[u8], plan: &EditPlan, patch: &mut Patch) -> Result<()> {
+	let Some(path) = plan.bounding_path.as_ref() else {
+		return Ok(());
+	};
+	stage_relocated_optional_header(xex, source, OptionalHeaderKey::BoundingPath, bounding_path_bytes(path), patch)
+}
+
+fn stage_added_resources(
+	xex: &Xex2,
+	source: &[u8],
+	plan: &EditPlan,
+	blob_edits: &mut Vec<BlobEdit>,
+	patch: &mut Patch,
+) -> Result<()> {
+	if plan.added_resources.is_empty() {
+		return Ok(());
+	}
+	let has_resource_header = xex.header.get_optional_header(OptionalHeaderKey::ResourceInfo).is_some();
+	let mut resources = match xex.header.resource_info() {
+		Some(info) => info.resources,
+		None if !has_resource_header => Vec::new(),
+		None => return Err(Xex2Error::InvalidResourceInfo.into_report()),
+	};
+	let image_start = u64::from(plan.load_address.unwrap_or(xex.security_info.image_info.load_address).0);
+	let image_end = image_start + u64::from(xex.security_info.image_size);
+	for resource in &plan.added_resources {
+		if resources.iter().any(|entry| entry.name == resource.name) {
+			return Err(Xex2Error::DuplicateResourceName { name: resource.name }.into_report());
+		}
+		let start = u64::from(resource.address.0);
+		if start < image_start || start + u64::from(resource.size) > image_end {
+			return Err(Xex2Error::ResourceOutsideImage {
+				name: resource.name,
+				address: resource.address.0,
+				size: resource.size,
+			}
+			.into_report());
+		}
+		resources.push(*resource);
+	}
+	let bytes = resource_info_bytes(&resources);
+	if has_resource_header {
+		stage_relocated_optional_header(xex, source, OptionalHeaderKey::ResourceInfo, bytes, patch)?;
+	} else {
+		stage_inserted_resource_header(xex, source, bytes, plan.bounding_path.as_ref(), blob_edits, patch)?;
+	}
+	Ok(())
+}
+
+fn stage_relocated_optional_header(
+	xex: &Xex2,
+	source: &[u8],
+	key: OptionalHeaderKey,
+	bytes: Vec<u8>,
+	patch: &mut Patch,
+) -> Result<()> {
+	let old_span = xex
+		.header
+		.optional_header_source_range(source, key)
+		.ok_or_else(|| Xex2Error::MissingOptionalHeader(key as u32).into_report())?;
+	let target = if bytes.len() <= old_span.len {
+		old_span.offset.get() as usize
+	} else {
+		find_free_header_region(xex, source, bytes.len(), patch, None)
+			.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: bytes.len() }.into_report())?
+	};
+
+	let index_end = 0x18usize + xex.header.optional_header_count as usize * 8;
+	let value_offset = (0x18usize..index_end)
+		.step_by(8)
+		.find_map(|offset| (BigEndian::read_u32(&source[offset..offset + 4]) == key as u32).then_some(offset + 4))
+		.ok_or_else(|| Xex2Error::MissingOptionalHeader(key as u32).into_report())?;
+	patch.write(value_offset as u64, (target as u32).to_be_bytes().to_vec());
+	patch.write(target as u64, bytes);
+	Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct OptionalHeaderIndexEntry {
+	key: u32,
+	value: u32,
+}
+
+fn stage_inserted_resource_header(
+	xex: &Xex2,
+	source: &[u8],
+	resource_bytes: Vec<u8>,
+	bounding_path: Option<&BoundingPath>,
+	blob_edits: &mut Vec<BlobEdit>,
+	patch: &mut Patch,
+) -> Result<()> {
+	let old_index_end = 0x18usize
+		.checked_add(xex.header.optional_header_count as usize * 8)
+		.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() + 8 }.into_report())?;
+	let new_index_end = old_index_end
+		.checked_add(8)
+		.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() + 8 }.into_report())?;
+	let tail_range = old_index_end..new_index_end;
+	let tail = source
+		.get(tail_range.clone())
+		.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() + 8 }.into_report())?;
+	let security_start = xex.header.security_offset as usize;
+	let security_end = security_start
+		.checked_add(xex.security_info.header_size as usize)
+		.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() + 8 }.into_report())?;
+	if new_index_end > xex.header.data_offset as usize
+		|| ranges_overlap(&tail_range, &(security_start..security_end))
+		|| patch.overlaps(tail_range.clone())
+	{
+		return Err(Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() + 8 }.into_report());
+	}
+
+	let mut entries = Vec::with_capacity(xex.header.optional_header_count as usize + 1);
+	for offset in (0x18usize..old_index_end).step_by(8) {
+		entries.push(OptionalHeaderIndexEntry {
+			key: BigEndian::read_u32(&source[offset..offset + 4]),
+			value: BigEndian::read_u32(&source[offset + 4..offset + 8]),
+		});
+	}
+	if let Some(pair) = entries.windows(2).find(|pair| pair[0].key >= pair[1].key) {
+		return Err(Xex2Error::OptionalHeaderOrder { previous: pair[0].key, current: pair[1].key }.into_report());
+	}
+
+	let bounding_bytes = bounding_path.map(bounding_path_bytes);
+	if bounding_bytes.is_some() && !entries.iter().any(|entry| entry.key == OptionalHeaderKey::BoundingPath as u32) {
+		return Err(Xex2Error::MissingOptionalHeader(OptionalHeaderKey::BoundingPath as u32).into_report());
+	}
+	let blobs = optional_header_blobs(xex, source)
+		.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() + 8 }.into_report())?;
+	let mut covered = [false; 8];
+	for blob in &blobs {
+		let pending = blob_edits
+			.iter()
+			.rposition(|edit| edit.offset.as_usize() == blob.range.start)
+			.map(|index| blob_edits.remove(index).bytes);
+		blob_edits.retain(|edit| edit.offset.as_usize() != blob.range.start);
+		let replacement = if blob.key == OptionalHeaderKey::BoundingPath as u32 {
+			bounding_bytes.as_deref().or(pending.as_deref())
+		} else {
+			pending.as_deref()
+		};
+		let bytes = replacement.unwrap_or(&source[blob.range.clone()]);
+		let relocate = ranges_overlap(&tail_range, &blob.range) || bytes.len() > blob.range.len();
+		if relocate {
+			let target = find_free_header_region(xex, source, bytes.len(), patch, Some(&tail_range))
+				.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: bytes.len() }.into_report())?;
+			patch.write(target as u64, bytes.to_vec());
+			entries
+				.iter_mut()
+				.find(|entry| entry.key == blob.key)
+				.ok_or_else(|| Xex2Error::MissingOptionalHeader(blob.key).into_report())?
+				.value = target as u32;
+		} else if replacement.is_some() {
+			patch.write(blob.range.start as u64, bytes.to_vec());
+		}
+		if ranges_overlap(&tail_range, &blob.range) {
+			let start = blob.range.start.max(old_index_end);
+			let end = blob.range.end.min(new_index_end);
+			covered[start - old_index_end..end - old_index_end].fill(true);
+		}
+	}
+	if tail.iter().zip(covered).any(|(byte, covered)| *byte != 0 && !covered) {
+		return Err(Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() + 8 }.into_report());
+	}
+
+	let resource_target = find_free_header_region(xex, source, resource_bytes.len(), patch, Some(&tail_range))
+		.ok_or_else(|| Xex2Error::NoOptionalHeaderSpace { size: resource_bytes.len() }.into_report())?;
+	let resource_key = OptionalHeaderKey::ResourceInfo as u32;
+	let insert_at = entries.partition_point(|entry| entry.key < resource_key);
+	if entries.get(insert_at).is_some_and(|entry| entry.key == resource_key) {
+		return Err(Xex2Error::InvalidResourceInfo.into_report());
+	}
+	entries.insert(insert_at, OptionalHeaderIndexEntry { key: resource_key, value: resource_target as u32 });
+	let mut index_bytes = Vec::with_capacity(entries.len() * 8);
+	for entry in entries {
+		index_bytes.extend_from_slice(&entry.key.to_be_bytes());
+		index_bytes.extend_from_slice(&entry.value.to_be_bytes());
+	}
+	patch.write(0x18, index_bytes);
+	patch.write(0x14, (xex.header.optional_header_count + 1).to_be_bytes().to_vec());
+	patch.write(resource_target as u64, resource_bytes);
+	Ok(())
+}
+
+fn ranges_overlap(first: &std::ops::Range<usize>, second: &std::ops::Range<usize>) -> bool {
+	first.start < second.end && second.start < first.end
+}
+
+struct HeaderBlob {
+	key: u32,
+	range: std::ops::Range<usize>,
+}
+
+fn optional_header_blobs(xex: &Xex2, source: &[u8]) -> Option<Vec<HeaderBlob>> {
+	let header_end = xex.header.data_offset as usize;
+	let index_end = 0x18usize.checked_add(xex.header.optional_header_count as usize * 8)?;
+	if index_end > header_end || header_end > source.len() {
+		return None;
+	}
+	let mut blobs = Vec::with_capacity(xex.header.optional_header_count as usize);
+	for offset in (0x18usize..index_end).step_by(8) {
+		let key = BigEndian::read_u32(&source[offset..offset + 4]);
+		let pointer = BigEndian::read_u32(&source[offset + 4..offset + 8]) as usize;
+		let words = (key & 0xff) as usize;
+		let data_len = match words {
+			0 | 1 => continue,
+			0xff => {
+				if pointer.checked_add(4)? > header_end {
+					return None;
+				}
+				BigEndian::read_u32(&source[pointer..pointer + 4]) as usize
+			}
+			_ => words.checked_mul(4)?,
+		};
+		let end = pointer.checked_add(data_len)?;
+		if end > header_end {
+			return None;
+		}
+		blobs.push(HeaderBlob { key, range: pointer..end });
+	}
+	Some(blobs)
+}
+
+fn occupied_header_regions(xex: &Xex2, source: &[u8]) -> Option<Vec<std::ops::Range<usize>>> {
+	let header_end = xex.header.data_offset as usize;
+	let index_end = 0x18usize.checked_add(xex.header.optional_header_count as usize * 8)?;
+	if index_end > header_end || header_end > source.len() {
+		return None;
+	}
+
+	let blobs = optional_header_blobs(xex, source)?;
+	let mut occupied = Vec::with_capacity(blobs.len() + 2);
+	occupied.push(0..index_end);
+	let security_start = xex.header.security_offset as usize;
+	let security_end = security_start.checked_add(xex.security_info.header_size as usize)?;
+	if security_end > header_end {
+		return None;
+	}
+	occupied.push(security_start..security_end);
+	occupied.extend(blobs.into_iter().map(|blob| blob.range));
+	Some(occupied)
+}
+
+fn find_free_header_region(
+	xex: &Xex2,
+	source: &[u8],
+	len: usize,
+	patch: &Patch,
+	reserved: Option<&std::ops::Range<usize>>,
+) -> Option<usize> {
+	let header_end = xex.header.data_offset as usize;
+	if len > header_end {
+		return None;
+	}
+	let occupied = occupied_header_regions(xex, source)?;
+	let index_end = occupied.first()?.end;
+	for candidate in (index_end..=header_end - len).step_by(4) {
+		let range = candidate..candidate + len;
+		let overlaps_reserved = reserved.is_some_and(|reserved| ranges_overlap(&range, reserved));
+		if overlaps_reserved
+			|| occupied.iter().any(|occupied| ranges_overlap(&range, occupied))
+			|| patch.overlaps(range.clone())
+		{
+			continue;
+		}
+		if source[range].iter().all(|byte| *byte == 0) {
+			return Some(candidate);
+		}
+	}
+	None
 }
 
 fn stage_blob_edits(xex: &Xex2, source: &[u8], plan: &EditPlan) -> Result<Vec<BlobEdit>> {
@@ -375,18 +674,20 @@ fn resolve_module_flags(source: &[u8], plan: &EditPlan) -> Option<ModuleFlags> {
 	if let Some(flags) = plan.module_flags {
 		return Some(flags);
 	}
-	if !plan.limits.bounding_path && !plan.limits.device_id {
+	if !plan.limits.bounding_path && !plan.limits.device_id && plan.bounding_path.is_none() {
 		return None;
 	}
 	let current = ModuleFlags::from_bits_retain(BigEndian::read_u32(&source[HEADER_MODULE_FLAGS.as_usize()..]));
-	let mut clear = ModuleFlags::empty();
+	let mut new = current;
 	if plan.limits.bounding_path {
-		clear |= ModuleFlags::BOUND_PATH;
+		new.remove(ModuleFlags::BOUND_PATH);
 	}
 	if plan.limits.device_id {
-		clear |= ModuleFlags::DEVICE_ID;
+		new.remove(ModuleFlags::DEVICE_ID);
 	}
-	let new = current - clear;
+	if plan.bounding_path.is_some() {
+		new.insert(ModuleFlags::BOUND_PATH);
+	}
 	(new != current).then_some(new)
 }
 
@@ -414,15 +715,15 @@ fn image_info_span(source: &[u8], sec: FileOffset) -> Option<FileSpan> {
 	(start.as_usize() + image_info_len <= source.len()).then_some(FileSpan { offset: start, len: image_info_len })
 }
 
-fn apply_limits(plan: &EditPlan, patch: &mut Patch, editor: &mut ImageInfoEditor<'_>) {
+fn apply_limits(plan: &EditPlan, editor: &mut ImageInfoEditor<'_>) {
 	if plan.limits.region {
-		editor.overwrite(patch, ImageInfoOffset::GAME_REGIONS, 0xFFFFFFFFu32.to_be_bytes().to_vec());
+		editor.overwrite(ImageInfoOffset::GAME_REGIONS, 0xFFFFFFFFu32.to_be_bytes().to_vec());
 	}
 	if plan.limits.zero_media_id {
-		editor.overwrite(patch, ImageInfoOffset::MEDIA_ID, vec![0u8; 16]);
+		editor.overwrite(ImageInfoOffset::MEDIA_ID, vec![0u8; 16]);
 	}
 	if plan.limits.keyvault_privileges || plan.limits.signed_keyvault_only {
-		editor.update_u32(patch, ImageInfoOffset::IMAGE_FLAGS, |current| {
+		editor.update_u32(ImageInfoOffset::IMAGE_FLAGS, |current| {
 			let flags = ImageFlags::from_bits_retain(current);
 			let mut clear = ImageFlags::empty();
 			if plan.limits.keyvault_privileges {
@@ -436,29 +737,28 @@ fn apply_limits(plan: &EditPlan, patch: &mut Patch, editor: &mut ImageInfoEditor
 	}
 }
 
-fn apply_field_overrides(plan: &EditPlan, patch: &mut Patch, editor: &mut ImageInfoEditor<'_>) {
+fn apply_field_overrides(plan: &EditPlan, editor: &mut ImageInfoEditor<'_>) {
 	if let Some(v) = plan.game_regions {
-		editor.overwrite(patch, ImageInfoOffset::GAME_REGIONS, v.to_be_bytes().to_vec());
+		editor.overwrite(ImageInfoOffset::GAME_REGIONS, v.to_be_bytes().to_vec());
 	}
 	if let Some(id) = plan.media_id {
-		editor.overwrite(patch, ImageInfoOffset::MEDIA_ID, id.to_vec());
+		editor.overwrite(ImageInfoOffset::MEDIA_ID, id.to_vec());
 	}
 	if let Some(k) = plan.file_key {
-		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, k.to_vec());
+		editor.overwrite(ImageInfoOffset::FILE_KEY, k.to_vec());
 	}
 	if let Some(addr) = plan.load_address {
-		editor.overwrite(patch, ImageInfoOffset::LOAD_ADDRESS, addr.0.to_be_bytes().to_vec());
+		editor.overwrite(ImageInfoOffset::LOAD_ADDRESS, addr.0.to_be_bytes().to_vec());
 	}
 	if let Some(flags) = plan.image_flags {
-		editor.overwrite(patch, ImageInfoOffset::IMAGE_FLAGS, flags.bits().to_be_bytes().to_vec());
+		editor.overwrite(ImageInfoOffset::IMAGE_FLAGS, flags.bits().to_be_bytes().to_vec());
 	}
 }
 
-fn apply_blob_edits_and_rehash(
+fn prepare_blob_edits(
 	xex: &Xex2,
 	source: &[u8],
 	plan: &EditPlan,
-	patch: &mut Patch,
 	editor: &mut ImageInfoEditor<'_>,
 	blob_edits: &mut [BlobEdit],
 ) {
@@ -466,32 +766,21 @@ fn apply_blob_edits_and_rehash(
 		return;
 	}
 
-	// Apply blob edits to a working copy so hash recomputations see the new bytes.
-	let mut working = source.to_vec();
-	for edit in blob_edits.iter() {
-		let start = edit.offset.as_usize();
-		working[start..start + edit.bytes.len()].copy_from_slice(&edit.bytes);
-		patch.write(edit.offset.get(), edit.bytes.clone());
-	}
-
-	// If the import table changed, rebuild its digest chain and stage the
-	// new import_table_hash alongside the updated blob.
+	// The import digest chain covers the final library records, including
+	// their cleared minimum versions.
 	if plan.limits.library_versions
 		&& let Some(span) = xex.header.optional_header_source_range(source, OptionalHeaderKey::ImportLibraries)
+		&& let Some(edit) = blob_edits.iter_mut().rev().find(|edit| edit.offset == span.offset)
+		&& let Some(table_hash) = hashes::rewrite_import_table_hashes(&mut edit.bytes)
 	{
-		let blob = &mut working[span.as_range()];
-		if let Some(new_table_hash) = hashes::rewrite_import_table_hashes(blob) {
-			let updated = blob.to_vec();
-			if let Some(existing) = blob_edits.iter_mut().find(|e| e.offset == span.offset) {
-				existing.bytes = updated.clone();
-			}
-			patch.write(span.offset.get(), updated);
-			editor.overwrite(patch, ImageInfoOffset::IMPORT_TABLE_HASH, new_table_hash.to_vec());
-		}
+		editor.overwrite(ImageInfoOffset::IMPORT_TABLE_HASH, table_hash.to_vec());
 	}
+}
 
-	let new_header_hash = hashes::compute_header_hash(&working, &xex.header, &xex.security_info);
-	editor.overwrite(patch, ImageInfoOffset::HEADER_HASH, new_header_hash.to_vec());
+fn stage_blob_writes(patch: &mut Patch, blob_edits: &[BlobEdit]) {
+	for edit in blob_edits {
+		patch.write(edit.offset.get(), edit.bytes.clone());
+	}
 }
 
 /// Replace the PE image and regenerate page descriptors + image_hash.
@@ -533,7 +822,7 @@ fn apply_pe_replacement(
 		crate::page_descriptors::generate(new_pe, page_size, template.as_deref());
 
 	// Stage the new image_hash.
-	editor.overwrite(patch, ImageInfoOffset::IMAGE_HASH, image_hash.to_vec());
+	editor.overwrite(ImageInfoOffset::IMAGE_HASH, image_hash.to_vec());
 
 	// Stage the new image_size in security_info.
 	let new_image_size = new_pe.len() as u32;
@@ -577,6 +866,8 @@ fn sign_and_stage(sec: FileOffset, image_info: &[u8], patch: &mut Patch) -> Resu
 	let sig = xecrypt::xex_sig::sign_devkit(&digest).map_err(|_| Xex2Error::SigningFailed.into_report())?;
 	let sig_off = sec + SecurityOffset::RSA_SIG.0 as usize;
 	patch.write(sig_off.get(), sig.to_vec());
+	let info_off = sec + SecurityOffset::IMAGE_INFO.0 as usize;
+	patch.write(info_off.get(), image_info.to_vec());
 	Ok(())
 }
 
@@ -596,22 +887,22 @@ impl<'a> ImageInfoEditor<'a> {
 		Self { buffer, changed: false, sec }
 	}
 
-	/// Overwrite `bytes.len()` bytes at `field` within the image_info region,
-	/// staging both the local buffer update and a Write op on `patch`.
-	fn overwrite(&mut self, patch: &mut Patch, field: ImageInfoOffset, bytes: Vec<u8>) {
+	/// Overwrite `bytes.len()` bytes at `field` within the image_info region.
+	fn overwrite(&mut self, field: ImageInfoOffset, bytes: Vec<u8>) {
 		let local = field.0 as usize;
 		if local + bytes.len() > self.buffer.len() {
 			return;
 		}
+		if self.buffer[local..local + bytes.len()] == bytes {
+			return;
+		}
 		self.buffer[local..local + bytes.len()].copy_from_slice(&bytes);
-		let file_off = self.sec + IMAGE_INFO_OFFSET + local;
-		patch.write(file_off.get(), bytes);
 		self.changed = true;
 	}
 
 	/// Read the big-endian u32 at `field`, apply `f` to produce a new value,
 	/// and overwrite only if it actually changed.
-	fn update_u32(&mut self, patch: &mut Patch, field: ImageInfoOffset, f: impl FnOnce(u32) -> u32) {
+	fn update_u32(&mut self, field: ImageInfoOffset, f: impl FnOnce(u32) -> u32) {
 		let local = field.0 as usize;
 		if local + 4 > self.buffer.len() {
 			return;
@@ -619,7 +910,7 @@ impl<'a> ImageInfoEditor<'a> {
 		let current = BigEndian::read_u32(&self.buffer[local..]);
 		let new = f(current);
 		if new != current {
-			self.overwrite(patch, field, new.to_be_bytes().to_vec());
+			self.overwrite(field, new.to_be_bytes().to_vec());
 		}
 	}
 }
@@ -649,7 +940,7 @@ fn apply_encryption_transforms(
 	{
 		let master = master_key_for(resolved_machine, image_flags)?;
 		let new_file_key = crate::crypto::wrap_file_key(&session_key, &master);
-		editor.overwrite(patch, ImageInfoOffset::FILE_KEY, new_file_key.to_vec());
+		editor.overwrite(ImageInfoOffset::FILE_KEY, new_file_key.to_vec());
 	}
 
 	if let Some(target) = plan.target_encryption {
@@ -663,14 +954,14 @@ fn apply_encryption_transforms(
 				patch.write(data_off.get(), plaintext);
 				stage_file_format_encryption(xex, source, EncryptionType::None, blob_edits)?;
 				// file_key is ignored when encryption is None; zero it out.
-				editor.overwrite(patch, ImageInfoOffset::FILE_KEY, vec![0u8; 16]);
+				editor.overwrite(ImageInfoOffset::FILE_KEY, vec![0u8; 16]);
 			}
 			(EncryptionType::None, TargetEncryption::Encrypted) => {
 				let ciphertext = crate::crypto::encrypt_data(region, &session_key);
 				patch.write(data_off.get(), ciphertext);
 				let master = master_key_for(resolved_machine, image_flags)?;
 				let wrapped = crate::crypto::wrap_file_key(&session_key, &master);
-				editor.overwrite(patch, ImageInfoOffset::FILE_KEY, wrapped.to_vec());
+				editor.overwrite(ImageInfoOffset::FILE_KEY, wrapped.to_vec());
 				stage_file_format_encryption(xex, source, EncryptionType::Normal, blob_edits)?;
 			}
 			// Already in target state.

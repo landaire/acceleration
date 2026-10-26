@@ -3,8 +3,8 @@
 //! [`crate::patch::Patch`] and [`crate::writer::plan_edits`] handle
 //! length-preserving edits. Compression transforms (None <-> Normal) change the
 //! size of both the FileFormatInfo blob and the data region, so they require
-//! laying the file out from scratch. PE replacement on a compressed source is
-//! the same story: we decompress, (re)compress under the target, then assemble.
+//! laying the file out from scratch. A replacement PE can change the data
+//! region length, so it also uses this path before assembly.
 //!
 //! The output preserves every optional header the source XEX had (via the
 //! parsed `header.optional_headers` map) *except* FileFormatInfo, which is
@@ -70,15 +70,50 @@ pub fn rebuild_with_compression(
 	// (or the compressed stream) into `data_region` without cloning.
 	let page_size: u32 =
 		if xex.security_info.image_info.image_flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
-	let template = existing_descriptor_template(source, xex);
+	let image_size =
+		u32::try_from(pe.len()).map_err(|_| Xex2Error::ImageSizeTooLarge { image_size: pe.len() }.into_report())?;
+	if !image_size.is_multiple_of(page_size) {
+		return Err(Xex2Error::ImageSizeAlignment { image_size, page_size }.into_report());
+	}
+	let mut template = existing_descriptor_template(source, xex);
+	if let Some(template) = template.as_mut() {
+		let covered_pages: u32 = template.iter().map(|slot| slot.page_count).sum();
+		let required_pages = pe.len().div_ceil(page_size as usize) as u32;
+		if required_pages > covered_pages {
+			let Some(last) = template.last().copied() else {
+				return Err(Xex2Error::InvalidFileFormatInfo.into_report());
+			};
+			let pages_per_descriptor = 0x1_0000 / page_size;
+			let mut remaining = required_pages - covered_pages;
+			while remaining != 0 {
+				let page_count = remaining.min(pages_per_descriptor);
+				template.push(page_descriptors::DescriptorSlot { page_count, section_type: last.section_type });
+				remaining -= page_count;
+			}
+		}
+	}
 	let page_descriptors::GeneratedDescriptors { descriptors, image_hash } =
 		page_descriptors::generate(&pe, page_size, template.as_deref());
-	let image_size = pe.len() as u32;
 
 	// Preserve the source's encryption state here. Re-encryption is separate
 	// and handled by `plan_edits` on the assembled output.
 	let encryption = original_ff.encryption_type;
 	let session_key = crate::basefile::session_key(xex, &original_ff, machine)?;
+	let file_key = match session_key.as_ref() {
+		Some(session_key) => {
+			let image_flags = xex.security_info.image_info.image_flags;
+			let master =
+				crate::crypto::master_key(crate::writer::TargetMachine::Devkit, image_flags).ok_or_else(|| {
+					Xex2Error::UnknownMasterKey {
+						machine: crate::writer::TargetMachine::Devkit,
+						image_flags: image_flags.bits(),
+					}
+					.into_report()
+				})?;
+			crate::crypto::wrap_file_key(session_key, &master)
+		}
+		None => xex.security_info.image_info.file_key,
+	};
 	let (data_region, ff_blob) = match target_compression {
 		TargetCompression::Uncompressed => {
 			let data = match session_key {
@@ -88,7 +123,13 @@ pub fn rebuild_with_compression(
 			(data, compress::file_format_info_blob_none(encryption))
 		}
 		TargetCompression::Normal => {
-			let stream = compress::compress_normal(&pe, DEFAULT_LZX_WINDOW)?;
+			let window_size = match original_ff.compression_type {
+				crate::header::CompressionType::Normal => {
+					original_ff.window_size.ok_or_else(|| Xex2Error::InvalidFileFormatInfo.into_report())?
+				}
+				_ => DEFAULT_LZX_WINDOW,
+			};
+			let stream = compress::compress_normal(&pe, window_size)?;
 			let blob = compress::file_format_info_blob_normal(encryption, &stream);
 			let data = match session_key {
 				Some(key) => crate::crypto::encrypt_data(&stream.data, &key),
@@ -101,20 +142,44 @@ pub fn rebuild_with_compression(
 		}
 	};
 
-	let layout = Layout::compute(&xex.header, &ff_blob, descriptors.len());
-	let out_size = layout.data_offset + data_region.len();
-	let mut out = vec![0u8; out_size];
+	let existing_ff_range =
+		xex.header.optional_header_source_range(source, OptionalHeaderKey::FileFormatInfo).map(|span| span.as_range());
+	let preserved_header = if existing_ff_range.as_ref().is_some_and(|range| range.len() == ff_blob.len()) {
+		header_with_descriptor_capacity(source, xex, descriptors.len())?
+	} else {
+		None
+	};
+	let (layout, mut out) = if let Some(mut out) = preserved_header {
+		let preserved = Xex2Header::parse(&out)?;
+		let ff_range = preserved
+			.optional_header_source_range(&out, OptionalHeaderKey::FileFormatInfo)
+			.ok_or_else(|| Xex2Error::InvalidFileFormatInfo.into_report())?
+			.as_range();
+		let layout = Layout {
+			blob_offset_by_key: std::collections::BTreeMap::new(),
+			security_offset: xex.header.security_offset as usize,
+			data_offset: xex.header.data_offset as usize,
+		};
+		out.resize(layout.data_offset + data_region.len(), 0);
+		out[ff_range].copy_from_slice(&ff_blob);
+		(layout, out)
+	} else {
+		let layout = Layout::compute(&xex.header, &ff_blob, descriptors.len());
+		let out_size = layout.data_offset + data_region.len();
+		let mut out = vec![0u8; out_size];
+		write_main_header(&mut out, &xex.header, &layout);
+		write_opt_index(&mut out, &xex.header, &layout);
+		write_blobs(&mut out, &xex.header, &layout, &ff_blob);
+		(layout, out)
+	};
 
-	write_main_header(&mut out, &xex.header, &layout);
-	write_opt_index(&mut out, &xex.header, &layout);
-	write_blobs(&mut out, &xex.header, &layout, &ff_blob);
-	write_security_info(&mut out, &xex.security_info, &layout, image_size, image_hash, &descriptors);
+	write_security_info(&mut out, &xex.security_info, &layout, image_size, image_hash, file_key, &descriptors);
 	out[layout.data_offset..layout.data_offset + data_region.len()].copy_from_slice(&data_region);
 
 	// header_hash covers bytes we just wrote, so compute it after layout.
 	let parsed = Xex2Header::parse(&out[..])?;
 	let parsed_sec = SecurityInfo::parse(&out[..], parsed.security_offset as usize)?;
-	let header_hash = hashes::compute_header_hash(&out, &parsed, &parsed_sec);
+	let header_hash = hashes::compute_header_hash(&out, &parsed, &parsed_sec)?;
 	let ii_start = layout.security_offset + 0x108;
 	out[ii_start + 0x5C..ii_start + 0x70].copy_from_slice(&*header_hash);
 
@@ -124,6 +189,69 @@ pub fn rebuild_with_compression(
 	out[layout.security_offset + 0x08..layout.security_offset + 0x108].copy_from_slice(&sig);
 
 	Ok(out)
+}
+
+#[derive(Debug)]
+struct HeaderBlob {
+	value_offset: usize,
+	range: std::ops::Range<usize>,
+}
+
+fn header_with_descriptor_capacity(source: &[u8], xex: &Xex2, descriptor_count: usize) -> Result<Option<Vec<u8>>> {
+	let header_end = xex.header.data_offset as usize;
+	let index_end = 0x18usize + xex.header.optional_header_count as usize * 8;
+	let security_start = xex.header.security_offset as usize;
+	let security_end = security_start + 0x184 + descriptor_count * 24;
+	if security_end > header_end || header_end > source.len() {
+		return Ok(None);
+	}
+
+	let mut blobs = Vec::new();
+	for offset in (0x18usize..index_end).step_by(8) {
+		let key = BigEndian::read_u32(&source[offset..offset + 4]);
+		let pointer = BigEndian::read_u32(&source[offset + 4..offset + 8]) as usize;
+		let words = (key & 0xFF) as usize;
+		let len = match words {
+			0 | 1 => continue,
+			0xFF => {
+				let Some(size) = source.get(pointer..pointer + 4) else {
+					return Ok(None);
+				};
+				BigEndian::read_u32(size) as usize
+			}
+			_ => words * 4,
+		};
+		let Some(end) = pointer.checked_add(len) else {
+			return Ok(None);
+		};
+		if end > header_end {
+			return Ok(None);
+		}
+		blobs.push(HeaderBlob { value_offset: offset + 4, range: pointer..end });
+	}
+
+	let mut occupied = vec![0..index_end, security_start..security_end];
+	occupied.extend(blobs.iter().map(|blob| blob.range.clone()));
+	let moving: Vec<&HeaderBlob> =
+		blobs.iter().filter(|blob| blob.range.start < security_end && security_start < blob.range.end).collect();
+	let mut out = source[..header_end].to_vec();
+	for blob in moving {
+		let len = blob.range.len();
+		let target = (index_end..=header_end - len).step_by(4).find(|&candidate| {
+			let range = candidate..candidate + len;
+			!occupied.iter().any(|item| range.start < item.end && item.start < range.end)
+				&& source[range].iter().all(|byte| *byte == 0)
+		});
+		let Some(target) = target else {
+			return Ok(None);
+		};
+		let end = target + len;
+		out[target..end].copy_from_slice(&source[blob.range.clone()]);
+		BigEndian::write_u32(&mut out[blob.value_offset..blob.value_offset + 4], target as u32);
+		occupied.push(target..end);
+	}
+
+	Ok(Some(out))
 }
 
 fn existing_descriptor_template(source: &[u8], xex: &Xex2) -> Option<Vec<page_descriptors::DescriptorSlot>> {
@@ -226,6 +354,7 @@ fn write_security_info(
 	layout: &Layout,
 	image_size: u32,
 	image_hash: crate::header::Sha1Hash,
+	file_key: crate::header::AesKey,
 	descriptors: &[page_descriptors::PageDescriptor],
 ) {
 	let so = layout.security_offset;
@@ -243,7 +372,7 @@ fn write_security_info(
 	BigEndian::write_u32(&mut out[ii + 0x20..ii + 0x24], sec.image_info.import_table_count);
 	out[ii + 0x24..ii + 0x38].copy_from_slice(&*sec.image_info.import_table_hash);
 	out[ii + 0x38..ii + 0x48].copy_from_slice(&sec.image_info.media_id);
-	out[ii + 0x48..ii + 0x58].copy_from_slice(&*sec.image_info.file_key);
+	out[ii + 0x48..ii + 0x58].copy_from_slice(&*file_key);
 	BigEndian::write_u32(&mut out[ii + 0x58..ii + 0x5C], sec.image_info.export_table_address);
 	// header_hash: 0x5C..0x70 (filled by caller after recompute).
 	BigEndian::write_u32(&mut out[ii + 0x70..ii + 0x74], sec.image_info.game_regions);
@@ -262,6 +391,50 @@ fn write_security_info(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn file_format_blob_follows_descriptor_relocation() {
+		use crate::builder::Xex2Builder;
+
+		let mut pe = vec![0u8; 64 * 1024];
+		pe[0..2].copy_from_slice(b"MZ");
+		let mut source = Xex2Builder::new(pe).compress().build().unwrap();
+		let original = Xex2::parse(&source).unwrap();
+		let old_range = original
+			.header
+			.optional_header_source_range(&source, OptionalHeaderKey::FileFormatInfo)
+			.unwrap()
+			.as_range();
+		let ff_blob = source[old_range].to_vec();
+		let target = original.header.security_offset as usize + original.security_info.header_size as usize;
+		assert!(target + ff_blob.len() <= original.header.data_offset as usize);
+		source[target..target + ff_blob.len()].copy_from_slice(&ff_blob);
+		let index_end = 0x18 + original.header.optional_header_count as usize * 8;
+		let value_offset = (0x18..index_end)
+			.step_by(8)
+			.find(|offset| {
+				BigEndian::read_u32(&source[*offset..*offset + 4]) == OptionalHeaderKey::FileFormatInfo as u32
+			})
+			.unwrap()
+			+ 4;
+		BigEndian::write_u32(&mut source[value_offset..value_offset + 4], target as u32);
+
+		let relocated_source = Xex2::parse(&source).unwrap();
+		let descriptor_count =
+			relocated_source.security_info.page_descriptor_count as usize + ff_blob.len().div_ceil(24);
+		let relocated = header_with_descriptor_capacity(&source, &relocated_source, descriptor_count).unwrap().unwrap();
+		let relocated_header = Xex2Header::parse(&relocated).unwrap();
+		let relocated_range = relocated_header
+			.optional_header_source_range(&relocated, OptionalHeaderKey::FileFormatInfo)
+			.unwrap()
+			.as_range();
+		let security_end = relocated_header.security_offset as usize + 0x184 + descriptor_count * 24;
+
+		assert!(
+			relocated_range.end <= relocated_header.security_offset as usize || relocated_range.start >= security_end
+		);
+		assert_eq!(&relocated[relocated_range], ff_blob);
+	}
 
 	#[test]
 	fn layout_align_up_rounds_as_expected() {

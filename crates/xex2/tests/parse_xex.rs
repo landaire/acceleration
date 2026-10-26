@@ -251,7 +251,7 @@ fn header_hash_formula_matches_fixtures() {
 		"xbdm.xex",
 	] {
 		let (data, xex) = load_or_skip!(name);
-		let computed = xex2::hashes::compute_header_hash(&data, &xex.header, &xex.security_info);
+		let computed = xex2::hashes::compute_header_hash(&data, &xex.header, &xex.security_info).unwrap();
 		assert_eq!(computed, xex.security_info.image_info.header_hash, "header_hash mismatch for {}", name);
 	}
 }
@@ -349,7 +349,7 @@ fn verify_devkit_signature(patched: &[u8]) {
 fn verify_header_hash(patched: &[u8]) {
 	use xex2::Xex2;
 	let xex = Xex2::parse(patched).unwrap();
-	let computed = xex2::hashes::compute_header_hash(patched, &xex.header, &xex.security_info);
+	let computed = xex2::hashes::compute_header_hash(patched, &xex.header, &xex.security_info).unwrap();
 	assert_eq!(computed, xex.security_info.image_info.header_hash, "header_hash mismatch after patching");
 }
 
@@ -575,6 +575,48 @@ fn replace_pe_on_normal_compressed_source() {
 }
 
 #[test]
+fn resized_pe_replacement_decrypts_an_uncompressed_source() {
+	use xex2::builder::EncryptionTarget;
+	use xex2::builder::Xex2Builder;
+	use xex2::header::EncryptionType;
+	use xex2::writer::TargetCompression;
+	use xex2::writer::TargetEncryption;
+
+	let mut original = vec![0u8; 64 * 1024];
+	original[0..2].copy_from_slice(b"MZ");
+	let compressed = Xex2Builder::new(original.clone())
+		.entry_point(xenon_types::VirtualAddress(0x82001000))
+		.load_address(xenon_types::VirtualAddress(0x82000000))
+		.compress()
+		.encrypt(EncryptionTarget::Devkit)
+		.build()
+		.unwrap();
+	let mut source = Vec::new();
+	Xex2::parse(&compressed)
+		.unwrap()
+		.rebuild(&compressed)
+		.target_compression(TargetCompression::Uncompressed)
+		.write_to(&mut source)
+		.unwrap();
+	let mut replacement = original;
+	replacement.resize(128 * 1024, 0x5a);
+
+	let mut rebuilt = Vec::new();
+	Xex2::parse(&source)
+		.unwrap()
+		.rebuild(&source)
+		.target_encryption(TargetEncryption::Decrypted)
+		.replace_pe(replacement.clone())
+		.write_to(&mut rebuilt)
+		.unwrap();
+
+	let parsed = Xex2::parse(&rebuilt).unwrap();
+	assert_eq!(parsed.header.file_format_info().unwrap().encryption_type, EncryptionType::None);
+	assert_eq!(parsed.security_info.image_size as usize, replacement.len());
+	assert_eq!(parsed.extract_basefile(&rebuilt).unwrap(), replacement);
+}
+
+#[test]
 fn builder_produces_parseable_xex() {
 	use xex2::builder::Xex2Builder;
 
@@ -611,6 +653,255 @@ fn builder_produces_parseable_xex() {
 	// Signature + header_hash must verify.
 	verify_devkit_signature(&bytes);
 	verify_header_hash(&bytes);
+}
+
+#[test]
+fn composed_header_edits_remain_verifiable() {
+	use xenon_types::Sha1Hash;
+	use xenon_types::Version;
+	use xex2::builder::BoundingPath;
+	use xex2::builder::Xex2Builder;
+	use xex2::imports::ImportLibrary;
+	use xex2::opt::AllowedMediaTypes;
+	use xex2::opt::ModuleFlags;
+	use xex2::opt::ResourceEntry;
+	use xex2::opt::ResourceName;
+	use xex2::writer::RemoveLimits;
+
+	let mut pe = vec![0u8; 64 * 1024];
+	pe[0..2].copy_from_slice(b"MZ");
+	let imports = vec![ImportLibrary {
+		name: "xboxkrnl.exe".to_owned(),
+		digest: Sha1Hash::ZERO,
+		import_id: 0,
+		version: Version { major: 2, minor: 0, build: 6717, revision: 0 },
+		version_min: Version { major: 2, minor: 0, build: 6717, revision: 0 },
+		records: Vec::new(),
+	}];
+	let source = Xex2Builder::new(pe.clone())
+		.module_flags(ModuleFlags::TITLE | ModuleFlags::BOUND_PATH)
+		.bounding_path(BoundingPath::new(r"\Device\Flash\dash.xex").unwrap())
+		.imports(imports)
+		.resources(vec![ResourceEntry {
+			name: ResourceName::new("existing").unwrap(),
+			address: xenon_types::VirtualAddress(0x8200_1000),
+			size: 16,
+		}])
+		.build()
+		.unwrap();
+
+	let mut flash_only = Vec::new();
+	Xex2::parse(&source)
+		.unwrap()
+		.rebuild(&source)
+		.set_allowed_media(AllowedMediaTypes::SYSTEM_FLASH)
+		.write_to(&mut flash_only)
+		.unwrap();
+	Xex2::parse(&flash_only).unwrap().extract_basefile(&flash_only).unwrap();
+
+	let relocated_path = BoundingPath::new(r"\Device\Harddisk0\Partition1\DEVKIT\dash-6717\default.xex").unwrap();
+	let mut patched = Vec::new();
+	Xex2::parse(&flash_only)
+		.unwrap()
+		.rebuild(&flash_only)
+		.remove_limits(RemoveLimits::all())
+		.set_bounding_path(relocated_path.clone())
+		.add_resource(ResourceEntry {
+			name: ResourceName::new("shrdres").unwrap(),
+			address: xenon_types::VirtualAddress(0x8200_2000),
+			size: 32,
+		})
+		.write_to(&mut patched)
+		.unwrap();
+	let parsed = Xex2::parse(&patched).unwrap();
+	assert_eq!(parsed.extract_basefile(&patched).unwrap(), pe);
+	assert!(parsed.header.module_flags.contains(ModuleFlags::BOUND_PATH));
+	assert_eq!(parsed.security_info.image_info.allowed_media_types.bits(), u32::MAX);
+	assert_eq!(parsed.header.import_table().unwrap().libraries[0].version_min, Version::from(0));
+	assert_eq!(parsed.header.resource_info().unwrap().resources.len(), 2);
+	let xex2::header::OptionalHeaderValue::Data(path_data) =
+		parsed.header.get_optional_header(xex2::header::OptionalHeaderKey::BoundingPath).unwrap()
+	else {
+		panic!("bounding path must be an indirect optional header");
+	};
+	let terminator = path_data[4..].iter().position(|byte| *byte == 0).unwrap() + 4;
+	assert_eq!(&path_data[4..terminator], relocated_path.as_str().as_bytes());
+}
+
+#[test]
+fn adds_first_resource_header() {
+	use xex2::builder::Xex2Builder;
+	use xex2::opt::ResourceEntry;
+	use xex2::opt::ResourceName;
+
+	let mut pe = vec![0u8; 64 * 1024];
+	pe[0..2].copy_from_slice(b"MZ");
+	let source = Xex2Builder::new(pe.clone()).build().unwrap();
+	let original = Xex2::parse(&source).unwrap();
+	assert!(original.header.resource_info().is_none());
+	let original_count = original.header.optional_header_count;
+	let resource = ResourceEntry {
+		name: ResourceName::new("shrdres").unwrap(),
+		address: xenon_types::VirtualAddress(0x8200_1000),
+		size: 32,
+	};
+
+	let mut patched = Vec::new();
+	original.rebuild(&source).add_resource(resource).write_to(&mut patched).unwrap();
+
+	let parsed = Xex2::parse(&patched).unwrap();
+	assert_eq!(parsed.header.optional_header_count, original_count + 1);
+	assert_eq!(parsed.header.resource_info().unwrap().resources, vec![resource]);
+	let keys: Vec<u32> = (0..parsed.header.optional_header_count as usize)
+		.map(|index| u32::from_be_bytes(patched[0x18 + index * 8..0x1c + index * 8].try_into().unwrap()))
+		.collect();
+	assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+	assert_eq!(parsed.extract_basefile(&patched).unwrap(), pe);
+	verify_devkit_signature(&patched);
+	verify_header_hash(&patched);
+}
+
+#[test]
+fn composes_new_resource_header_with_bounding_path_replacement() {
+	use xex2::builder::BoundingPath;
+	use xex2::builder::Xex2Builder;
+	use xex2::opt::ModuleFlags;
+	use xex2::opt::ResourceEntry;
+	use xex2::opt::ResourceName;
+
+	let mut pe = vec![0u8; 64 * 1024];
+	pe[0..2].copy_from_slice(b"MZ");
+	let source = Xex2Builder::new(pe.clone())
+		.module_flags(ModuleFlags::TITLE | ModuleFlags::BOUND_PATH)
+		.bounding_path(BoundingPath::new(r"\Device\Flash\dash.xex").unwrap())
+		.build()
+		.unwrap();
+	let path = BoundingPath::new(r"\Device\Harddisk0\Partition1\DEVKIT\dash-6717\default.xex").unwrap();
+	let resource = ResourceEntry {
+		name: ResourceName::new("shrdres").unwrap(),
+		address: xenon_types::VirtualAddress(0x8200_1000),
+		size: 32,
+	};
+
+	let mut patched = Vec::new();
+	Xex2::parse(&source)
+		.unwrap()
+		.rebuild(&source)
+		.set_bounding_path(path.clone())
+		.add_resource(resource)
+		.write_to(&mut patched)
+		.unwrap();
+
+	let parsed = Xex2::parse(&patched).unwrap();
+	assert_eq!(parsed.header.bounding_path().as_deref(), Some(path.as_str()));
+	assert!(parsed.header.module_flags.contains(ModuleFlags::BOUND_PATH));
+	assert_eq!(parsed.header.resource_info().unwrap().resources, vec![resource]);
+	assert_eq!(parsed.extract_basefile(&patched).unwrap(), pe);
+	verify_devkit_signature(&patched);
+	verify_header_hash(&patched);
+}
+
+#[test]
+fn validates_added_resource_against_replacement_load_address() {
+	use xex2::builder::Xex2Builder;
+	use xex2::opt::ResourceEntry;
+	use xex2::opt::ResourceName;
+
+	let mut pe = vec![0u8; 64 * 1024];
+	pe[0..2].copy_from_slice(b"MZ");
+	let source = Xex2Builder::new(pe).build().unwrap();
+	let load_address = xenon_types::VirtualAddress(0x8300_0000);
+	let resource = ResourceEntry {
+		name: ResourceName::new("shrdres").unwrap(),
+		address: xenon_types::VirtualAddress(0x8300_1000),
+		size: 32,
+	};
+
+	let mut patched = Vec::new();
+	Xex2::parse(&source)
+		.unwrap()
+		.rebuild(&source)
+		.set_load_address(load_address)
+		.add_resource(resource)
+		.write_to(&mut patched)
+		.unwrap();
+
+	let parsed = Xex2::parse(&patched).unwrap();
+	assert_eq!(parsed.security_info.image_info.load_address, load_address);
+	assert_eq!(parsed.header.resource_info().unwrap().resources, vec![resource]);
+	verify_devkit_signature(&patched);
+	verify_header_hash(&patched);
+}
+
+#[test]
+fn composes_cleared_optional_header_with_first_resource() {
+	use xex2::builder::Xex2Builder;
+	use xex2::header::OptionalHeaderKey;
+	use xex2::opt::ResourceEntry;
+	use xex2::opt::ResourceName;
+
+	let mut pe = vec![0u8; 64 * 1024];
+	pe[0..2].copy_from_slice(b"MZ");
+	let source = Xex2Builder::new(pe).build().unwrap();
+	let resource = ResourceEntry {
+		name: ResourceName::new("shrdres").unwrap(),
+		address: xenon_types::VirtualAddress(0x8200_1000),
+		size: 32,
+	};
+
+	let mut patched = Vec::new();
+	Xex2::parse(&source)
+		.unwrap()
+		.rebuild(&source)
+		.clear_optional_header(OptionalHeaderKey::ExecutionInfo)
+		.add_resource(resource)
+		.write_to(&mut patched)
+		.unwrap();
+
+	let parsed = Xex2::parse(&patched).unwrap();
+	let execution_info =
+		parsed.header.optional_header_source_range(&patched, OptionalHeaderKey::ExecutionInfo).unwrap();
+	assert!(patched[execution_info.as_range()].iter().all(|byte| *byte == 0));
+	assert_eq!(parsed.header.resource_info().unwrap().resources, vec![resource]);
+	verify_devkit_signature(&patched);
+	verify_header_hash(&patched);
+}
+
+#[test]
+fn rejects_unaligned_replacement_image() {
+	use xex2::builder::Xex2Builder;
+	use xex2::error::Xex2Error;
+
+	let mut pe = vec![0u8; 64 * 1024];
+	pe[0..2].copy_from_slice(b"MZ");
+	let source = Xex2Builder::new(pe).compress().build().unwrap();
+	let replacement = vec![0u8; 64 * 1024 + 1];
+	let mut sink = Vec::new();
+
+	let error = Xex2::parse(&source).unwrap().rebuild(&source).replace_pe(replacement).write_to(&mut sink).unwrap_err();
+	assert!(matches!(
+		error.current_context(),
+		Xex2Error::ImageSizeAlignment { image_size: 0x1_0001, page_size: 0x1_0000 }
+	));
+}
+
+#[test]
+fn malformed_header_hash_range_returns_an_error() {
+	use xex2::builder::Xex2Builder;
+	use xex2::error::Xex2Error;
+
+	let mut pe = vec![0u8; 64 * 1024];
+	pe[0..2].copy_from_slice(b"MZ");
+	let mut source = Xex2Builder::new(pe).build().unwrap();
+	let security_offset = Xex2::parse(&source).unwrap().header.security_offset;
+	let malformed_data_offset = security_offset + 0x100;
+	source[8..12].copy_from_slice(&malformed_data_offset.to_be_bytes());
+	let malformed = Xex2::parse(&source).unwrap();
+	let mut sink = Vec::new();
+
+	let error = malformed.rebuild(&source).write_to(&mut sink).unwrap_err();
+
+	assert!(matches!(error.current_context(), Xex2Error::SecurityInfoOutOfBounds { .. }));
 }
 
 #[test]

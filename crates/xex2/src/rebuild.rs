@@ -8,23 +8,24 @@
 //!
 //! Edits come in two flavors:
 //! - **Length-preserving edits** (limit recipes, per-field overrides of fields
-//!   that stay the same size, encryption, target machine, PE replacement on an
-//!   uncompressed source): fast path, expressed as a [`Patch`] that streams
-//!   through source bytes.
-//! - **Transformative edits** (compression changes, or PE replacement on a
-//!   compressed source): require a full rebuild via `assemble`. Basic
-//!   compression targets or sources and Delta sources return
+//!   that stay the same size, encryption, and target machine): fast path,
+//!   expressed as a [`Patch`] that streams through source bytes.
+//! - **Transformative edits** (compression changes or PE replacement): require
+//!   a full rebuild via `assemble`. Basic compression targets or sources and
+//!   Delta sources return
 //!   [`Xex2Error::RebuildTransformNotImplemented`][crate::error::Xex2Error::RebuildTransformNotImplemented].
 
 use std::io::Write;
 
 use crate::Xex2;
+use crate::builder::BoundingPath;
 use crate::error::Result;
 use crate::error::Xex2Error;
 use crate::header::OptionalHeaderKey;
 use crate::opt::AllowedMediaTypes;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
+use crate::opt::ResourceEntry;
 use crate::patch::Patch;
 use crate::writer::EditPlan;
 use crate::writer::RemoveLimits;
@@ -119,6 +120,16 @@ impl<'a> Rebuilder<'a> {
 		self
 	}
 
+	pub fn set_bounding_path(mut self, path: BoundingPath) -> Self {
+		self.plan.bounding_path = Some(path);
+		self
+	}
+
+	pub fn add_resource(mut self, resource: ResourceEntry) -> Self {
+		self.plan.added_resources.push(resource);
+		self
+	}
+
 	pub fn clear_optional_header(mut self, key: OptionalHeaderKey) -> Self {
 		self.plan.cleared_optional_headers.push(key);
 		self
@@ -161,10 +172,10 @@ impl<'a> Rebuilder<'a> {
 	}
 
 	/// Stream the rebuilt XEX to `sink`. For length-preserving edits this
-	/// streams the source through a [`Patch`]; compression changes (or PE
-	/// replacement on a compressed source) trigger a full assemble-from-parts
-	/// path in [`crate::assemble::rebuild_with_compression`], after which any
-	/// remaining per-field edits run through the normal patch path.
+	/// streams the source through a [`Patch`]. Compression changes and PE
+	/// replacement trigger a full assemble-from-parts path in
+	/// [`crate::assemble::rebuild_with_compression`], after which any remaining
+	/// per-field edits run through the normal patch path.
 	pub fn write_to<W: Write>(self, sink: &mut W) -> Result<()> {
 		if !self.is_supported() {
 			return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
@@ -189,13 +200,11 @@ impl<'a> Rebuilder<'a> {
 					| (crate::header::CompressionType::Normal, TargetCompression::Normal)
 			)
 		});
-		// PE replacement on a compressed source has to go through the full
-		// path: the source's data region holds compressed bytes we need to
-		// rewrite end-to-end (either by re-compressing the replacement or by
-		// switching the stream to None).
-		let pe_needs_decompress_flow =
-			self.plan.replace_pe.is_some() && current != crate::header::CompressionType::None;
-		target_changes_compression || pe_needs_decompress_flow
+		// PE replacement always goes through the assembler. Even an
+		// uncompressed image may change length, and an encrypted source does
+		// not expose plaintext bytes at the source data offset.
+		let replaces_pe = self.plan.replace_pe.is_some();
+		target_changes_compression || replaces_pe
 	}
 
 	fn full_rebuild(mut self) -> Result<Vec<u8>> {

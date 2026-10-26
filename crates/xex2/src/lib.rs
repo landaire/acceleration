@@ -55,6 +55,7 @@ pub mod delta;
 pub mod error;
 pub mod hashes;
 pub mod header;
+pub mod image_patch;
 pub mod imports;
 pub mod opt;
 pub mod page_descriptors;
