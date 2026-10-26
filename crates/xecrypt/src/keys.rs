@@ -299,6 +299,11 @@ pub(crate) mod devkit {
 	/// PIRS/XEX signing key (devkit). Used for the same purposes as retail::pirs but
 	/// on devkit consoles. Private components enable signing.
 	///
+	/// Extracted as a 0x390-byte `XECRYPT_RSAPRV_2048` from file offset and RVA
+	/// 0x26b8 of the XDK `%XEDK%\bin\win32\imagexex.exe` with SHA-256
+	/// 1de77afc2ff4e450c7b7c00b811858d38c1869df2aa274320fef3023ea4633c3.
+	/// Its modulus matches devkit `HvpKeyBlock.PublicKey39`.
+	///
 	/// HV key ID 0x39 (devkit variant). Exponent = 3.
 	///
 	/// Functions (devkit path):
@@ -376,6 +381,55 @@ pub(crate) mod devkit {
 			0x4FA191CA3E9F2DDF,
 			0x342F233286B43E10,
 			0xDECEBBD886850EF0,
+		];
+	}
+
+	/// SD boot-stage signing key for the 16547 development boot chain.
+	///
+	/// Extracted as a 0x390-byte `XECRYPT_RSAPRV_2048` at file offset and RVA
+	/// 0x6240 in the XDK `%XEDK%\bin\win32\ArcadeLicense.exe` with SHA-256
+	/// b9ce8b0c67b145e39c04dbc7d66731fad0a7373f2c758b26405bb6851d1e3598.
+	/// The key blob has SHA-256
+	/// 57ee2083e62cec0c3e1a97e33091fc248c826f46bb465c914297b0f56066f764.
+	/// `ArcadeLicense.exe` does not reference this retained key record.
+	pub(crate) mod shadowboot_sd {
+		pub const PUB_EXPONENT: u64 = 0x00010001;
+
+		pub const P: [u64; 16] = [
+			0x654951F7EA7B3057,
+			0x0172E245E842EAD3,
+			0xDC4CE7E21F089EC1,
+			0x77BFADB1750377DB,
+			0xABD5AEE8ECB94C0E,
+			0xDDACD437F8552E1C,
+			0x2C668757FF8C3DB1,
+			0xF48217893C62C231,
+			0xCB3B5797858D9C47,
+			0x2CC8CE4B9B66A5E7,
+			0xC1C625943A268E6A,
+			0x2F5FE6E694A41317,
+			0xC8E2D4D66D40A97B,
+			0x59B91794C4076636,
+			0x6C237318688F7C1A,
+			0xEEBD644D652C7C9A,
+		];
+		pub const Q: [u64; 16] = [
+			0xF7CD5BC3AAE22DC1,
+			0xCDD7A13C186FF752,
+			0x3C2A32F11809A833,
+			0xD37E9DD18D9F7893,
+			0x0A15200B1172B525,
+			0xBFBBAD81687629F6,
+			0xDDAFF501D0A2981E,
+			0x94FF43CFE609988C,
+			0x9A98351160EB9605,
+			0xE2FED93E87348992,
+			0x40D95AD79C5D94C4,
+			0x102646E34BF55016,
+			0xB17CEC1F7B52C352,
+			0xA3BB79386135EBB1,
+			0xFCD68CB386314CB3,
+			0xE74B7A6D3E550F57,
 		];
 	}
 

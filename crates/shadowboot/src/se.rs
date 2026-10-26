@@ -20,6 +20,9 @@ const FRAME_HEADER_SIZE: usize = 4;
 /// SD keeps the digest of SE in its plaintext here. SD 16547 compares the two at 0xcd4 and halts
 /// when they differ.
 const SD_SE_DIGEST: std::ops::Range<usize> = 0x24c..0x260;
+const SD_SIGNATURE: std::ops::Range<usize> = 0x020..0x120;
+const SD_PUBLIC_KEY: std::ops::Range<usize> = 0x120..0x230;
+const SD_SIGNATURE_BODY: std::ops::RangeFrom<usize> = 0x120..;
 /// The SE digest covers SE up to its size rounded up to this alignment. Flash holds the bytes up
 /// to the aligned end encrypted, with zero plaintext.
 pub const SE_ALIGNMENT: usize = 0x10;
@@ -50,6 +53,8 @@ pub enum Error {
 	CompressedChunkTooLarge { index: usize, size: usize },
 	#[error("encoded SE size {size:#x} exceeds the u32 stage header limit")]
 	StageTooLarge { size: usize },
+	#[error("SD signature generation failed")]
+	SdSigning(#[from] xecrypt::Error),
 	#[error("SD is {size:#x} bytes, too short to hold the SE digest at {offset:#x}", offset = SD_SE_DIGEST.start)]
 	SdTooShort { size: usize },
 	#[error("SE padding has {actual:#x} bytes; SE of size {size:#x} needs {expected:#x}")]
@@ -180,10 +185,34 @@ pub fn sd_se_digest(sc: &[u8], sd: &[u8]) -> Result<[u8; 20], Error> {
 	Ok(plaintext[SD_SE_DIGEST].try_into().expect("the digest field is 20 bytes"))
 }
 
-/// SD with `digest` as the SE digest that it keeps, encrypted again with its unchanged key.
-pub fn with_sd_se_digest(sc: &[u8], sd: &[u8], digest: &[u8; 20]) -> Result<Vec<u8>, Error> {
+/// The digest covered by the SD signature.
+pub fn sd_signature_digest(sc: &[u8], sd: &[u8]) -> Result<[u8; 20], Error> {
+	let plaintext = sd_plaintext(sc, sd)?;
+	Ok(xecrypt::symmetric::xe_crypt_rot_sum_sha(&plaintext[..0x10], &plaintext[SD_SIGNATURE_BODY]))
+}
+
+/// Verify SD with the public key from an authenticated SD.
+pub fn sd_signature_verifies(sc: &[u8], sd: &[u8], trusted_sc: &[u8], trusted_sd: &[u8]) -> Result<bool, Error> {
+	let plaintext = sd_plaintext(sc, sd)?;
+	let trusted = sd_plaintext(trusted_sc, trusted_sd)?;
+	let signature: &[u8; 256] = plaintext[SD_SIGNATURE].try_into().expect("the SD signature is 256 bytes");
+	let public_key: &[u8; 0x110] = trusted[SD_PUBLIC_KEY].try_into().expect("the SD public key is 0x110 bytes");
+	let digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(&plaintext[..0x10], &plaintext[SD_SIGNATURE_BODY]);
+	Ok(xecrypt::xex_sig::verify_xecrypt_public_key(
+		signature,
+		&digest,
+		xecrypt::xex_sig::SALT_SHADOWBOOT_SD,
+		public_key,
+	))
+}
+
+/// Set the SE digest in SD, sign the result, and encrypt it with its unchanged key.
+pub fn with_authenticated_sd_se_digest(sc: &[u8], sd: &[u8], digest: &[u8; 20]) -> Result<Vec<u8>, Error> {
 	let mut plaintext = sd_plaintext(sc, sd)?;
 	plaintext[SD_SE_DIGEST].copy_from_slice(digest);
+	let signature_digest = xecrypt::symmetric::xe_crypt_rot_sum_sha(&plaintext[..0x10], &plaintext[SD_SIGNATURE_BODY]);
+	let signature = xecrypt::xex_sig::sign_shadowboot_sd(&signature_digest)?;
+	plaintext[SD_SIGNATURE].copy_from_slice(&signature);
 	let key = derive_key_chain([sc, sd])?;
 	rc4(&key, &mut plaintext[STAGE_HEADER_SIZE..]);
 	Ok(plaintext)
@@ -312,8 +341,8 @@ mod tests {
 		assert_eq!(decode(&sc, &sd, &encoded).unwrap(), payload);
 	}
 
-	/// SD keeps the digest of an encoded SE, padded with zero plaintext; a new digest replaces
-	/// only the digest field of the SD plaintext.
+	/// SD keeps the digest of an encoded SE, padded with zero plaintext. Updating the digest
+	/// changes the digest and signature fields of the SD plaintext.
 	#[test]
 	fn sd_keeps_the_digest_of_the_padded_se() {
 		let sc = stage(*b"SC", "5145e4b206bf24db95c9986a700531fe");
@@ -336,10 +365,12 @@ mod tests {
 			digest,
 			xecrypt::symmetric::xe_crypt_rot_sum_sha(&plaintext[..0x10], &plaintext[STAGE_HEADER_SIZE..])
 		);
-		let patched = with_sd_se_digest(&sc, &sd, &digest).unwrap();
+		let patched = with_authenticated_sd_se_digest(&sc, &sd, &digest).unwrap();
 		assert_eq!(sd_se_digest(&sc, &patched).unwrap(), digest);
 		let (before, after) = (sd_plaintext(&sc, &sd).unwrap(), sd_plaintext(&sc, &patched).unwrap());
-		assert_eq!(before[..SD_SE_DIGEST.start], after[..SD_SE_DIGEST.start]);
+		assert_eq!(before[..SD_SIGNATURE.start], after[..SD_SIGNATURE.start]);
+		assert_ne!(before[SD_SIGNATURE.clone()], after[SD_SIGNATURE.clone()]);
+		assert_eq!(before[SD_SIGNATURE.end..SD_SE_DIGEST.start], after[SD_SIGNATURE.end..SD_SE_DIGEST.start]);
 		assert_eq!(before[SD_SE_DIGEST.end..], after[SD_SE_DIGEST.end..]);
 		assert!(matches!(super::digest(&sc, &sd, &se, &[0; SE_ALIGNMENT]), Err(Error::PaddingSize { .. })));
 	}

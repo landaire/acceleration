@@ -160,12 +160,12 @@ fn run(arguments: Arguments) -> Result<()> {
 	temporary.persist(&arguments.output).map_err(|error| io_error("replace output", &arguments.output, error.error))?;
 
 	println!(
-		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-digest-updated={}",
+		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-signed={}",
 		arguments.output.display(),
 		output_size,
 		report.replaced_boot_stages,
 		report.rebuilt_se,
-		report.updated_sd_digest,
+		report.updated_sd_signature,
 	);
 	Ok(())
 }

@@ -30,8 +30,8 @@ pub struct BootLayer<'a> {
 pub struct BuildReport {
 	pub replaced_boot_stages: usize,
 	pub rebuilt_se: bool,
-	/// The base SD was written with the digest of the new SE.
-	pub updated_sd_digest: bool,
+	/// The base SD was written with a signed digest of the new SE.
+	pub updated_sd_signature: bool,
 }
 
 #[derive(Debug, Error)]
@@ -62,6 +62,8 @@ pub enum Error {
 	BaseSdDigest { stored: [u8; 20], computed: [u8; 20] },
 	#[error("boot stage SD of the layer keeps SE digest {stored:02x?}, but the SE of the image has {computed:02x?}")]
 	SdDigest { stored: [u8; 20], computed: [u8; 20] },
+	#[error("boot stage SD signature does not authenticate digest {digest:02x?}")]
+	SdSignature { digest: [u8; 20] },
 	#[error("boot stage {stage} declares size {declared:#x}, but its input has size {actual:#x}")]
 	BootStageSize { stage: &'static str, declared: usize, actual: usize },
 	#[error("boot stage sizes overflow the host address space")]
@@ -120,6 +122,9 @@ fn check_base_sd_digest(image: &Image<'_>, sc: &[u8], sd: &[u8], se: &[u8]) -> R
 	if stored != computed {
 		return Err(Error::BaseSdDigest { stored, computed });
 	}
+	if !se::sd_signature_verifies(sc, sd, sc, sd)? {
+		return Err(Error::SdSignature { digest: se::sd_signature_digest(sc, sd)? });
+	}
 	Ok(())
 }
 
@@ -149,6 +154,19 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 	for (index, stage) in [sb, sc, sd].iter().enumerate() {
 		validate_boot_stage(index, stage)?;
 	}
+	let boot_limit = image.header().boot_image_size.get();
+	let selected_end = boot_chain_end(&[sb, sc, sd])?;
+	if selected_end > boot_limit {
+		return Err(Error::BootRegionOverflow { end: selected_end, limit: boot_limit });
+	}
+	if let Some(se) = layer.se {
+		validate_boot_stage(3, se)?;
+		let selected_end = boot_chain_end(&[sb, sc, sd, se])?;
+		if selected_end > boot_limit {
+			return Err(Error::BootRegionOverflow { end: selected_end, limit: boot_limit });
+		}
+	}
+	check_base_sd_digest(image, base_sc, base_sd, base_se)?;
 
 	let base_sc_state = se::sc_key_state(base_sc)?;
 	let sc_state = se::sc_key_state(sc)?;
@@ -164,7 +182,6 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 
 	let mut rebuilt_se = None;
 	let se = if let Some(se) = layer.se {
-		validate_boot_stage(3, se)?;
 		drop(se::decode(sc, sd, se)?);
 		se
 	} else if layer.hypervisor.is_some() || layer.kernel.is_some() || se_key_changed || layer.rebuild_se {
@@ -193,8 +210,8 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 	let padding =
 		if se == base_se && !se_key_changed { base_se_padding(image)?.to_vec() } else { se::padding(sc, sd, se)? };
 
-	// SD halts the boot unless it keeps the digest of SE. A layer SD must already keep it; the
-	// base SD is given it.
+	// SD authenticates the SE digest. A layer SD must already authenticate it; otherwise the
+	// base SD is updated and signed.
 	let digest = se::digest(sc, sd, se, &padding)?;
 	let stored = se::sd_se_digest(sc, sd)?;
 	let mut updated_sd = None;
@@ -202,16 +219,15 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 		if layer.sd.is_some() {
 			return Err(Error::SdDigest { stored, computed: digest });
 		}
-		check_base_sd_digest(image, base_sc, base_sd, base_se)?;
-		updated_sd = Some(se::with_sd_se_digest(sc, sd, &digest)?);
+		updated_sd = Some(se::with_authenticated_sd_se_digest(sc, sd, &digest)?);
 	}
 	let sd = updated_sd.as_deref().unwrap_or(sd);
+	if !se::sd_signature_verifies(sc, sd, base_sc, base_sd)? {
+		return Err(Error::SdSignature { digest: se::sd_signature_digest(sc, sd)? });
+	}
 
 	let stages = [sb, sc, sd, se];
-	let new_end = stages.iter().try_fold(BOOT_CHAIN_OFFSET, |offset, stage| {
-		offset.checked_add(stage.len()).ok_or(Error::BootChainSizeOverflow)
-	})? + padding.len();
-	let boot_limit = image.header().boot_image_size.get();
+	let new_end = boot_chain_end(&stages)?.checked_add(padding.len()).ok_or(Error::BootChainSizeOverflow)?;
 	if new_end > boot_limit {
 		return Err(Error::BootRegionOverflow { end: new_end, limit: boot_limit });
 	}
@@ -238,7 +254,13 @@ fn apply_boot_layer(image: &Image<'_>, output: &mut [u8], layer: BootLayer<'_>) 
 	Ok(BuildReport {
 		replaced_boot_stages: replaced,
 		rebuilt_se: rebuilt_se.is_some(),
-		updated_sd_digest: updated_sd.is_some(),
+		updated_sd_signature: updated_sd.is_some(),
+	})
+}
+
+fn boot_chain_end(stages: &[&[u8]]) -> Result<usize, Error> {
+	stages.iter().try_fold(BOOT_CHAIN_OFFSET, |offset, stage| {
+		offset.checked_add(stage.len()).ok_or(Error::BootChainSizeOverflow)
 	})
 }
 
@@ -316,10 +338,10 @@ mod tests {
 
 	/// Runs against a private 60 MiB devkit flash capture named by `SHADOWBOOT_BASE_IMAGE`. A
 	/// recompressed SE and a changed kernel each decompress to their payload, and the compiled
-	/// SD keeps the digest of the new SE.
+	/// SD authenticates the new SE digest.
 	#[test]
 	#[ignore = "requires SHADOWBOOT_BASE_IMAGE"]
-	fn rebuilt_se_round_trips_and_sd_keeps_its_digest() {
+	fn rebuilt_se_round_trips_with_authenticated_sd() {
 		let path = std::env::var_os("SHADOWBOOT_BASE_IMAGE").expect("SHADOWBOOT_BASE_IMAGE is set");
 		let file = File::open(path).unwrap();
 		let base = unsafe { Mmap::map(&file) }.unwrap();
@@ -345,7 +367,7 @@ mod tests {
 		assert!(matches!(compile(&image, &mut output, &conflict), Err(Error::SeRebuildConflict)));
 		for (layer, expected) in &cases {
 			let report = compile(&image, &mut output, layer).unwrap();
-			assert!(report.updated_sd_digest);
+			assert!(report.updated_sd_signature);
 			let mut flash = base.to_vec();
 			flash[..output.len()].copy_from_slice(&output);
 			let compiled = Image::parse(&flash).unwrap();

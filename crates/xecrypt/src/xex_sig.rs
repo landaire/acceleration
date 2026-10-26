@@ -24,6 +24,9 @@ pub const SALT_XEX: &[u8; 10] = b"XBOX360XEX";
 /// `0x800a0980`). Signing with it is not implemented.
 pub const SALT_XEX_REVOCATION: &[u8; 10] = b"XBOXREVXEX";
 
+/// Salt for the build 16547 development SD boot-stage signature.
+pub const SALT_SHADOWBOOT_SD: &[u8; 10] = b"XBOX_ROM_4";
+
 fn rc4(key: &[u8], data: &mut [u8]) {
 	let mut s: [u8; 256] = core::array::from_fn(|i| i as u8);
 	let mut j = 0u8;
@@ -102,12 +105,45 @@ pub fn sign_devkit(hash: &[u8; 20]) -> Result<[u8; 256], crate::Error> {
 	Ok(sign(hash, SALT_XEX, &key))
 }
 
+/// Sign a build 16547 development SD boot-stage digest.
+pub fn sign_shadowboot_sd(hash: &[u8; 20]) -> Result<[u8; 256], crate::Error> {
+	use crate::keys::devkit::shadowboot_sd::*;
+
+	let key = RsaPrivateKey::from_p_q(
+		BigUint::from_slice_native(P.as_slice()),
+		BigUint::from_slice_native(Q.as_slice()),
+		PUB_EXPONENT.into(),
+	)?;
+	Ok(sign(hash, SALT_SHADOWBOOT_SD, &key))
+}
+
 /// Verify a stored XEX signature blob against a digest and public key.
 pub fn verify(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &RsaPublicKey) -> bool {
 	let a = BigUint::from_bytes_be(&qword_reverse(sig));
 	let r = a.modpow(key.e(), key.n());
 	let natural = BigUint::from_bytes_be(&natural_block(hash, salt));
 	r == natural * montgomery_factor(key.e(), key.n()) % key.n()
+}
+
+/// Verify a signature with a big-endian `XECRYPT_RSAPUB_2048`.
+///
+/// The structure stores the 256-byte modulus in least-significant-qword-first
+/// order while each qword remains big-endian.
+pub fn verify_xecrypt_public_key(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &[u8; 0x110]) -> bool {
+	let cqw = u32::from_be_bytes(key[..4].try_into().expect("fixed Cqw field"));
+	if cqw != 32 {
+		return false;
+	}
+	let exponent = u32::from_be_bytes(key[4..8].try_into().expect("fixed exponent field"));
+	if !matches!(exponent, 3 | 65537) {
+		return false;
+	}
+	let stored_modulus: &[u8; 256] = key[0x10..].try_into().expect("fixed modulus field");
+	let modulus = qword_reverse(stored_modulus);
+	let Ok(key) = RsaPublicKey::new(BigUint::from_bytes_be(&modulus), BigUint::from(exponent)) else {
+		return false;
+	};
+	verify(sig, hash, salt, &key)
 }
 
 /// Verify a normal XEX signature with the devkit executable key.
@@ -163,5 +199,26 @@ mod tests {
 		let sig = sign(&hash, SALT_XEX, &key);
 		assert!(console_accepts(&sig, &hash, &key.to_public_key()));
 		assert!(!console_accepts(&sig, &[0xa5u8; 20], &key.to_public_key()));
+	}
+
+	#[test]
+	fn xecrypt_public_key_layout_verifies_signature() {
+		let key = crate::RsaKeyKind::Executable.private_key(crate::ConsoleKind::Devkit).unwrap();
+		let public_key = key.to_public_key();
+		let hash = [0x5au8; 20];
+		let sig = sign(&hash, SALT_XEX, &key);
+		let modulus = to_bytes_256(public_key.n());
+		let mut xecrypt_key = [0u8; 0x110];
+		xecrypt_key[..4].copy_from_slice(&32u32.to_be_bytes());
+		xecrypt_key[4..8].copy_from_slice(&3u32.to_be_bytes());
+		xecrypt_key[0x10..].copy_from_slice(&qword_reverse(&modulus));
+
+		assert!(verify_xecrypt_public_key(&sig, &hash, SALT_XEX, &xecrypt_key));
+		assert!(!verify_xecrypt_public_key(&sig, &[0xa5u8; 20], SALT_XEX, &xecrypt_key));
+		xecrypt_key[..4].copy_from_slice(&31u32.to_be_bytes());
+		assert!(!verify_xecrypt_public_key(&sig, &hash, SALT_XEX, &xecrypt_key));
+		xecrypt_key[..4].copy_from_slice(&32u32.to_be_bytes());
+		xecrypt_key[4..8].copy_from_slice(&17u32.to_be_bytes());
+		assert!(!verify_xecrypt_public_key(&sig, &hash, SALT_XEX, &xecrypt_key));
 	}
 }

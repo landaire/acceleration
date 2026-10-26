@@ -29,11 +29,15 @@ The shadowed system mounts the console's own NAND file system, so flash root fil
 
 SD verifies SE with a RotSumSha digest stored in the SD plaintext at offset `0x24c` and halts on mismatch (SD 16547 compares them at `0xcd4`). The digest covers `SE[0..0x10]` and the decrypted SE body from `0x20` up to the SE size rounded up to 16 bytes. Flash holds SE up to that aligned end; the bytes after the declared size are zero plaintext, encrypted with the SE key. The compiler writes them for every SE it places, and keeps the base bytes when SE is unchanged.
 
-When the final SE no longer matches the digest in the base SD, the compiler writes the new digest into the base SD plaintext and encrypts SD again with its unchanged key. It first checks that the base SD keeps the digest of the base SE, so the field is where it writes it. A supplied `sd.bin` must already keep the digest of the final SE. How SB authenticates SD has not been established: a console whose SB checks a signature over SD would reject the changed SD.
+SD is also signed. Its signature covers `SD[0..0x10]` and decrypted
+`SD[0x120..Size]`, including the SE digest, with salt `XBOX_ROM_4`. The
+compiler verifies the base SD and verifies the final SD against the base
+image's public key. When a changed SE needs another digest, the compiler
+updates and signs a copy of the base SD. A supplied `sd.bin` must already
+contain the matching digest and a valid signature.
 
-`--rebuild-se` recompresses and re-encrypts SE and updates the base SD digest
-even when the plaintext payload is unchanged. This isolates boot-chain
-packaging from payload changes. It cannot be combined with `boot/se.bin`.
+`--rebuild-se` recompresses and re-encrypts SE even when the plaintext payload
+is unchanged. It cannot be combined with `boot/se.bin`.
 
 ## Extracting the payload
 
@@ -41,7 +45,7 @@ packaging from payload changes. It cannot be combined with `boot/se.bin`.
 shadowboot --base base.bin --extract layer
 ```
 
-writes the hypervisor and kernel of the base SE as `layer/boot/hypervisor.bin` and `layer/boot/xboxkrnl.exe`, after checking the SD digest of SE. Replace either file and compile with `--layer layer`.
+writes the hypervisor and kernel of the base SE as `layer/boot/hypervisor.bin` and `layer/boot/xboxkrnl.exe`, after checking the SD signature and the SD digest of SE. Replace either file and compile with `--layer layer`.
 
 ## Size limit
 
