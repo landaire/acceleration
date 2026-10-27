@@ -10,8 +10,10 @@ use xex2::builder::EncryptionTarget;
 use xex2::builder::Xex2Builder;
 use xex2::delta::FILE_HEADER_LIMIT;
 use xex2::delta::apply_delta_patch;
+use xex2::delta::create_delta_patch;
 use xex2::error::Report;
 use xex2::error::Xex2Error;
+use xex2::writer::TargetCompression;
 
 const IMAGE_SIZE: usize = 0x1_0000;
 const LOAD_ADDRESS: u32 = 0x8200_0000;
@@ -209,6 +211,56 @@ fn rebuilds_the_patched_headers_and_image() {
 	assert_eq!(patched.headers, fixture.target[..target_xex.header.data_offset as usize]);
 	assert!(patched.image == target_image());
 	assert_eq!(patched.machine, xex2::writer::TargetMachine::Devkit);
+}
+
+#[test]
+fn generated_patch_reconstructs_target() {
+	let fixture = Fixture::new();
+	let patch = create_delta_patch(&fixture.base, &fixture.target).unwrap();
+
+	let patched = apply_delta_patch(&fixture.base, &patch, FILE_HEADER_LIMIT).unwrap();
+
+	let target_xex = Xex2::parse(&fixture.target).unwrap();
+	assert_eq!(patched.headers, fixture.target[..target_xex.header.data_offset as usize]);
+	assert_eq!(patched.image, target_image());
+	assert_eq!(patched.machine, xex2::writer::TargetMachine::Devkit);
+	let patch_xex = Xex2::parse(&patch).unwrap();
+	assert_eq!(patch_xex.security_info.image_info.allowed_media_types.bits(), u32::MAX);
+}
+
+#[test]
+fn generated_multiblock_patch_reconstructs_target() {
+	let mut base_image = vec![0u8; 0x8_0000];
+	base_image[..2].copy_from_slice(b"MZ");
+	let mut target_image = base_image.clone();
+	let mut state = 0x1234_5678u32;
+	for byte in &mut target_image[0x200..] {
+		state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+		*byte = (state >> 24) as u8;
+	}
+	let base = build(base_image);
+	let target = build(target_image.clone());
+
+	let patch = create_delta_patch(&base, &target).unwrap();
+	let patched = apply_delta_patch(&base, &patch, FILE_HEADER_LIMIT).unwrap();
+
+	assert_eq!(patched.image, target_image);
+}
+
+#[test]
+fn rejects_uncompressed_base() {
+	let fixture = Fixture::new();
+	let mut uncompressed = Vec::new();
+	Xex2::parse(&fixture.base)
+		.unwrap()
+		.rebuild(&fixture.base)
+		.target_compression(TargetCompression::Uncompressed)
+		.write_to(&mut uncompressed)
+		.unwrap();
+
+	let error = create_delta_patch(&uncompressed, &fixture.target).unwrap_err();
+
+	assert!(matches!(error.current_context(), Xex2Error::InvalidCompressionFormat(0)), "{error}");
 }
 
 #[test]

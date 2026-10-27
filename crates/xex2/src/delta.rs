@@ -24,6 +24,10 @@
 //! target with the source as window history. A record of size 0 ends the
 //! list.
 
+mod write;
+
+pub use write::create_delta_patch;
+
 use rootcause::IntoReport;
 use sha1::Digest;
 use sha1::Sha1;
@@ -176,7 +180,7 @@ pub fn apply_delta_patch(base: &[u8], patch: &[u8], max_header_size: u32) -> Res
 
 	// Kernel 21256 `0x800a305c` and `0x800a31bc`.
 	let base_flags = base_xex.header.module_flags;
-	if base_flags.intersects(ModuleFlags::PATCH | ModuleFlags::PATCH_DELTA) {
+	if base_flags.intersects(ModuleFlags::PATCH | ModuleFlags::PATCH_FULL) {
 		return Err(Xex2Error::BaseHasPatchFlags { module_flags: base_flags.bits() }.into_report());
 	}
 

@@ -24,6 +24,7 @@ cargo install xex2ool
 | `idc <file> [-o OUT]`       | Generate an IDA Pro IDC script to import symbols into a disassembly.                                  |
 | `xml <file>`                | Dump XEX metadata as XML (matches the legacy `xextool` layout).                                       |
 | `patch <file> [flags]`      | Modify the XEX: image patches, resources, compression, encryption, target machine and restrictions. See below. |
+| `generate-patch <base> <patched> -o OUT` | Generate an XEXP or Suture JSON patch from two XEX files. |
 
 `info` and `imports` accept `-f json` (global flag) to emit JSON
 instead of formatted tables, for scripting. The other subcommands ignore
@@ -57,6 +58,12 @@ xex2ool patch game.xex \
   --image-patch game.xepatch \
   --add-resource 'assets=0x92800000:0x20000' \
   --devkit --decrypt -o game-patched.xex
+
+# Generate an Xbox title-update patch
+xex2ool generate-patch game.xex game-patched.xex -o game.xexp
+
+# Generate a source-verified Suture patch instead
+xex2ool generate-patch game.xex game-patched.xex --patch-format suture -o game.suture.json
 
 # Generate an IDA Pro script next to the file
 xex2ool idc game.xex
@@ -112,6 +119,12 @@ compression. These flags are mutually exclusive:
 The source base, size and SHA-1 must match. Records must not overlap. A record beyond the source image appends zero-filled bytes up to its address. The final image size must remain aligned to the source XEX page size. Every record must remain in the source image's 256 MiB virtual-address region.
 
 `--add-resource NAME=ADDRESS:SIZE` adds XEX resource metadata. Repeat the flag to add several resources. It does not supply the resource bytes: `ADDRESS..ADDRESS+SIZE` must already be part of the loaded image, commonly because an image-patch record added them. Names must fit the eight-byte XEX resource name field.
+
+## Generated patches
+
+`generate-patch` verifies both XEX files before comparing them. Its default XEXP output is a development-signed delta patch. The patch copies the common base image and carries LZX records for changed regions. Applying it reconstructs the patched XEX headers and loaded image.
+
+`--patch-format suture` writes the Suture patch data model as JSON. It records the base length and CRC-32, then stores the changed middle range as one splice.
 
 ## Output formats
 

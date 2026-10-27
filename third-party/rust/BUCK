@@ -19957,6 +19957,58 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "suture",
+    actual = ":suture-0.3",
+    visibility = ["PUBLIC"],
+)
+
+cargo.http_archive(
+    name = "suture-0.3.0.crate",
+    sha256 = "1e3ab3cb24b117a07c0dc7488aea7b6f16044b890b4f3d2deb5ecf2582821cd3",
+    strip_prefix = "suture-0.3.0",
+    urls = ["https://static.crates.io/crates/suture/0.3.0/download"],
+    visibility = [],
+)
+
+cargo.rust_library(
+    name = "suture-0.3",
+    srcs = [":suture-0.3.0.crate"],
+    crate = "suture",
+    crate_root = "suture-0.3.0.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_BIN_NAME": "suture",
+        "CARGO_CRATE_NAME": "suture",
+        "CARGO_MANIFEST_DIR": "suture-0.3.0.crate",
+        "CARGO_PKG_AUTHORS": "",
+        "CARGO_PKG_DESCRIPTION": "In-memory binary patches: ordered length-preserving byte writes over a base buffer, with optional source-material verification.",
+        "CARGO_PKG_HOMEPAGE": "",
+        "CARGO_PKG_NAME": "suture",
+        "CARGO_PKG_README": "README.md",
+        "CARGO_PKG_REPOSITORY": "https://github.com/landaire/suture",
+        "CARGO_PKG_RUST_VERSION": "1.92",
+        "CARGO_PKG_VERSION": "0.3.0",
+        "CARGO_PKG_VERSION_MAJOR": "0",
+        "CARGO_PKG_VERSION_MINOR": "3",
+        "CARGO_PKG_VERSION_PATCH": "0",
+        "CARGO_PKG_VERSION_PRE": "",
+    },
+    features = [
+        "default",
+        "serde",
+    ],
+    platform = {
+        "linux-x86_64": dict(),
+        "macos-arm64": dict(),
+        "windows-msvc": dict(),
+    },
+    visibility = [],
+    deps = [
+        ":serde-1",
+    ],
+)
+
 cargo.http_archive(
     name = "syn-1.0.109.crate",
     sha256 = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237",

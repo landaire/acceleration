@@ -15,6 +15,7 @@ Parser, extractor, and rebuilder for Xbox 360 XEX2 executables.
 - Restriction removal (region, media, bounding path, device/console ID, dates, keyvault, library versions, media ID) with devkit re-signing
 - Rebuilding: encrypt/decrypt, retail/devkit target, LZX recompression or decompression, PE replacement (`Xex2::rebuild`)
 - Building a XEX from a PE image (`builder::Xex2Builder`)
+- Applying and generating development-signed XEXP delta patches
 
 ## Usage
 
@@ -34,7 +35,7 @@ assert_eq!(&pe[0..2], b"MZ");
 
 ## Limitations
 
-- Delta compression (XEX patches) is not yet supported
+- Full-patch XEXP files and standalone merging of delta patches are not supported
 - Basic (zero-fill) compression cannot be produced, and Basic-compressed sources cannot be converted
 - Import ordinal resolution requires parsing the PE import descriptor table (not yet implemented)
 

@@ -38,3 +38,4 @@ base64 = "0.22"
 insta = { version = "1", features = ["toml"] }
 fskit = { version = "0.2", features = ["vfs"] }
 jiff = "0.2"
+suture = { version = "0.3.0", features = ["serde"] }

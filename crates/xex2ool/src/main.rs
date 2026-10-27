@@ -25,6 +25,14 @@ enum OutputFormat {
 	Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+enum GeneratedPatchFormat {
+	#[default]
+	Xexp,
+	/// Suture patch serialized as JSON
+	Suture,
+}
+
 #[derive(Parser)]
 #[command(name = "xex2ool", version, about = "Xbox 360 XEX2 tool")]
 struct Args {
@@ -174,6 +182,22 @@ enum Commands {
 		/// Path to the XEX file
 		file: PathBuf,
 	},
+	/// Generate a patch from a base XEX and a patched XEX
+	GeneratePatch {
+		/// Original XEX the patch applies to
+		base: PathBuf,
+
+		/// Patched XEX the result must reproduce
+		patched: PathBuf,
+
+		/// Patch format
+		#[arg(long, value_enum, default_value = "xexp")]
+		patch_format: GeneratedPatchFormat,
+
+		/// Output patch path
+		#[arg(short, long)]
+		output: PathBuf,
+	},
 	/// Modify a XEX: remove restrictions, convert format, apply patches
 	Patch {
 		/// Path to the XEX file
@@ -250,6 +274,9 @@ fn main() -> anyhow::Result<()> {
 		Commands::Imports { file } => cmd_imports(&file, fmt),
 		Commands::Idc { file, output } => cmd_idc(&file, output),
 		Commands::Xml { file } => cmd_xml(&file),
+		Commands::GeneratePatch { base, patched, patch_format, output } => {
+			cmd_generate_patch(&base, &patched, patch_format, &output)
+		}
 		Commands::Patch {
 			file,
 			output,
@@ -780,6 +807,54 @@ fn cmd_imports(path: &PathBuf, fmt: OutputFormat) -> anyhow::Result<()> {
 	Ok(())
 }
 
+fn cmd_generate_patch(
+	base_path: &Path,
+	patched_path: &Path,
+	patch_format: GeneratedPatchFormat,
+	output_path: &Path,
+) -> anyhow::Result<()> {
+	let base = fs::read(base_path)?;
+	let patched = fs::read(patched_path)?;
+	let bytes = match patch_format {
+		GeneratedPatchFormat::Xexp => xex2::delta::create_delta_patch(&base, &patched)?,
+		GeneratedPatchFormat::Suture => {
+			verify_xex(&base)?;
+			verify_xex(&patched)?;
+			let prefix = base.iter().zip(&patched).take_while(|(left, right)| left == right).count();
+			let remaining_base = base.len() - prefix;
+			let remaining_patched = patched.len() - prefix;
+			let suffix = base[prefix..]
+				.iter()
+				.rev()
+				.zip(patched[prefix..].iter().rev())
+				.take(remaining_base.min(remaining_patched))
+				.take_while(|(left, right)| left == right)
+				.count();
+			let metadata = suture::metadata::SourceMetadata::new(base.len() as u64)
+				.with_digest(suture::metadata::HashAlgorithm::Crc32.digest(&base));
+			let mut patch = suture::Patch::with_metadata(metadata);
+			if prefix + suffix != base.len() || prefix + suffix != patched.len() {
+				patch.splice(
+					prefix as u64,
+					(base.len() - prefix - suffix) as u64,
+					patched[prefix..patched.len() - suffix].to_vec(),
+				)?;
+			}
+			serde_json::to_vec_pretty(&patch)?
+		}
+	};
+	fs::write(output_path, bytes)?;
+	println!("Wrote patch to {}", output_path.display());
+	Ok(())
+}
+
+fn verify_xex(data: &[u8]) -> xex2::error::Result<()> {
+	let xex = Xex2::parse(data)?;
+	xex2::hashes::check_file_layout(data, &xex)?;
+	xex.extract_basefile(data)?;
+	Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_patch(
 	path: &PathBuf,
@@ -953,6 +1028,41 @@ mod tests {
 
 		assert!(result.is_err());
 		assert_eq!(fs::read(input_path).unwrap(), source);
+	}
+
+	#[test]
+	fn generate_patch_uses_its_own_format_option() {
+		let args = Args::try_parse_from([
+			"xex2ool",
+			"generate-patch",
+			"base.xex",
+			"patched.xex",
+			"--patch-format",
+			"suture",
+			"-o",
+			"patch.json",
+		])
+		.unwrap();
+
+		let Commands::GeneratePatch { patch_format, .. } = args.command else {
+			panic!("expected generate-patch command");
+		};
+		assert_eq!(patch_format, GeneratedPatchFormat::Suture);
+	}
+
+	#[test]
+	fn suture_generation_rejects_non_xex_input() {
+		let directory = tempfile::tempdir().unwrap();
+		let base_path = directory.path().join("base.xex");
+		let patched_path = directory.path().join("patched.xex");
+		let output_path = directory.path().join("patch.json");
+		fs::write(&base_path, b"not a XEX").unwrap();
+		fs::write(&patched_path, b"also not a XEX").unwrap();
+
+		let result = cmd_generate_patch(&base_path, &patched_path, GeneratedPatchFormat::Suture, &output_path);
+
+		assert!(result.is_err());
+		assert!(!output_path.exists());
 	}
 
 	#[cfg(unix)]

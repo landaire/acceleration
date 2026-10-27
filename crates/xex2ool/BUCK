@@ -37,6 +37,7 @@ rust_binary(
         "//third-party/rust:serde_json",
         "//third-party/rust:tabled",
         "//third-party/rust:tempfile",
+        "//third-party/rust:suture",
     ],
     labels = [
         "bin",
@@ -68,5 +69,6 @@ rust_test(
         "//third-party/rust:serde_json",
         "//third-party/rust:tabled",
         "//third-party/rust:tempfile",
+        "//third-party/rust:suture",
     ],
 )

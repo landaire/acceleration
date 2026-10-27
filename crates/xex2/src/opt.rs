@@ -668,10 +668,10 @@ bitflags! {
 		/// of modules with this flag -- they must be applied through
 		/// the patch system.
 		const PATCH            = 0x0000_0010;
-		/// Delta patch -- contains binary diffs against a base XEX.
-		const PATCH_DELTA      = 0x0000_0020;
-		/// Full patch -- complete replacement of the base XEX.
-		const PATCH_FULL       = 0x0000_0040;
+		/// Full patch file applied to a base XEX.
+		const PATCH_FULL       = 0x0000_0020;
+		/// Headers produced by a delta patch.
+		const PATCH_DELTA      = 0x0000_0040;
 		/// Module is locked to a specific filesystem path (header key
 		/// 0x80FF). The kernel compares the actual load path against
 		/// the bound path, resolving symbolic links. If they don't
