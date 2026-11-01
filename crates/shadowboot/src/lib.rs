@@ -40,12 +40,17 @@ pub struct ExtractReport {
 	pub warnings: Vec<Warning>,
 }
 
-/// A failed signature check. The image is still written: a console that does not enforce the
-/// signature, or that trusts another SD key, can boot it.
+/// A failed integrity check. The image is still written: a console that does not enforce the
+/// check, or that trusts another SD key, can boot it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Warning {
+	/// The base SD keeps an SE digest that does not match the base SE.
+	BaseSdDigest { stored: [u8; 20], computed: [u8; 20] },
 	/// The base SD signature does not verify with the public key in the base SD.
 	BaseSdSignature { digest: [u8; 20] },
+	/// The layer SD keeps an SE digest that does not match the written SE. The layer SD is
+	/// written as supplied.
+	SdDigest { stored: [u8; 20], computed: [u8; 20] },
 	/// The written SD signature does not verify with the public key in the base SD.
 	SdSignature { digest: [u8; 20] },
 }
@@ -53,8 +58,14 @@ pub enum Warning {
 impl fmt::Display for Warning {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
+			Self::BaseSdDigest { stored, computed } => {
+				write!(formatter, "base SD keeps SE digest {stored:02x?}, but the base SE has {computed:02x?}")
+			}
 			Self::BaseSdSignature { digest } => {
 				write!(formatter, "base SD signature does not authenticate digest {digest:02x?}")
+			}
+			Self::SdDigest { stored, computed } => {
+				write!(formatter, "layer SD keeps SE digest {stored:02x?}, but the written SE has {computed:02x?}")
 			}
 			Self::SdSignature { digest } => {
 				write!(
@@ -90,12 +101,6 @@ pub enum Error {
 	BootStageMagic { expected: &'static str, actual: [u8; 2] },
 	#[error("boot stage {stage} is shorter than its 0x10-byte image header")]
 	BootStageHeaderTruncated { stage: &'static str },
-	#[error(
-		"SD of the base image keeps SE digest {stored:02x?}, but its SE has {computed:02x?}; SD does not keep the digest where the compiler writes it"
-	)]
-	BaseSdDigest { stored: [u8; 20], computed: [u8; 20] },
-	#[error("boot stage SD of the layer keeps SE digest {stored:02x?}, but the SE of the image has {computed:02x?}")]
-	SdDigest { stored: [u8; 20], computed: [u8; 20] },
 	#[error("boot stage {stage} declares size {declared:#x}, but its input has size {actual:#x}")]
 	BootStageSize { stage: &'static str, declared: usize, actual: usize },
 	#[error("boot stage sizes overflow the host address space")]
@@ -130,9 +135,9 @@ pub fn payload(region: &BootRegion<'_>) -> Result<ExtractReport, Error> {
 	let sc = region.boot_stage_data(&stages[1]);
 	let sd = region.boot_stage_data(&stages[2]);
 	let se = region.boot_stage_data(&stages[3]);
-	let warning = check_base_sd(region, sc, sd, se)?;
+	let warnings = check_base_sd(region, sc, sd, se)?;
 
-	Ok(ExtractReport { payload: se::decode(sc, sd, se)?, warnings: warning.into_iter().collect() })
+	Ok(ExtractReport { payload: se::decode(sc, sd, se)?, warnings })
 }
 
 /// The bytes of `region` that follow its SE up to the SE alignment.
@@ -149,20 +154,20 @@ fn aligned_se_end(stage: &BootStage) -> usize {
 	stage.offset().get() + stage.size().get().next_multiple_of(SE_ALIGNMENT)
 }
 
-/// Checks that the base SD keeps the digest of the base SE, where the compiler reads and writes
-/// it, and reports a base SD signature that does not verify.
-fn check_base_sd(region: &BootRegion<'_>, sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Option<Warning>, Error> {
+/// Compares the SE digest that the base SD keeps with the base SE and checks the base SD
+/// signature.
+fn check_base_sd(region: &BootRegion<'_>, sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<Warning>, Error> {
+	let mut warnings = Vec::new();
 	let stored = se::sd_se_digest(sc, sd)?;
 	let computed = se::digest(sc, sd, se, base_se_padding(region)?)?;
 	if stored != computed {
-		return Err(Error::BaseSdDigest { stored, computed });
+		warnings.push(Warning::BaseSdDigest { stored, computed });
+	}
+	if !se::sd_signature_verifies(sc, sd, sc, sd)? {
+		warnings.push(Warning::BaseSdSignature { digest: se::sd_signature_digest(sc, sd)? });
 	}
 
-	if se::sd_signature_verifies(sc, sd, sc, sd)? {
-		return Ok(None);
-	}
-
-	Ok(Some(Warning::BaseSdSignature { digest: se::sd_signature_digest(sc, sd)? }))
+	Ok(warnings)
 }
 
 fn apply_boot_layer(region: &BootRegion<'_>, output: &mut [u8], layer: BootLayer<'_>) -> Result<BuildReport, Error> {
@@ -198,7 +203,7 @@ fn apply_boot_layer(region: &BootRegion<'_>, output: &mut [u8], layer: BootLayer
 			return Err(Error::BootRegionOverflow { end: selected_end, limit: boot_limit });
 		}
 	}
-	let mut warnings: Vec<Warning> = check_base_sd(region, base_sc, base_sd, base_se)?.into_iter().collect();
+	let mut warnings = check_base_sd(region, base_sc, base_sd, base_se)?;
 
 	let base_sc_state = se::sc_key_state(base_sc)?;
 	let sc_state = se::sc_key_state(sc)?;
@@ -263,10 +268,10 @@ fn apply_boot_layer(region: &BootRegion<'_>, output: &mut [u8], layer: BootLayer
 	let stored = se::sd_se_digest(sc, sd)?;
 	let mut updated_sd = None;
 	if stored != digest {
-		if layer.sd.is_some() {
-			return Err(Error::SdDigest { stored, computed: digest });
+		match layer.sd {
+			Some(_) => warnings.push(Warning::SdDigest { stored, computed: digest }),
+			None => updated_sd = Some(se::with_authenticated_sd_se_digest(sc, sd, &digest)?),
 		}
-		updated_sd = Some(se::with_authenticated_sd_se_digest(sc, sd, &digest)?);
 	}
 	let sd = updated_sd.as_deref().unwrap_or(sd);
 	// An unchanged SD was checked with the base.
@@ -444,6 +449,39 @@ mod tests {
 		assert!(matches!(payload(&tampered).unwrap().warnings.as_slice(), [Warning::BaseSdSignature { .. }]));
 		let report = compile(&tampered, &mut output, &BootLayer::default()).unwrap();
 		assert!(matches!(report.warnings.as_slice(), [Warning::BaseSdSignature { .. }]));
+	}
+
+	/// Runs against a private 60 MiB devkit flash capture named by `SHADOWBOOT_BASE_IMAGE`. An SD
+	/// that keeps another SE digest is reported, not rejected. A base SD with a wrong digest is
+	/// replaced by a signed SD with the right one.
+	#[test]
+	#[ignore = "requires SHADOWBOOT_BASE_IMAGE"]
+	fn mismatched_sd_digest_warns() {
+		const SD_SE_DIGEST: usize = 0x24c;
+
+		let base = base_image();
+		let region = BootRegion::parse(&base).unwrap();
+		let sd_stage = region.boot_stages()[2];
+		let flipped = sd_stage.offset().get() + SD_SE_DIGEST;
+		let mut sd = region.boot_stage_data(&sd_stage).to_vec();
+		sd[SD_SE_DIGEST] ^= 0x01;
+		let mut output = vec![0u8; output_size(&region).unwrap()];
+
+		let report = compile(&region, &mut output, &BootLayer { sd: Some(&sd), ..BootLayer::default() }).unwrap();
+		assert!(matches!(report.warnings.as_slice(), [Warning::SdDigest { .. }, Warning::SdSignature { .. }]));
+
+		let mut tampered = region.bytes().to_vec();
+		tampered[flipped] ^= 0x01;
+		let tampered = BootRegion::parse(&tampered).unwrap();
+		let extracted = payload(&tampered).unwrap();
+		assert!(matches!(
+			extracted.warnings.as_slice(),
+			[Warning::BaseSdDigest { .. }, Warning::BaseSdSignature { .. }]
+		));
+		let report = compile(&tampered, &mut output, &BootLayer::default()).unwrap();
+		assert!(report.updated_sd_signature);
+		assert!(matches!(report.warnings.as_slice(), [Warning::BaseSdDigest { .. }, Warning::BaseSdSignature { .. }]));
+		assert!(output == base[..output.len()]);
 	}
 
 	fn base_image() -> Mmap {

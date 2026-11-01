@@ -33,9 +33,9 @@ The shadowed system mounts the console's own NAND file system, so flash root fil
 
 SD verifies SE with a RotSumSha digest stored in the SD plaintext at offset `0x24c` and halts on mismatch (SD 16547 compares them at `0xcd4`). The digest covers `SE[0..0x10]` and the decrypted SE body from `0x20` up to the SE size rounded up to 16 bytes. Flash holds SE up to that aligned end; the bytes after the declared size are zero plaintext, encrypted with the SE key. The compiler writes them for every SE it places, and keeps the base bytes when SE is unchanged.
 
-SD is also signed. Its signature covers `SD[0..0x10]` and decrypted `SD[0x120..Size]`, including the SE digest, with salt `XBOX_ROM_4`. When a changed SE needs another digest, the compiler updates a copy of the base SD and signs it with the build 16547 development SD key. A supplied `sd.bin` must already contain the matching digest.
+SD is also signed. Its signature covers `SD[0..0x10]` and decrypted `SD[0x120..Size]`, including the SE digest, with salt `XBOX_ROM_4`. When a changed SE needs another digest, the compiler updates a copy of the base SD and signs it with the build 16547 development SD key. A supplied `sd.bin` is written as supplied.
 
-The compiler checks the base SD signature and the written SD signature against the public key in the base SD. A failed check prints a warning and the image is still written. This happens when the base SD comes from a build signed with another key, or when a supplied `sd.bin` is not signed. A console that enforces the signature will not boot such an image.
+The compiler checks that the base SD keeps the digest of the base SE, that a supplied `sd.bin` keeps the digest of the written SE, and that the base SD signature and the written SD signature verify with the public key in the base SD. A failed check prints a warning and the image is still written. A signature fails when the base SD comes from a build signed with another key, or when a supplied `sd.bin` is not signed. A console that enforces these checks will not boot such an image.
 
 `--rebuild-se` recompresses and re-encrypts SE even when the plaintext payload
 is unchanged. It cannot be combined with `boot/se.bin`.
