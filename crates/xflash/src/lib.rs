@@ -10,7 +10,6 @@ use winnow::error::ModalResult;
 use winnow::token::take;
 
 pub const IMAGE_HEADER_SIZE: usize = 16;
-pub const BOOT_CHAIN_OFFSET: usize = 0x8000;
 pub const BOOT_STAGE_COUNT: usize = 4;
 pub const EXPECTED_STAGE_NAMES: [[u8; 2]; BOOT_STAGE_COUNT] = [*b"SB", *b"SC", *b"SD", *b"SE"];
 pub const DEVKIT_60M_IMAGE_SIZE: usize = 0x03c0_0000;
@@ -176,10 +175,10 @@ pub enum ParseError {
 	UnexpectedBootStage { offset: usize, expected: [u8; 2], actual: [u8; 2] },
 	#[error("boot stage {name:02x?} has an invalid size {size:#x}")]
 	InvalidBootStageSize { name: [u8; 2], size: usize },
-	#[error("boot stage {name:02x?} extends past the image")]
+	#[error("boot stage {name:02x?} extends past the boot region")]
 	BootStageOutOfBounds { name: [u8; 2] },
-	#[error("boot chain extends past the image header's boot region")]
-	BootChainOutOfBounds,
+	#[error("image of {actual:#x} bytes is shorter than its declared {declared:#x}-byte boot region")]
+	BootRegionTruncated { declared: usize, actual: usize },
 	#[error("root directory cluster is outside the image")]
 	RootDirectoryOutOfBounds,
 	#[error("the observed profile requires a non-empty root directory")]
@@ -212,29 +211,24 @@ pub enum VisitError<E> {
 	Consumer(E),
 }
 
-pub struct Image<'a> {
+/// The flash header and the SB, SC, SD, and SE stages of a flash image, limited to the declared
+/// boot region.
+pub struct BootRegion<'a> {
 	bytes: &'a [u8],
 	header: ImageHeader,
 	boot_stages: [BootStage; BOOT_STAGE_COUNT],
 }
 
-impl<'a> Image<'a> {
+impl<'a> BootRegion<'a> {
+	/// Parses the boot region of `bytes`. Bytes past the declared boot region are ignored.
 	pub fn parse(bytes: &'a [u8]) -> Result<Self, ParseError> {
-		if bytes.len() != DEVKIT_60M_IMAGE_SIZE {
-			return Err(ParseError::UnsupportedImageSize { actual: bytes.len() });
-		}
 		let header = parse_image_header(bytes)?;
 		if header.magic != [0xff, 0x4f] {
 			return Err(ParseError::UnsupportedMagic { magic: header.magic });
 		}
-		validate_profile_value("image build", EXPECTED_IMAGE_BUILD as u64, header.build.get() as u64)?;
-		validate_profile_value("image flags", EXPECTED_IMAGE_FLAGS as u64, header.flags as u64)?;
-		validate_profile_value("image entry", EXPECTED_IMAGE_ENTRY as u64, header.entry as u64)?;
-		validate_profile_value(
-			"boot image size",
-			EXPECTED_BOOT_IMAGE_SIZE as u64,
-			header.boot_image_size.get() as u64,
-		)?;
+
+		let declared = header.boot_image_size.get();
+		let bytes = bytes.get(..declared).ok_or(ParseError::BootRegionTruncated { declared, actual: bytes.len() })?;
 
 		let mut stages = [BootStage {
 			name: [0; 2],
@@ -244,7 +238,7 @@ impl<'a> Image<'a> {
 			offset: FileOffset(0),
 			size: ByteCount(0),
 		}; BOOT_STAGE_COUNT];
-		let mut offset = BOOT_CHAIN_OFFSET;
+		let mut offset = header.entry as usize;
 		for (index, expected_name) in EXPECTED_STAGE_NAMES.iter().copied().enumerate() {
 			let stage = parse_boot_stage(bytes, offset)?;
 			if stage.name != expected_name {
@@ -254,21 +248,68 @@ impl<'a> Image<'a> {
 				offset.checked_add(stage.size.get()).ok_or(ParseError::BootStageOutOfBounds { name: stage.name })?;
 			stages[index] = stage;
 		}
-		for (index, stage) in stages.iter().enumerate() {
+
+		Ok(Self { bytes, header, boot_stages: stages })
+	}
+
+	/// The boot region: the flash header through the declared boot image size.
+	pub const fn bytes(&self) -> &'a [u8] {
+		self.bytes
+	}
+
+	pub const fn header(&self) -> ImageHeader {
+		self.header
+	}
+
+	/// Offset of SB, the first boot stage, as the flash header declares it.
+	pub const fn boot_chain_offset(&self) -> FileOffset {
+		FileOffset(self.header.entry as usize)
+	}
+
+	pub fn boot_stages(&self) -> &[BootStage; BOOT_STAGE_COUNT] {
+		&self.boot_stages
+	}
+
+	pub fn boot_stage_data(&self, stage: &BootStage) -> &'a [u8] {
+		let start = stage.offset.get();
+		&self.bytes[start..start + stage.size.get()]
+	}
+}
+
+/// A complete flash image of the observed 60 MiB devkit profile, with its flash file system.
+pub struct Image<'a> {
+	bytes: &'a [u8],
+	boot_region: BootRegion<'a>,
+}
+
+impl<'a> Image<'a> {
+	pub fn parse(bytes: &'a [u8]) -> Result<Self, ParseError> {
+		if bytes.len() != DEVKIT_60M_IMAGE_SIZE {
+			return Err(ParseError::UnsupportedImageSize { actual: bytes.len() });
+		}
+		let boot_region = BootRegion::parse(bytes)?;
+
+		let header = boot_region.header();
+		validate_profile_value("image build", EXPECTED_IMAGE_BUILD as u64, header.build.get() as u64)?;
+		validate_profile_value("image flags", EXPECTED_IMAGE_FLAGS as u64, header.flags as u64)?;
+		validate_profile_value("image entry", EXPECTED_IMAGE_ENTRY as u64, header.entry as u64)?;
+		validate_profile_value(
+			"boot image size",
+			EXPECTED_BOOT_IMAGE_SIZE as u64,
+			header.boot_image_size.get() as u64,
+		)?;
+		for (index, stage) in boot_region.boot_stages().iter().enumerate() {
 			validate_profile_value("boot stage build", EXPECTED_STAGE_BUILDS[index] as u64, stage.build.get() as u64)?;
 			validate_profile_value("boot stage flags", EXPECTED_STAGE_FLAGS[index] as u64, stage.flags as u64)?;
 			validate_profile_value("boot stage entry", EXPECTED_STAGE_ENTRIES[index] as u64, stage.entry as u64)?;
 		}
 
-		if offset > header.boot_image_size.get() {
-			return Err(ParseError::BootChainOutOfBounds);
-		}
 		let root_offset = cluster_offset(ClusterId::new(DEVKIT_ROOT_CLUSTER))?.get();
 		if root_offset.checked_add(DEVKIT_CLUSTER_SIZE).filter(|end| *end <= bytes.len()).is_none() {
 			return Err(ParseError::RootDirectoryOutOfBounds);
 		}
 
-		let image = Self { bytes, header, boot_stages: stages };
+		let image = Self { bytes, boot_region };
 		match image.root_entries().next() {
 			Some(Ok(_)) => Ok(image),
 			Some(Err(error)) => Err(error),
@@ -280,17 +321,8 @@ impl<'a> Image<'a> {
 		self.bytes
 	}
 
-	pub const fn header(&self) -> ImageHeader {
-		self.header
-	}
-
-	pub fn boot_stages(&self) -> &[BootStage; BOOT_STAGE_COUNT] {
-		&self.boot_stages
-	}
-
-	pub fn boot_stage_data(&self, stage: &BootStage) -> &'a [u8] {
-		let start = stage.offset.get();
-		&self.bytes[start..start + stage.size.get()]
+	pub const fn boot_region(&self) -> &BootRegion<'a> {
+		&self.boot_region
 	}
 
 	pub fn root_entries(&self) -> RootEntries<'a> {

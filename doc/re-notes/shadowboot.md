@@ -156,12 +156,12 @@ The XEX header signature computes RotSumSha over the `0x74`-byte ImageInfo, sele
 
 ## Implemented image contract
 
-The host compiler parses the exact read-only 60 MiB capture as its base and writes only the declared boot region: bytes `0..boot_image_size` of the base with the boot layer applied. For the verified profile this is `0xe0000` bytes containing the flash header and the SB, SC, SD, and SE stages. The shadowed system mounts the console NAND file system, so flash root files are not part of the image. A layer can:
+The host compiler takes a flash image or a boot region as its base and parses only the flash header and the SB, SC, SD, and SE stages; it does not check builds, flags, or entry points. It writes only the declared boot region: bytes `0..boot_image_size` of the base with the boot layer applied. For the verified profile this is `0xe0000` bytes containing the flash header and the SB, SC, SD, and SE stages. The shadowed system mounts the console NAND file system, so flash root files are not part of the image. A layer can:
 
 - Replace complete SB, SC, SD, or SE stage images.
 - Replace the plaintext hypervisor or kernel and rebuild SE.
 
-Missing layer entries come from the base image, and an empty layer reproduces the base boot region byte-for-byte. A replacement SC nonce requires a corresponding re-encrypted SD because the nonce changes the SD body key. Changes to the SC and SD nonce chain rebuild SE unless a complete SE is supplied. A supplied SE is decrypted and its framing and payload are validated. The boot chain is checked against the declared boot region, and an output larger than the `0x800000`-byte kernel load limit is rejected. A changed SE still fails the SD digest check described above unless SD carries the matching digest.
+Missing layer entries come from the base image, and an empty layer reproduces the base boot region byte-for-byte. A replacement SC nonce requires a corresponding re-encrypted SD because the nonce changes the SD body key. Changes to the SC and SD nonce chain rebuild SE unless a complete SE is supplied. A supplied SE is decrypted and its framing and payload are validated. The SE payload splits at the size in the hypervisor header, and replacement components must match the base component sizes. The boot chain is checked against the declared boot region, and an output larger than the `0x800000`-byte kernel load limit is rejected. A changed SE still fails the SD digest check described above unless SD carries the matching digest. An SD signature that does not verify with the base SD public key produces a warning, not an error.
 
 ## Hardware deployment
 

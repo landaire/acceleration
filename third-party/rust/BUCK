@@ -774,6 +774,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "anstream",
+    actual = ":anstream-1",
+    visibility = ["PUBLIC"],
+)
+
 cargo.http_archive(
     name = "anstream-1.0.0.crate",
     sha256 = "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d",
@@ -826,6 +832,12 @@ cargo.rust_library(
         ":is_terminal_polyfill-1",
         ":utf8parse-0.2",
     ],
+)
+
+alias(
+    name = "anstyle",
+    actual = ":anstyle-1",
+    visibility = ["PUBLIC"],
 )
 
 cargo.http_archive(
@@ -20004,9 +20016,7 @@ cargo.rust_library(
         "windows-msvc": dict(),
     },
     visibility = [],
-    deps = [
-        ":serde-1",
-    ],
+    deps = [":serde-1"],
 )
 
 cargo.http_archive(

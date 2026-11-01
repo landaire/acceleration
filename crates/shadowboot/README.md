@@ -1,12 +1,12 @@
 # shadowboot
 
-Compiler for Xbox 360 devkit shadowboot images. The current target is the verified 60 MiB devkit image profile.
+Compiler for Xbox 360 devkit shadowboot images.
 
-The compiler reads a base flash capture, applies a boot layer, and writes the image's declared boot region: the flash header followed by the SB, SC, SD, and SE stages. For the verified profile the output is `0xe0000` bytes.
+The compiler reads a base image, applies a boot layer, and writes the image's declared boot region: the flash header followed by the SB, SC, SD, and SE stages. For the verified build 16547 devkit image the output is `0xe0000` bytes.
 
 ## Base image
 
-Use the exact read-only flash capture as the base. It is mapped read-only and is never modified; the output is written to a separate temporary file and renamed into place.
+The base is a flash capture or a boot region, such as an earlier compiler output. Only the flash header and the SB, SC, SD, and SE stages are read, so any build with that boot chain is accepted. Bytes past the declared boot region are ignored. The base is mapped read-only and is never modified. The output is written to a separate temporary file and renamed into place.
 
 ## Layer
 
@@ -19,22 +19,19 @@ layer/
     sc.bin             optional complete encrypted SC stage
     sd.bin             optional complete encrypted SD stage
     se.bin             optional complete encrypted SE stage
-    hypervisor.bin     optional 0x40000-byte plaintext hypervisor
-    xboxkrnl.exe       optional 0x240000-byte plaintext kernel image
+    hypervisor.bin     optional plaintext hypervisor, the size of the base hypervisor
+    xboxkrnl.exe       optional plaintext kernel image, the size of the base kernel
 ```
 
-`se.bin` conflicts with `hypervisor.bin` and `xboxkrnl.exe`. When either plaintext component is present, the missing component is recovered from the base SE stage. The compiler emits the verified 32 KiB record framing, 128 KiB LZX stream, chained HMAC-SHA1 key derivation, and RC4 body encryption. A replacement SC nonce changes the SD body key and therefore requires a re-encrypted `sd.bin`. When the selected SC and SD nonces change the SE body key, the compiler rebuilds SE unless `se.bin` is supplied. A supplied SE is decrypted and its complete framing and `0x280000`-byte payload are validated. The resulting boot chain must fit the base image's declared boot region. A separately prepared complete `se.bin` can be used when another compressor is required.
+`se.bin` conflicts with `hypervisor.bin` and `xboxkrnl.exe`. When either plaintext component is present, the missing component is recovered from the base SE stage. The SE payload is split where the hypervisor header's declared size ends. The compiler emits the verified 32 KiB record framing, 128 KiB LZX stream, chained HMAC-SHA1 key derivation, and RC4 body encryption. A replacement SC nonce changes the SD body key and therefore requires a re-encrypted `sd.bin`. When the selected SC and SD nonces change the SE body key, the compiler rebuilds SE unless `se.bin` is supplied. A supplied SE is decrypted and its complete framing and payload are validated. The resulting boot chain must fit the base image's declared boot region. A separately prepared complete `se.bin` can be used when another compressor is required.
 
 The shadowed system mounts the console's own NAND file system, so flash root files are not part of the output and cannot be changed through a shadowboot image.
 
 SD verifies SE with a RotSumSha digest stored in the SD plaintext at offset `0x24c` and halts on mismatch (SD 16547 compares them at `0xcd4`). The digest covers `SE[0..0x10]` and the decrypted SE body from `0x20` up to the SE size rounded up to 16 bytes. Flash holds SE up to that aligned end; the bytes after the declared size are zero plaintext, encrypted with the SE key. The compiler writes them for every SE it places, and keeps the base bytes when SE is unchanged.
 
-SD is also signed. Its signature covers `SD[0..0x10]` and decrypted
-`SD[0x120..Size]`, including the SE digest, with salt `XBOX_ROM_4`. The
-compiler verifies the base SD and verifies the final SD against the base
-image's public key. When a changed SE needs another digest, the compiler
-updates and signs a copy of the base SD. A supplied `sd.bin` must already
-contain the matching digest and a valid signature.
+SD is also signed. Its signature covers `SD[0..0x10]` and decrypted `SD[0x120..Size]`, including the SE digest, with salt `XBOX_ROM_4`. When a changed SE needs another digest, the compiler updates a copy of the base SD and signs it with the build 16547 development SD key. A supplied `sd.bin` must already contain the matching digest.
+
+The compiler checks the base SD signature and the written SD signature against the public key in the base SD. A failed check prints a warning and the image is still written. This happens when the base SD comes from a build signed with another key, or when a supplied `sd.bin` is not signed. A console that enforces the signature will not boot such an image.
 
 `--rebuild-se` recompresses and re-encrypts SE even when the plaintext payload
 is unchanged. It cannot be combined with `boot/se.bin`.
@@ -45,7 +42,7 @@ is unchanged. It cannot be combined with `boot/se.bin`.
 shadowboot --base base.bin --extract layer
 ```
 
-writes the hypervisor and kernel of the base SE as `layer/boot/hypervisor.bin` and `layer/boot/xboxkrnl.exe`, after checking the SD signature and the SD digest of SE. Replace either file and compile with `--layer layer`.
+writes the hypervisor and kernel of the base SE as `layer/boot/hypervisor.bin` and `layer/boot/xboxkrnl.exe`, after checking the SD digest of SE. A failed SD signature check prints a warning. Replace either file and compile with `--layer layer`.
 
 ## Size limit
 

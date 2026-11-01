@@ -125,7 +125,8 @@ fn run() -> Result<()> {
 }
 
 fn print_info(image: &Image<'_>) {
-	let header = image.header();
+	let boot_region = image.boot_region();
+	let header = boot_region.header();
 	println!(
 		"image build={} flags={:#010x} entry={:#010x} boot-size={:#x}",
 		header.build.get(),
@@ -133,7 +134,7 @@ fn print_info(image: &Image<'_>) {
 		header.entry,
 		header.boot_image_size.get(),
 	);
-	for stage in image.boot_stages() {
+	for stage in boot_region.boot_stages() {
 		println!(
 			"{} build={} flags={:#010x} entry={:#010x} offset={:#x} size={:#x}",
 			stage.name_str(),
@@ -183,13 +184,14 @@ fn extract_file(image: &Image<'_>, image_file: &File, image_path: &Path, name: &
 }
 
 fn extract_stage(image: &Image<'_>, image_file: &File, image_path: &Path, name: &str, output: PathBuf) -> Result<()> {
-	let stage = image
+	let boot_region = image.boot_region();
+	let stage = boot_region
 		.boot_stages()
 		.iter()
 		.find(|stage| stage.name_str().eq_ignore_ascii_case(name))
 		.ok_or_else(|| rootcause::Report::new(CliError::StageNotFound { name: name.to_owned() }))?;
 	let mut file = create_output(image_file, image_path, &output)?;
-	file.write_all(image.boot_stage_data(stage))
+	file.write_all(boot_region.boot_stage_data(stage))
 		.map_err(|source| CliError::WriteOutput { path: output, source })
 		.into_report()?;
 	Ok(())

@@ -7,16 +7,15 @@ use sha1::Digest;
 use sha1::Sha1;
 use thiserror::Error;
 
-pub const HYPERVISOR_SIZE: usize = 0x40000;
-pub const KERNEL_SIZE: usize = 0x240000;
-pub const PAYLOAD_SIZE: usize = HYPERVISOR_SIZE + KERNEL_SIZE;
-
 const STAGE_HEADER_SIZE: usize = 0x20;
 const SE_STREAM_OFFSET: usize = 0x30;
 const NONCE_OFFSET: usize = 0x10;
 const NONCE_SIZE: usize = 0x10;
 const SE_OUTPUT_SIZE_OFFSET: usize = 0x28;
 const FRAME_HEADER_SIZE: usize = 4;
+/// The hypervisor starts the SE payload with this image header, which declares its size.
+const HYPERVISOR_HEADER_SIZE: usize = 0x10;
+const HYPERVISOR_SIZE_FIELD: std::ops::Range<usize> = 0x0c..0x10;
 /// SD keeps the digest of SE in its plaintext here. SD 16547 compares the two at 0xcd4 and halts
 /// when they differ.
 const SD_SE_DIGEST: std::ops::Range<usize> = 0x24c..0x260;
@@ -33,8 +32,10 @@ pub enum Error {
 	StageHeaderTruncated { stage: &'static str },
 	#[error("SE is shorter than its 0x30-byte compression header")]
 	SeHeaderTruncated,
-	#[error("SE declares a {actual:#x}-byte output; expected {expected:#x}")]
-	UnexpectedOutputSize { expected: usize, actual: usize },
+	#[error("SE declares a {declared:#x}-byte output, more than its {limit:#x}-byte stream can hold")]
+	OutputSizeExceedsStream { declared: usize, limit: usize },
+	#[error("cannot allocate the {size:#x}-byte SE output")]
+	PayloadAllocation { size: usize },
 	#[error("SE compression frame header at {offset:#x} is truncated")]
 	FrameHeaderTruncated { offset: usize },
 	#[error("SE compression frame at {offset:#x} has invalid sizes compressed={compressed:#x}, output={output:#x}")]
@@ -47,8 +48,12 @@ pub enum Error {
 	DecompressedSize { expected: usize, actual: usize },
 	#[error("SE contains {trailing:#x} trailing bytes after the compressed payload")]
 	TrailingData { trailing: usize },
-	#[error("SE input payload has size {actual:#x}; expected {expected:#x}")]
-	PayloadSize { expected: usize, actual: usize },
+	#[error("SE payload of {size:#x} bytes exceeds the u32 output-size field")]
+	PayloadTooLarge { size: usize },
+	#[error("SE payload of {payload:#x} bytes is shorter than the hypervisor header")]
+	HypervisorHeaderTruncated { payload: usize },
+	#[error("hypervisor declares size {declared:#x}, but the SE payload has {payload:#x} bytes")]
+	HypervisorSize { declared: usize, payload: usize },
 	#[error("LZX chunk {index} compressed to {size:#x} bytes, which exceeds the SE u16 frame limit")]
 	CompressedChunkTooLarge { index: usize, size: usize },
 	#[error("encoded SE size {size:#x} exceeds the u32 stage header limit")]
@@ -61,7 +66,45 @@ pub enum Error {
 	PaddingSize { size: usize, expected: usize, actual: usize },
 }
 
-pub fn decode(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<u8>, Error> {
+/// The decompressed SE: the hypervisor followed by the kernel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Payload {
+	bytes: Vec<u8>,
+	hypervisor_size: usize,
+}
+
+impl Payload {
+	/// Splits `bytes` at the size the hypervisor header declares. The kernel must not be empty.
+	pub fn parse(bytes: Vec<u8>) -> Result<Self, Error> {
+		let Some(field) = bytes.get(HYPERVISOR_SIZE_FIELD) else {
+			return Err(Error::HypervisorHeaderTruncated { payload: bytes.len() });
+		};
+		let declared = u32::from_be_bytes(field.try_into().expect("fixed hypervisor size field")) as usize;
+		if declared < HYPERVISOR_HEADER_SIZE || declared >= bytes.len() {
+			return Err(Error::HypervisorSize { declared, payload: bytes.len() });
+		}
+
+		Ok(Self { bytes, hypervisor_size: declared })
+	}
+
+	pub fn bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+
+	pub fn into_bytes(self) -> Vec<u8> {
+		self.bytes
+	}
+
+	pub fn hypervisor(&self) -> &[u8] {
+		&self.bytes[..self.hypervisor_size]
+	}
+
+	pub fn kernel(&self) -> &[u8] {
+		&self.bytes[self.hypervisor_size..]
+	}
+}
+
+pub fn decode(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Payload, Error> {
 	validate_stage_header("SC", sc)?;
 	validate_stage_header("SD", sd)?;
 	validate_stage_header("SE", se)?;
@@ -76,12 +119,15 @@ pub fn decode(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<u8>, Error> {
 	let output_size = u32::from_be_bytes(
 		plaintext[SE_OUTPUT_SIZE_OFFSET..SE_OUTPUT_SIZE_OFFSET + 4].try_into().expect("fixed SE output-size field"),
 	) as usize;
-	if output_size != PAYLOAD_SIZE {
-		return Err(Error::UnexpectedOutputSize { expected: PAYLOAD_SIZE, actual: output_size });
+	// Each frame holds at least one compressed byte after its header.
+	let limit = (plaintext.len() - SE_STREAM_OFFSET) / (FRAME_HEADER_SIZE + 1) * MAX_CHUNK_SIZE;
+	if output_size > limit {
+		return Err(Error::OutputSizeExceedsStream { declared: output_size, limit });
 	}
 
 	let mut decoder = Lzxd::new(DecoderWindowSize::KB128);
-	let mut output = Vec::with_capacity(output_size);
+	let mut output = Vec::new();
+	output.try_reserve_exact(output_size).map_err(|_| Error::PayloadAllocation { size: output_size })?;
 	let mut offset = SE_STREAM_OFFSET;
 	let mut frame_index = 0usize;
 	while output.len() < output_size {
@@ -115,24 +161,23 @@ pub fn decode(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<u8>, Error> {
 	if offset != plaintext.len() {
 		return Err(Error::TrailingData { trailing: plaintext.len() - offset });
 	}
-	Ok(output)
+	Payload::parse(output)
 }
 
-pub fn encode(sc: &[u8], sd: &[u8], se_template: &[u8], payload: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn encode(sc: &[u8], sd: &[u8], se_template: &[u8], payload: &Payload) -> Result<Vec<u8>, Error> {
 	validate_stage_header("SC", sc)?;
 	validate_stage_header("SD", sd)?;
 	validate_stage_header("SE", se_template)?;
 	if se_template.len() < SE_STREAM_OFFSET {
 		return Err(Error::SeHeaderTruncated);
 	}
-	if payload.len() != PAYLOAD_SIZE {
-		return Err(Error::PayloadSize { expected: PAYLOAD_SIZE, actual: payload.len() });
-	}
+	let payload = payload.bytes();
+	let output_size = u32::try_from(payload.len()).map_err(|_| Error::PayloadTooLarge { size: payload.len() })?;
 
 	let mut stage = Vec::with_capacity(se_template.len());
 	stage.extend_from_slice(&se_template[..STAGE_HEADER_SIZE]);
 	stage.resize(SE_STREAM_OFFSET, 0);
-	stage[SE_OUTPUT_SIZE_OFFSET..SE_OUTPUT_SIZE_OFFSET + 4].copy_from_slice(&(PAYLOAD_SIZE as u32).to_be_bytes());
+	stage[SE_OUTPUT_SIZE_OFFSET..SE_OUTPUT_SIZE_OFFSET + 4].copy_from_slice(&output_size.to_be_bytes());
 
 	let mut encoder = Encoder::new(EncoderWindowSize::KB128);
 	for (index, chunk) in payload.chunks(MAX_CHUNK_SIZE).enumerate() {
@@ -327,18 +372,28 @@ mod tests {
 		);
 	}
 
+	/// A payload of other component sizes than build 16547 round trips and splits where its
+	/// hypervisor header says.
 	#[test]
 	fn generated_stage_decodes_to_exact_payload() {
 		let sc = stage(*b"SC", "5145e4b206bf24db95c9986a700531fe");
 		let sd = stage(*b"SD", "0d997d744eebd4e0bbee1b37cb0b2244");
 		let se = stage(*b"SE", "44678c874924cb86dae7abe047fdf74f");
-		let mut payload = vec![0u8; PAYLOAD_SIZE];
-		for offset in (0..payload.len()).step_by(4093) {
-			payload[offset] = (offset >> 8) as u8;
+		let mut bytes = payload_bytes(0x30000, 0x2a0000, 0);
+		for offset in (HYPERVISOR_HEADER_SIZE..bytes.len()).step_by(4093) {
+			bytes[offset] = (offset >> 8) as u8;
 		}
+		let payload = Payload::parse(bytes).unwrap();
 
 		let encoded = encode(&sc, &sd, &se, &payload).unwrap();
-		assert_eq!(decode(&sc, &sd, &encoded).unwrap(), payload);
+		let decoded = decode(&sc, &sd, &encoded).unwrap();
+		assert_eq!(decoded, payload);
+		assert_eq!(decoded.hypervisor().len(), 0x30000);
+		assert_eq!(decoded.kernel().len(), 0x270000);
+		assert!(matches!(
+			Payload::parse(payload_bytes(0x1000, 0x1000, 0)),
+			Err(Error::HypervisorSize { declared: 0x1000, payload: 0x1000 })
+		));
 	}
 
 	/// SD keeps the digest of an encoded SE, padded with zero plaintext. Updating the digest
@@ -350,7 +405,7 @@ mod tests {
 		sd.resize(0x300, 0);
 		sd[0x0c..0x10].copy_from_slice(&0x300u32.to_be_bytes());
 		let se_template = stage(*b"SE", "44678c874924cb86dae7abe047fdf74f");
-		let payload = vec![0x5au8; PAYLOAD_SIZE];
+		let payload = Payload::parse(payload_bytes(0x40000, 0x280000, 0x5a)).unwrap();
 
 		let se = encode(&sc, &sd, &se_template, &payload).unwrap();
 		let padding = padding(&sc, &sd, &se).unwrap();
@@ -382,6 +437,12 @@ mod tests {
 		stage[0x0c..0x10].copy_from_slice(&stage_size.to_be_bytes());
 		stage[NONCE_OFFSET..NONCE_OFFSET + NONCE_SIZE].copy_from_slice(&hex::<NONCE_SIZE>(nonce));
 		stage
+	}
+
+	fn payload_bytes(hypervisor_size: usize, size: usize, fill: u8) -> Vec<u8> {
+		let mut bytes = vec![fill; size];
+		bytes[HYPERVISOR_SIZE_FIELD].copy_from_slice(&(hypervisor_size as u32).to_be_bytes());
+		bytes
 	}
 
 	fn hex<const N: usize>(value: &str) -> [u8; N] {

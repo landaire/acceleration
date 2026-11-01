@@ -5,6 +5,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anstyle::AnsiColor;
+use anstyle::Style;
 use clap::Parser;
 use memmap2::Mmap;
 use memmap2::MmapMut;
@@ -12,7 +14,7 @@ use same_file::Handle;
 use shadowboot::BootLayer;
 use tempfile::NamedTempFile;
 use thiserror::Error;
-use xflash::Image;
+use xflash::BootRegion;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
@@ -21,7 +23,7 @@ static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 #[derive(Debug, Parser)]
 #[command(about = "Compile an Xbox 360 devkit shadowboot boot-region image")]
 struct Arguments {
-	/// Read-only 60 MiB devkit flash image used as the base
+	/// Read-only flash image or boot region used as the base
 	#[arg(long, value_name = "IMAGE")]
 	base: PathBuf,
 
@@ -128,8 +130,8 @@ fn run(arguments: Arguments) -> Result<()> {
 	let mapped_layer = load_layer(&arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
 
-	let image = Image::parse(&base)?;
-	let output_size = shadowboot::output_size(&image)?;
+	let region = BootRegion::parse(&base)?;
+	let output_size = shadowboot::output_size(&region)?;
 	let layer = BootLayer {
 		sb: mapped_layer.boot.sb.as_deref(),
 		sc: mapped_layer.boot.sc.as_deref(),
@@ -154,11 +156,12 @@ fn run(arguments: Arguments) -> Result<()> {
 		.map_err(|source| io_error("size temporary output", &arguments.output, source))?;
 	let mut output = unsafe { MmapMut::map_mut(temporary.as_file()) }
 		.map_err(|source| io_error("map temporary output", &arguments.output, source))?;
-	let report = shadowboot::compile(&image, &mut output, &layer)?;
+	let report = shadowboot::compile(&region, &mut output, &layer)?;
 	output.flush().map_err(|source| io_error("flush temporary output", &arguments.output, source))?;
 	drop(output);
 	temporary.persist(&arguments.output).map_err(|error| io_error("replace output", &arguments.output, error.error))?;
 
+	print_warnings(&report.warnings);
 	println!(
 		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-signed={}",
 		arguments.output.display(),
@@ -170,6 +173,13 @@ fn run(arguments: Arguments) -> Result<()> {
 	Ok(())
 }
 
+fn print_warnings(warnings: &[shadowboot::Warning]) {
+	let style = Style::new().bold().fg_color(Some(AnsiColor::Yellow.into()));
+	for warning in warnings {
+		anstream::eprintln!("shadowboot: {style}warning{style:#}: {warning}");
+	}
+}
+
 struct CompileArguments {
 	base: PathBuf,
 	layer: PathBuf,
@@ -179,12 +189,13 @@ struct CompileArguments {
 
 /// Writes the hypervisor and kernel of the base SE as a layer's boot inputs.
 fn extract(base: &[u8], directory: &Path) -> Result<()> {
-	let image = Image::parse(base)?;
-	let payload = shadowboot::payload(&image)?;
+	let region = BootRegion::parse(base)?;
+	let extracted = shadowboot::payload(&region)?;
+	print_warnings(&extracted.warnings);
 	let boot = directory.join("boot");
 	fs::create_dir_all(&boot).map_err(|source| io_error("create directory", &boot, source))?;
-	let (hypervisor, kernel) = payload.split_at(shadowboot::HYPERVISOR_SIZE);
-	for (name, bytes) in [("hypervisor.bin", hypervisor), ("xboxkrnl.exe", kernel)] {
+	let payload = &extracted.payload;
+	for (name, bytes) in [("hypervisor.bin", payload.hypervisor()), ("xboxkrnl.exe", payload.kernel())] {
 		let path = boot.join(name);
 		fs::write(&path, bytes).map_err(|source| io_error("write", &path, source))?;
 		println!("wrote {} ({:#x} bytes)", path.display(), bytes.len());
