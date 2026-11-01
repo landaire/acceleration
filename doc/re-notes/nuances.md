@@ -4,7 +4,10 @@
 - The separately captured live kernel identifies itself as build 16547 through its PE export name.
 - Whole live-kernel memory captures vary in mutable data sections. Immutable sections, including `.text`, are the reproducible build evidence.
 - `dmversion` identifies XBDM. Its value `2.0.21256.0` is not the live kernel or hypervisor build.
-- `FLASH:\` reports as a directory through file attributes but `getfile FLASH:\` streams a raw 60 MiB image.
+- `FLASH:\` reports as a directory through file attributes but `getfile FLASH:\` streams the 60 MiB logical device: the 480 logical blocks without spare areas or spare blocks.
+- The devkit NAND is big-block: controller config `0x00aa3020`, 128 KiB blocks, 512 configured blocks of which 32 are spares, 4096 physical blocks. Blocks past 512 hold the internal memory unit. A raw read through `IOCTL_SFCX_READ_PAGES` returns each 512-byte sector with its 16-byte spare area, and every written sector of the 2026-11-01 dump matches `SfcxEncodeECC`.
+- Flash header offsets `0x94` and `0xa0` hold IPv4 addresses (`169.254.140.131` and `192.168.1.74` in the 2026-11-01 raw dump). Both changed since the 2026-10-07 capture; that they are the kdnet record that `kdnet set` writes is an inference.
+- An external `IOCTL_SFCX_READ_PAGES` request in the memory-unit area once never completed (between blocks 3311 and 3327). The same blocks read without error after a reboot.
 - `flash` performs persistent image update work. It is prohibited.
 - `magicboot` is a title reboot command in the analyzed build, not a proven shadowboot loader.
 - The flash filesystem uses allocation chains. A file's start cluster and size do not imply contiguous storage.

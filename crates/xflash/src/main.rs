@@ -6,6 +6,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use anstyle::AnsiColor;
+use anstyle::Style;
 use clap::Parser;
 use clap::Subcommand;
 use memmap2::Mmap;
@@ -17,6 +19,11 @@ use tracing_subscriber::EnvFilter;
 use xflash::Image;
 use xflash::ParseError;
 use xflash::VisitError;
+use xflash::format::Extent;
+use xflash::format::FormatError;
+use xflash::format::FormatSelection;
+use xflash::format::ImageFormat;
+use xflash::raw::RawWarning;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
@@ -27,6 +34,10 @@ static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 struct Arguments {
 	#[arg(value_name = "IMAGE")]
 	image: PathBuf,
+
+	/// Image format
+	#[arg(long, value_enum, default_value_t = FormatSelection::Auto)]
+	format: FormatSelection,
 
 	#[command(subcommand)]
 	command: Command,
@@ -56,6 +67,8 @@ enum CliError {
 	},
 	#[error(transparent)]
 	Parse(#[from] ParseError),
+	#[error(transparent)]
+	Format(#[from] FormatError),
 	#[error("root file {name:?} was not found")]
 	FileNotFound { name: String },
 	#[error("boot stage {name:?} was not found")]
@@ -113,10 +126,12 @@ fn run() -> Result<()> {
 	let map = unsafe { Mmap::map(&file) }
 		.map_err(|source| CliError::MapImage { path: arguments.image.clone(), source })
 		.into_report()?;
-	let image = Image::parse(&map).map_err(CliError::from).into_report()?;
+	let logical = xflash::format::load(&map, arguments.format, Extent::Device).map_err(CliError::from).into_report()?;
+	print_warnings(&logical.warnings);
+	let image = Image::parse(&logical.bytes).map_err(CliError::from).into_report()?;
 
 	match arguments.command {
-		Command::Info => print_info(&image),
+		Command::Info => print_info(&image, logical.format),
 		Command::List => list_root(&image)?,
 		Command::ExtractFile { name, output } => extract_file(&image, &file, &arguments.image, &name, output)?,
 		Command::ExtractStage { name, output } => extract_stage(&image, &file, &arguments.image, &name, output)?,
@@ -124,7 +139,20 @@ fn run() -> Result<()> {
 	Ok(())
 }
 
-fn print_info(image: &Image<'_>) {
+fn print_warnings(warnings: &[RawWarning]) {
+	const SHOWN: usize = 16;
+
+	let style = Style::new().bold().fg_color(Some(AnsiColor::Yellow.into()));
+	for warning in warnings.iter().take(SHOWN) {
+		anstream::eprintln!("xflash: {style}warning{style:#}: {warning}");
+	}
+	if warnings.len() > SHOWN {
+		anstream::eprintln!("xflash: {style}warning{style:#}: {} more warnings", warnings.len() - SHOWN);
+	}
+}
+
+fn print_info(image: &Image<'_>, format: ImageFormat) {
+	println!("format={format}");
 	let boot_region = image.boot_region();
 	let header = boot_region.header();
 	println!(

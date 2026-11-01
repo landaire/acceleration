@@ -26,10 +26,13 @@ rust_library(
     edition = "2024",
     env = ENV,
     features = [
+        "clap",
         "cli",
         "default",
     ],
     deps = [
+        "//third-party/rust:anstream",
+        "//third-party/rust:anstyle",
         "//third-party/rust:clap",
         "//third-party/rust:memmap2",
         "//third-party/rust:rootcause",
@@ -53,6 +56,7 @@ rust_test(
     edition = "2024",
     env = ENV | {"INSTA_WORKSPACE_ROOT": "."},
     features = [
+        "clap",
         "cli",
         "default",
     ],
@@ -60,6 +64,8 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/xflash",
     },
     deps = [
+        "//third-party/rust:anstream",
+        "//third-party/rust:anstyle",
         "//third-party/rust:clap",
         "//third-party/rust:memmap2",
         "//third-party/rust:rootcause",
@@ -79,10 +85,13 @@ rust_binary(
     edition = "2024",
     env = ENV | {"CARGO_BIN_NAME": "xflash"},
     features = [
+        "clap",
         "cli",
         "default",
     ],
     deps = [
+        "//third-party/rust:anstream",
+        "//third-party/rust:anstyle",
         "//third-party/rust:clap",
         "//third-party/rust:memmap2",
         "//third-party/rust:rootcause",
@@ -109,6 +118,7 @@ rust_test(
     edition = "2024",
     env = ENV | {"CARGO_BIN_NAME": "xflash"} | {"INSTA_WORKSPACE_ROOT": "."},
     features = [
+        "clap",
         "cli",
         "default",
     ],
@@ -116,6 +126,8 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/xflash",
     },
     deps = [
+        "//third-party/rust:anstream",
+        "//third-party/rust:anstyle",
         "//third-party/rust:clap",
         "//third-party/rust:memmap2",
         "//third-party/rust:rootcause",
@@ -136,11 +148,14 @@ rust_library(
     edition = "2024",
     env = ENV,
     features = [
+        "clap",
         "cli",
         "default",
         "dhat",
     ],
     deps = [
+        "//third-party/rust:anstream",
+        "//third-party/rust:anstyle",
         "//third-party/rust:clap",
         "//third-party/rust:dhat",
         "//third-party/rust:memmap2",
@@ -165,11 +180,14 @@ rust_binary(
     edition = "2024",
     env = ENV | {"CARGO_BIN_NAME": "xflash"},
     features = [
+        "clap",
         "cli",
         "default",
         "dhat",
     ],
     deps = [
+        "//third-party/rust:anstream",
+        "//third-party/rust:anstyle",
         "//third-party/rust:clap",
         "//third-party/rust:dhat",
         "//third-party/rust:memmap2",

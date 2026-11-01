@@ -15,19 +15,24 @@ include = ["src/**", "README.md"]
 [features]
 default = ["cli"]
 cli = [
-	"dep:clap",
+	"clap",
+	"dep:anstream",
+	"dep:anstyle",
 	"dep:memmap2",
 	"dep:rootcause",
 	"dep:same-file",
 	"dep:tracing",
 	"dep:tracing-subscriber",
 ]
+clap = ["dep:clap"]
 dhat = ["cli", "dep:dhat"]
 
 [dependencies]
 winnow = { version = "1.0.4", default-features = false, features = ["binary", "parser"] }
 thiserror = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"], optional = true }
+anstream = { version = "1.0", optional = true }
+anstyle = { version = "1.0", optional = true }
 memmap2 = { version = "0.9.9", optional = true }
 rootcause = { version = "0.12", optional = true }
 same-file = { version = "1.0.6", optional = true }

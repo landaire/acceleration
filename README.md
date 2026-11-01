@@ -20,7 +20,7 @@ Libraries and tools for Xbox 360 file formats.
 | [`lzxc`](crates/lzxc/) | LZX compression encoder (round-trips with `lzxd`) |
 | [`xenon_lzx`](crates/xenon_lzx/) | LZX decoder that behaves like the console kernel's, including delta patch reference data |
 | [`xecrypt`](crates/xecrypt/) | AES, RSA, and RotSumSha primitives from the Xbox 360 kernel |
-| [`xflash`](crates/xflash/) | Read-only parser and extractor for the observed 60 MiB devkit flash profile |
+| [`xflash`](crates/xflash/) | Read-only parser and extractor for devkit flash images, logical or raw NAND with spare areas |
 | [`shadowboot`](crates/shadowboot/) | Layer compiler for deanxbox shadowboot images |
 | [`xcontent`](crates/xcontent/) | "STFS" package (CON/LIVE/PIRS) parser |
 | [`stfs`](crates/stfs/) | STFS filesystem/VFS handler |

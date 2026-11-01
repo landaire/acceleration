@@ -1,5 +1,13 @@
 #![no_std]
 
+extern crate alloc;
+// The clap derive expands to paths under `::std`.
+#[cfg(feature = "clap")]
+extern crate std;
+
+pub mod format;
+pub mod raw;
+
 use core::str;
 
 use thiserror::Error;
@@ -473,7 +481,7 @@ fn validate_profile_value(field: &'static str, expected: u64, actual: u64) -> Re
 	Ok(())
 }
 
-fn parse_image_header(bytes: &[u8]) -> Result<ImageHeader, ParseError> {
+pub(crate) fn parse_image_header(bytes: &[u8]) -> Result<ImageHeader, ParseError> {
 	let input = bytes.get(..IMAGE_HEADER_SIZE).ok_or(ParseError::HeaderTruncated)?;
 	let mut input = input;
 	parse_image_header_fields(&mut input).map_err(|_| ParseError::HeaderTruncated)

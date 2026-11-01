@@ -1,3 +1,4 @@
+use std::fmt;
 use std::fs;
 use std::fs::File;
 use std::io;
@@ -15,6 +16,9 @@ use shadowboot::BootLayer;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 use xflash::BootRegion;
+use xflash::format::Extent;
+use xflash::format::FormatSelection;
+use xflash::format::LogicalImage;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
@@ -26,6 +30,10 @@ struct Arguments {
 	/// Read-only flash image or boot region used as the base
 	#[arg(long, value_name = "IMAGE")]
 	base: PathBuf,
+
+	/// Format of the base image
+	#[arg(long, value_enum, default_value_t = FormatSelection::Auto)]
+	format: FormatSelection,
 
 	/// Layer directory containing boot/ inputs
 	#[arg(long, value_name = "DIRECTORY", required_unless_present = "extract")]
@@ -69,6 +77,8 @@ enum CliError {
 	MissingOutputParent { path: PathBuf },
 	#[error(transparent)]
 	Flash(#[from] xflash::ParseError),
+	#[error(transparent)]
+	Format(#[from] xflash::format::FormatError),
 	#[error(transparent)]
 	Compile(#[from] shadowboot::Error),
 }
@@ -117,12 +127,13 @@ fn run(arguments: Arguments) -> Result<()> {
 	let base_file = open_file(&arguments.base, "open base image")?;
 	let base = map_file(&base_file, &arguments.base)?;
 	let (layer_path, output_path) = match (arguments.layer, arguments.output, arguments.extract) {
-		(_, _, Some(directory)) => return extract(&base, &directory),
+		(_, _, Some(directory)) => return extract(&base, arguments.format, &directory),
 		(Some(layer), Some(output), None) => (layer, output),
 		_ => unreachable!("clap requires --layer and --output without --extract"),
 	};
 	let arguments = CompileArguments {
 		base: arguments.base,
+		format: arguments.format,
 		layer: layer_path,
 		output: output_path,
 		rebuild_se: arguments.rebuild_se,
@@ -130,7 +141,8 @@ fn run(arguments: Arguments) -> Result<()> {
 	let mapped_layer = load_layer(&arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
 
-	let region = BootRegion::parse(&base)?;
+	let logical = load_base(&base, arguments.format)?;
+	let region = BootRegion::parse(&logical.bytes)?;
 	let output_size = shadowboot::output_size(&region)?;
 	let layer = BootLayer {
 		sb: mapped_layer.boot.sb.as_deref(),
@@ -173,23 +185,40 @@ fn run(arguments: Arguments) -> Result<()> {
 	Ok(())
 }
 
-fn print_warnings(warnings: &[shadowboot::Warning]) {
+fn load_base(base: &[u8], format: FormatSelection) -> Result<LogicalImage<'_>> {
+	let logical = xflash::format::load(base, format, Extent::BootRegion)?;
+	print_warnings(&logical.warnings);
+
+	Ok(logical)
+}
+
+fn print_warnings<W>(warnings: &[W])
+where
+	W: fmt::Display,
+{
+	const SHOWN: usize = 16;
+
 	let style = Style::new().bold().fg_color(Some(AnsiColor::Yellow.into()));
-	for warning in warnings {
+	for warning in warnings.iter().take(SHOWN) {
 		anstream::eprintln!("shadowboot: {style}warning{style:#}: {warning}");
+	}
+	if warnings.len() > SHOWN {
+		anstream::eprintln!("shadowboot: {style}warning{style:#}: {} more warnings", warnings.len() - SHOWN);
 	}
 }
 
 struct CompileArguments {
 	base: PathBuf,
+	format: FormatSelection,
 	layer: PathBuf,
 	output: PathBuf,
 	rebuild_se: bool,
 }
 
 /// Writes the hypervisor and kernel of the base SE as a layer's boot inputs.
-fn extract(base: &[u8], directory: &Path) -> Result<()> {
-	let region = BootRegion::parse(base)?;
+fn extract(base: &[u8], format: FormatSelection, directory: &Path) -> Result<()> {
+	let logical = load_base(base, format)?;
+	let region = BootRegion::parse(&logical.bytes)?;
 	let extracted = shadowboot::payload(&region)?;
 	print_warnings(&extracted.warnings);
 	let boot = directory.join("boot");

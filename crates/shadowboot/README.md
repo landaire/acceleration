@@ -8,6 +8,8 @@ The compiler reads a base image, applies a boot layer, and writes the image's de
 
 The base is a flash capture or a boot region, such as an earlier compiler output. Only the flash header and the SB, SC, SD, and SE stages are read, so any build with that boot chain is accepted. Bytes past the declared boot region are ignored. The base is mapped read-only and is never modified. The output is written to a separate temporary file and renamed into place.
 
+The base can also be a raw NAND image with spare areas. The format is detected by default, and `--format` names it when detection fails. The formats are the same as for [`xflash`](../xflash/README.md#image-formats).
+
 ## Layer
 
 A layer contains only changed boot inputs. Missing entries are copied from the base image. An empty layer directory reproduces the base boot region byte-for-byte.
