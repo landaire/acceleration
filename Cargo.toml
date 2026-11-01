@@ -6,6 +6,7 @@ members = [
 	"crates/stfs",
 	"crates/system_update",
 	"crates/shadowboot",
+	"crates/sfcx",
 	"crates/ui",
 	"crates/xcontent",
 	"crates/xecrypt",

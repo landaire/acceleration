@@ -1,11 +1,11 @@
 //! Raw NAND images: every 512-byte sector followed by its 16-byte spare area, in physical
 //! order, as the flash controller stores them.
 
-use alloc::vec;
-use alloc::vec::Vec;
-use core::fmt;
+use std::fmt;
+use std::ops::Range;
 
-use thiserror::Error;
+use crate::error::RawError;
+use crate::error::SfcxError;
 
 pub const SECTOR_DATA_SIZE: usize = 0x200;
 pub const SPARE_SIZE: usize = 0x10;
@@ -26,6 +26,11 @@ impl SectorIndex {
 
 	pub const fn get(self) -> usize {
 		self.0
+	}
+
+	/// Offset of the sector's record in the raw image.
+	pub const fn raw_offset(self) -> u64 {
+		(self.0 * RAW_SECTOR_SIZE) as u64
 	}
 }
 
@@ -104,7 +109,7 @@ impl RawKind {
 
 	/// The configured counts for a device of `physical_blocks` blocks. Big-block devices may
 	/// have blocks past the configured count, which the kernel uses for the memory unit.
-	const fn counts(self, physical_blocks: usize) -> Option<BlockCounts> {
+	const fn counts(self, physical_blocks: u64) -> Option<BlockCounts> {
 		let (block_count, spare_block_count) = match (self, physical_blocks) {
 			(Self::SmallBlock | Self::BigOnSmallBlock, 1024) => (1024, 32),
 			(Self::SmallBlock, 2048) => (2048, 64),
@@ -147,13 +152,14 @@ pub struct Geometry {
 
 impl Geometry {
 	/// The geometry of `kind` for a raw image of `raw_size` bytes.
-	pub fn new(kind: RawKind, raw_size: usize) -> Result<Self, RawError> {
-		if raw_size == 0 || !raw_size.is_multiple_of(RAW_SECTOR_SIZE) {
+	pub fn new(kind: RawKind, raw_size: u64) -> Result<Self, RawError> {
+		let record = RAW_SECTOR_SIZE as u64;
+		if raw_size == 0 || !raw_size.is_multiple_of(record) {
 			return Err(RawError::PartialSector { size: raw_size });
 		}
 
-		let data_size = raw_size / RAW_SECTOR_SIZE * SECTOR_DATA_SIZE;
-		let block_size = 1usize << kind.block_shift();
+		let data_size = raw_size / record * SECTOR_DATA_SIZE as u64;
+		let block_size = 1u64 << kind.block_shift();
 		if !data_size.is_multiple_of(block_size) {
 			return Err(RawError::UnsupportedGeometry { kind, data_size });
 		}
@@ -163,7 +169,7 @@ impl Geometry {
 
 		Ok(Self {
 			kind,
-			physical_block_count,
+			physical_block_count: physical_block_count as usize,
 			block_count: counts.block_count,
 			spare_block_count: counts.spare_block_count,
 		})
@@ -194,68 +200,104 @@ impl Geometry {
 	}
 
 	/// Size of the logical flash device: the logical blocks without their spare areas.
-	pub const fn logical_size(&self) -> usize {
-		self.logical_block_count() << self.kind.block_shift()
+	pub const fn logical_size(&self) -> u64 {
+		(self.logical_block_count() as u64) << self.kind.block_shift()
 	}
 
-	const fn sectors_per_block(&self) -> usize {
+	pub const fn sectors_per_block(&self) -> usize {
 		self.block_size() / SECTOR_DATA_SIZE
 	}
-}
 
-#[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
-pub enum RawError {
-	#[error("raw image size {size:#x} is not a whole number of 0x210-byte sectors")]
-	PartialSector { size: usize },
-	#[error("{data_size:#x} bytes of flash data do not form a supported {kind} device")]
-	UnsupportedGeometry { kind: RawKind, data_size: usize },
-	#[error("the raw image matches no supported flash geometry")]
-	UnknownGeometry,
-	#[error("the raw image matches the {first} and {second} geometries equally")]
-	AmbiguousGeometry { first: RawKind, second: RawKind },
-	#[error("logical range {offset:#x}+{len:#x} extends past the {size:#x}-byte logical device")]
-	LogicalRangeOutOfBounds { offset: usize, len: usize, size: usize },
-	#[error("logical block {block:?} is bad and no spare block replaces it")]
-	UntranslatedBlock { block: BlockIndex },
+	pub const fn first_sector(&self, block: BlockIndex) -> SectorIndex {
+		SectorIndex(block.0 * self.sectors_per_block())
+	}
+
+	/// The raw record of the first sector of `block`, which holds the block's metadata.
+	pub const fn metadata_range(&self, block: BlockIndex) -> Range<u64> {
+		let start = self.first_sector(block).raw_offset();
+		start..start + RAW_SECTOR_SIZE as u64
+	}
 }
 
 /// A condition the raw image reader tolerates, as the console's flash driver does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RawWarning {
-	/// The stored ECC of a sector does not match its data and spare area.
-	EccMismatch { sector: SectorIndex },
-	/// A spare block fails its ECC check, so its replacement record is ignored.
-	UnreadableSpareBlock { block: BlockIndex },
+	/// The stored ECC of a sector does not match its data and spare area. The sector is used as
+	/// stored, including the block metadata in its spare area.
+	EccMismatch { sector: SectorIndex, stored: Ecc, computed: Ecc },
 }
 
 impl fmt::Display for RawWarning {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
-			Self::EccMismatch { sector } => {
-				write!(
-					formatter,
-					"sector {:#x} (raw offset {:#x}) fails its ECC check",
-					sector.0,
-					sector.0 * RAW_SECTOR_SIZE
-				)
-			}
-			Self::UnreadableSpareBlock { block } => {
-				write!(formatter, "spare block {:#x} fails its ECC check and is ignored", block.0)
-			}
+			Self::EccMismatch { sector, stored, computed } => write!(
+				formatter,
+				"sector {:#x} (raw offset {:#x}) fails its ECC check: stored {:#09x}, computed {:#09x}",
+				sector.0,
+				sector.raw_offset(),
+				stored.0,
+				computed.0
+			),
 		}
 	}
 }
 
-/// Logical bytes read from a raw image.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LogicalRead {
-	pub bytes: Vec<u8>,
-	pub warnings: Vec<RawWarning>,
+/// One raw record: a sector's data followed by its spare area.
+#[derive(Debug, Clone, Copy)]
+pub struct SectorRecord<'a> {
+	pub data: &'a [u8; SECTOR_DATA_SIZE],
+	pub spare: &'a [u8; SPARE_SIZE],
 }
 
-/// A raw image with the bad-block state its spare areas record.
-pub struct RawImage<'a> {
-	bytes: &'a [u8],
+impl<'a> SectorRecord<'a> {
+	/// Splits a 0x210-byte record.
+	pub fn new(record: &'a [u8; RAW_SECTOR_SIZE]) -> Self {
+		let (data, spare) = record.split_at(SECTOR_DATA_SIZE);
+		Self { data: data.try_into().expect("512 data bytes"), spare: spare.try_into().expect("16 spare bytes") }
+	}
+
+	/// An erased sector holds all ones and no ECC.
+	pub fn is_erased(&self) -> bool {
+		self.data.iter().chain(self.spare).all(|byte| *byte == 0xff)
+	}
+
+	/// The stored and computed ECC when they differ. An erased sector has no ECC to check.
+	pub fn ecc_mismatch(&self) -> Option<EccMismatch> {
+		if self.is_erased() {
+			return None;
+		}
+
+		let stored = stored_ecc(self.spare);
+		let computed = sector_ecc(self.data, self.spare);
+		(stored != computed).then_some(EccMismatch { stored, computed })
+	}
+}
+
+/// The 26-bit error-correcting code of a sector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ecc(u32);
+
+impl Ecc {
+	pub const fn get(self) -> u32 {
+		self.0
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EccMismatch {
+	pub stored: Ecc,
+	pub computed: Ecc,
+}
+
+impl EccMismatch {
+	pub const fn warning(self, sector: SectorIndex) -> RawWarning {
+		RawWarning::EccMismatch { sector, stored: self.stored, computed: self.computed }
+	}
+}
+
+/// The bad-block state that the spare areas of a raw image record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawLayout {
 	geometry: Geometry,
 	bad_blocks: Vec<bool>,
 	/// Entry `i` names the logical block that block `block_count - 1 - i` replaces.
@@ -263,85 +305,40 @@ pub struct RawImage<'a> {
 	warnings: Vec<RawWarning>,
 }
 
-impl<'a> RawImage<'a> {
+impl RawLayout {
 	/// Reads the bad-block markers and the spare-block records the way the kernel mount scan
-	/// does.
-	pub fn parse(bytes: &'a [u8], geometry: Geometry) -> Result<Self, RawError> {
-		let expected = Geometry::new(geometry.kind, bytes.len())?;
-		if expected != geometry {
-			return Err(RawError::UnsupportedGeometry {
-				kind: geometry.kind,
-				data_size: bytes.len() / RAW_SECTOR_SIZE * SECTOR_DATA_SIZE,
-			});
-		}
+	/// does. `metadata` holds the first-sector record of every configured block in order. A
+	/// good block whose metadata sector fails its ECC check is used as stored and reported.
+	pub fn new(geometry: Geometry, metadata: &[[u8; RAW_SECTOR_SIZE]]) -> Self {
+		assert_eq!(metadata.len(), geometry.block_count, "one metadata record per configured block");
 
 		let layout = geometry.kind.layout();
-		let mut image = Self {
-			bytes,
+		let mut raw_layout = Self {
 			geometry,
 			bad_blocks: vec![false; geometry.block_count],
 			spare_map: vec![None; geometry.spare_block_count],
 			warnings: Vec::new(),
 		};
-		for block in (0..geometry.block_count).rev() {
-			let sector = image.first_sector(BlockIndex(block));
-			let spare = image.spare(sector);
-			if layout.is_bad_block(spare) {
-				image.bad_blocks[block] = true;
+		for (block, record) in metadata.iter().enumerate() {
+			let record = SectorRecord::new(record);
+			if layout.is_bad_block(record.spare) {
+				raw_layout.bad_blocks[block] = true;
 				continue;
+			}
+			if let Some(mismatch) = record.ecc_mismatch() {
+				raw_layout.warnings.push(mismatch.warning(geometry.first_sector(BlockIndex(block))));
 			}
 			if block < geometry.logical_block_count() {
 				continue;
 			}
 
-			if !image.sector_ecc_matches(sector) {
-				image.warnings.push(RawWarning::UnreadableSpareBlock { block: BlockIndex(block) });
-				continue;
-			}
-			let replaced = layout.block_number(spare);
+			let replaced = layout.block_number(record.spare);
 			if replaced.0 < geometry.logical_block_count() {
-				image.spare_map[geometry.block_count - 1 - block] = Some(replaced);
+				raw_layout.spare_map[geometry.block_count - 1 - block] = Some(replaced);
 			}
 		}
 
-		Ok(image)
-	}
-
-	/// Detects the geometry whose block-number fields agree with the most block positions.
-	pub fn detect(bytes: &'a [u8]) -> Result<Self, RawError> {
-		if bytes.is_empty() || !bytes.len().is_multiple_of(RAW_SECTOR_SIZE) {
-			return Err(RawError::PartialSector { size: bytes.len() });
-		}
-
-		let mut best: Option<(Geometry, usize)> = None;
-		let mut tied: Option<RawKind> = None;
-		for kind in RawKind::ALL {
-			let Ok(geometry) = Geometry::new(kind, bytes.len()) else {
-				continue;
-			};
-			let score = numbered_block_count(bytes, geometry);
-			if score == 0 {
-				continue;
-			}
-
-			match best {
-				Some((_, best_score)) if score < best_score => {}
-				Some((_, best_score)) if score == best_score => tied = Some(kind),
-				_ => {
-					best = Some((geometry, score));
-					tied = None;
-				}
-			}
-		}
-
-		let Some((geometry, _)) = best else {
-			return Err(RawError::UnknownGeometry);
-		};
-		if let Some(first) = tied {
-			return Err(RawError::AmbiguousGeometry { first, second: geometry.kind });
-		}
-
-		Self::parse(bytes, geometry)
+		raw_layout
 	}
 
 	pub const fn geometry(&self) -> Geometry {
@@ -369,56 +366,78 @@ impl<'a> RawImage<'a> {
 		})
 	}
 
-	/// Reads `len` logical bytes at `offset`, stripping spare areas, replacing bad blocks, and
-	/// checking the ECC of every sector read.
-	pub fn read_logical(&self, offset: usize, len: usize) -> Result<LogicalRead, RawError> {
-		let size = self.geometry.logical_size();
-		if offset.checked_add(len).is_none_or(|end| end > size) {
-			return Err(RawError::LogicalRangeOutOfBounds { offset, len, size });
-		}
-
-		let mut bytes = Vec::with_capacity(len);
-		let mut warnings = Vec::new();
-		let mut position = offset;
-		while position < offset + len {
-			let logical_block = BlockIndex(position / self.geometry.block_size());
+	/// The raw reads that cover the logical range, one per physically contiguous run.
+	pub(crate) fn runs(&self, range: Range<u64>) -> Result<Vec<RawRun>, SfcxError> {
+		let block_size = self.geometry.block_size() as u64;
+		let mut runs = Vec::new();
+		let mut position = range.start;
+		while position < range.end {
+			let logical_block = BlockIndex((position / block_size) as usize);
 			let physical_block =
 				self.translate(logical_block).ok_or(RawError::UntranslatedBlock { block: logical_block })?;
-			let within_block = position % self.geometry.block_size();
-			let sector = SectorIndex(self.first_sector(physical_block).0 + within_block / SECTOR_DATA_SIZE);
-			let within_sector = position % SECTOR_DATA_SIZE;
-			let count = (SECTOR_DATA_SIZE - within_sector).min(offset + len - position);
+			let within_block = (position % block_size) as usize;
+			let len = (block_size - within_block as u64).min(range.end - position) as usize;
+			let skip = within_block % SECTOR_DATA_SIZE;
+			let first_sector =
+				SectorIndex(self.geometry.first_sector(physical_block).0 + within_block / SECTOR_DATA_SIZE);
+			let sectors = (skip + len).div_ceil(SECTOR_DATA_SIZE);
+			let start = first_sector.raw_offset();
 
-			if !self.sector_ecc_matches(sector) {
-				warnings.push(RawWarning::EccMismatch { sector });
-			}
-			bytes.extend_from_slice(&self.data(sector)[within_sector..within_sector + count]);
-			position += count;
+			runs.push(RawRun { raw: start..start + (sectors * RAW_SECTOR_SIZE) as u64, first_sector, skip, len });
+			position += len as u64;
 		}
 
-		Ok(LogicalRead { bytes, warnings })
+		Ok(runs)
 	}
+}
 
-	fn first_sector(&self, block: BlockIndex) -> SectorIndex {
-		SectorIndex(block.0 * self.geometry.sectors_per_block())
-	}
+/// A physically contiguous raw read and the logical bytes it yields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RawRun {
+	pub raw: Range<u64>,
+	first_sector: SectorIndex,
+	/// Data bytes of the first sector before the logical range.
+	skip: usize,
+	len: usize,
+}
 
-	fn data(&self, sector: SectorIndex) -> &'a [u8; SECTOR_DATA_SIZE] {
-		data(self.bytes, sector)
-	}
+impl RawRun {
+	/// Appends the run's logical bytes from its raw records, checking each sector's ECC.
+	pub fn strip(&self, raw: &[u8], out: &mut Vec<u8>, warnings: &mut Vec<RawWarning>) {
+		let mut skip = self.skip;
+		let mut remaining = self.len;
+		for (index, record) in raw.as_chunks::<RAW_SECTOR_SIZE>().0.iter().enumerate() {
+			let record = SectorRecord::new(record);
+			if let Some(mismatch) = record.ecc_mismatch() {
+				warnings.push(mismatch.warning(SectorIndex(self.first_sector.0 + index)));
+			}
 
-	fn spare(&self, sector: SectorIndex) -> &'a [u8; SPARE_SIZE] {
-		spare(self.bytes, sector)
+			let count = (SECTOR_DATA_SIZE - skip).min(remaining);
+			out.extend_from_slice(&record.data[skip..skip + count]);
+			remaining -= count;
+			skip = 0;
+		}
 	}
+}
 
-	fn sector_ecc_matches(&self, sector: SectorIndex) -> bool {
-		sector_ecc_matches(self.data(sector), self.spare(sector))
-	}
+/// Good logical blocks whose block-number field equals their position under `geometry`.
+/// `metadata` holds the first-sector record of every logical block. ECC is not considered, so a
+/// failed integrity check does not change which geometry an image has.
+pub fn numbered_block_count(geometry: Geometry, metadata: &[[u8; RAW_SECTOR_SIZE]]) -> usize {
+	let layout = geometry.kind.layout();
+	metadata
+		.iter()
+		.enumerate()
+		.filter(|(block, record)| {
+			let record = SectorRecord::new(record);
+			!record.is_erased() && !layout.is_bad_block(record.spare) && layout.block_number(record.spare).0 == *block
+		})
+		.count()
 }
 
 /// The 26-bit ECC of a sector over its 512 data bytes and the first 102 bits of its spare area,
 /// as `SfcxEncodeECC` computes it: bits enter least significant first, polynomial 0x06954559.
-pub fn sector_ecc(data: &[u8; SECTOR_DATA_SIZE], spare: &[u8; SPARE_SIZE]) -> u32 {
+pub fn sector_ecc(data: &[u8; SECTOR_DATA_SIZE], spare: &[u8; SPARE_SIZE]) -> Ecc {
 	const POLYNOMIAL: u32 = 0x0695_4559;
 	const SPARE_COVERED_BITS: usize = SPARE_ECC_OFFSET * 8 + 6;
 
@@ -434,44 +453,11 @@ pub fn sector_ecc(data: &[u8; SECTOR_DATA_SIZE], spare: &[u8; SPARE_SIZE]) -> u3
 		value >>= 1;
 	}
 
-	!value & 0x03ff_ffff
+	Ecc(!value & 0x03ff_ffff)
 }
 
 /// The ECC a spare area stores.
-pub fn stored_ecc(spare: &[u8; SPARE_SIZE]) -> u32 {
+pub fn stored_ecc(spare: &[u8; SPARE_SIZE]) -> Ecc {
 	let word = u32::from_le_bytes(spare[SPARE_ECC_OFFSET..].try_into().expect("four ECC bytes"));
-	word >> 6
-}
-
-/// An erased sector holds all ones and no ECC.
-fn sector_ecc_matches(data: &[u8; SECTOR_DATA_SIZE], spare: &[u8; SPARE_SIZE]) -> bool {
-	let erased = data.iter().chain(spare).all(|byte| *byte == 0xff);
-	erased || sector_ecc(data, spare) == stored_ecc(spare)
-}
-
-fn data(bytes: &[u8], sector: SectorIndex) -> &[u8; SECTOR_DATA_SIZE] {
-	let start = sector.0 * RAW_SECTOR_SIZE;
-	bytes[start..start + SECTOR_DATA_SIZE].try_into().expect("whole sector")
-}
-
-fn spare(bytes: &[u8], sector: SectorIndex) -> &[u8; SPARE_SIZE] {
-	let start = sector.0 * RAW_SECTOR_SIZE + SECTOR_DATA_SIZE;
-	bytes[start..start + SPARE_SIZE].try_into().expect("whole spare area")
-}
-
-/// Good, ECC-valid logical blocks whose block-number field equals their position under
-/// `geometry`.
-fn numbered_block_count(bytes: &[u8], geometry: Geometry) -> usize {
-	let layout = geometry.kind.layout();
-	(0..geometry.logical_block_count())
-		.filter(|block| {
-			let sector = SectorIndex(block * geometry.sectors_per_block());
-			let (data, spare) = (data(bytes, sector), spare(bytes, sector));
-			let erased = data.iter().chain(spare).all(|byte| *byte == 0xff);
-			!erased
-				&& !layout.is_bad_block(spare)
-				&& sector_ecc(data, spare) == stored_ecc(spare)
-				&& layout.block_number(spare).0 == *block
-		})
-		.count()
+	Ecc(word >> 6)
 }

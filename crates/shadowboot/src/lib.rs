@@ -2,9 +2,9 @@ mod se;
 
 use std::fmt;
 
+use sfcx::BootRegion;
+use sfcx::BootStage;
 use thiserror::Error;
-use xflash::BootRegion;
-use xflash::BootStage;
 
 pub use se::Payload;
 pub use se::SE_ALIGNMENT;

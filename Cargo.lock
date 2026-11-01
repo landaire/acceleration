@@ -4209,6 +4209,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sfcx"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "fskit",
+ "futures",
+ "thiserror 2.0.21",
+ "vfs",
+ "winnow 1.0.4",
+]
+
+[[package]]
 name = "sha-1"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4253,11 +4266,11 @@ dependencies = [
  "lzxd",
  "memmap2",
  "same-file",
+ "sfcx",
  "sha-1",
  "tempfile",
  "thiserror 2.0.21",
  "xecrypt",
- "xflash",
 ]
 
 [[package]]
@@ -5942,10 +5955,10 @@ dependencies = [
  "memmap2",
  "rootcause",
  "same-file",
+ "sfcx",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
- "winnow 1.0.4",
 ]
 
 [[package]]

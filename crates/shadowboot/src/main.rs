@@ -12,13 +12,14 @@ use clap::Parser;
 use memmap2::Mmap;
 use memmap2::MmapMut;
 use same_file::Handle;
+use sfcx::Checked;
+use sfcx::FlashImage;
+use sfcx::FormatSelection;
+use sfcx::IntegrityPolicy;
+use sfcx::io::SliceSource;
 use shadowboot::BootLayer;
 use tempfile::NamedTempFile;
 use thiserror::Error;
-use xflash::BootRegion;
-use xflash::format::Extent;
-use xflash::format::FormatSelection;
-use xflash::format::LogicalImage;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
@@ -34,6 +35,11 @@ struct Arguments {
 	/// Format of the base image
 	#[arg(long, value_enum, default_value_t = FormatSelection::Auto)]
 	format: FormatSelection,
+
+	/// Treat failed integrity checks, such as ECC mismatches and unverified SD signatures, as
+	/// errors instead of warnings
+	#[arg(long)]
+	strict: bool,
 
 	/// Layer directory containing boot/ inputs
 	#[arg(long, value_name = "DIRECTORY", required_unless_present = "extract")]
@@ -76,9 +82,11 @@ enum CliError {
 	#[error("output path {path:?} has no parent directory")]
 	MissingOutputParent { path: PathBuf },
 	#[error(transparent)]
-	Flash(#[from] xflash::ParseError),
+	Flash(#[from] sfcx::SfcxError),
 	#[error(transparent)]
-	Format(#[from] xflash::format::FormatError),
+	FlashIntegrity(#[from] sfcx::IntegrityError),
+	#[error("{count} integrity checks failed")]
+	Integrity { count: usize },
 	#[error(transparent)]
 	Compile(#[from] shadowboot::Error),
 }
@@ -127,13 +135,14 @@ fn run(arguments: Arguments) -> Result<()> {
 	let base_file = open_file(&arguments.base, "open base image")?;
 	let base = map_file(&base_file, &arguments.base)?;
 	let (layer_path, output_path) = match (arguments.layer, arguments.output, arguments.extract) {
-		(_, _, Some(directory)) => return extract(&base, arguments.format, &directory),
+		(_, _, Some(directory)) => return extract(&base, arguments.format, policy(arguments.strict), &directory),
 		(Some(layer), Some(output), None) => (layer, output),
 		_ => unreachable!("clap requires --layer and --output without --extract"),
 	};
 	let arguments = CompileArguments {
 		base: arguments.base,
 		format: arguments.format,
+		strict: arguments.strict,
 		layer: layer_path,
 		output: output_path,
 		rebuild_se: arguments.rebuild_se,
@@ -141,8 +150,8 @@ fn run(arguments: Arguments) -> Result<()> {
 	let mapped_layer = load_layer(&arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
 
-	let logical = load_base(&base, arguments.format)?;
-	let region = BootRegion::parse(&logical.bytes)?;
+	let base = load_base(&base, arguments.format, policy(arguments.strict))?;
+	let region = base.boot_region();
 	let output_size = shadowboot::output_size(&region)?;
 	let layer = BootLayer {
 		sb: mapped_layer.boot.sb.as_deref(),
@@ -171,9 +180,10 @@ fn run(arguments: Arguments) -> Result<()> {
 	let report = shadowboot::compile(&region, &mut output, &layer)?;
 	output.flush().map_err(|source| io_error("flush temporary output", &arguments.output, source))?;
 	drop(output);
+	print_warnings(&report.warnings);
+	reject_warnings(&report.warnings, policy(arguments.strict))?;
 	temporary.persist(&arguments.output).map_err(|error| io_error("replace output", &arguments.output, error.error))?;
 
-	print_warnings(&report.warnings);
 	println!(
 		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-signed={}",
 		arguments.output.display(),
@@ -185,11 +195,23 @@ fn run(arguments: Arguments) -> Result<()> {
 	Ok(())
 }
 
-fn load_base(base: &[u8], format: FormatSelection) -> Result<LogicalImage<'_>> {
-	let logical = xflash::format::load(base, format, Extent::BootRegion)?;
-	print_warnings(&logical.warnings);
+fn policy(strict: bool) -> IntegrityPolicy {
+	if strict { IntegrityPolicy::Deny } else { IntegrityPolicy::Ignore }
+}
 
-	Ok(logical)
+fn load_base(base: &[u8], format: FormatSelection, policy: IntegrityPolicy) -> Result<FlashImage> {
+	let image: Checked<FlashImage> = FlashImage::open(&SliceSource(base), base.len() as u64, format)?;
+	print_warnings(image.warnings());
+
+	Ok(image.resolve(policy)?)
+}
+
+/// Fails on the shadowboot warnings when the policy denies failed integrity checks.
+fn reject_warnings(warnings: &[shadowboot::Warning], policy: IntegrityPolicy) -> Result<()> {
+	match policy {
+		IntegrityPolicy::Deny if !warnings.is_empty() => Err(CliError::Integrity { count: warnings.len() }),
+		IntegrityPolicy::Deny | IntegrityPolicy::Ignore => Ok(()),
+	}
 }
 
 fn print_warnings<W>(warnings: &[W])
@@ -210,17 +232,18 @@ where
 struct CompileArguments {
 	base: PathBuf,
 	format: FormatSelection,
+	strict: bool,
 	layer: PathBuf,
 	output: PathBuf,
 	rebuild_se: bool,
 }
 
 /// Writes the hypervisor and kernel of the base SE as a layer's boot inputs.
-fn extract(base: &[u8], format: FormatSelection, directory: &Path) -> Result<()> {
-	let logical = load_base(base, format)?;
-	let region = BootRegion::parse(&logical.bytes)?;
-	let extracted = shadowboot::payload(&region)?;
+fn extract(base: &[u8], format: FormatSelection, policy: IntegrityPolicy, directory: &Path) -> Result<()> {
+	let base = load_base(base, format, policy)?;
+	let extracted = shadowboot::payload(&base.boot_region())?;
 	print_warnings(&extracted.warnings);
+	reject_warnings(&extracted.warnings, policy)?;
 	let boot = directory.join("boot");
 	fs::create_dir_all(&boot).map_err(|source| io_error("create directory", &boot, source))?;
 	let payload = &extracted.payload;

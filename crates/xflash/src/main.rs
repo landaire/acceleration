@@ -13,17 +13,16 @@ use clap::Subcommand;
 use memmap2::Mmap;
 use rootcause::prelude::ResultExt;
 use same_file::Handle;
+use sfcx::Checked;
+use sfcx::FlashImage;
+use sfcx::FormatSelection;
+use sfcx::IntegrityError;
+use sfcx::IntegrityPolicy;
+use sfcx::SfcxError;
+use sfcx::io::SliceSource;
 use thiserror::Error;
 use tracing::info_span;
 use tracing_subscriber::EnvFilter;
-use xflash::Image;
-use xflash::ParseError;
-use xflash::VisitError;
-use xflash::format::Extent;
-use xflash::format::FormatError;
-use xflash::format::FormatSelection;
-use xflash::format::ImageFormat;
-use xflash::raw::RawWarning;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
@@ -38,6 +37,10 @@ struct Arguments {
 	/// Image format
 	#[arg(long, value_enum, default_value_t = FormatSelection::Auto)]
 	format: FormatSelection,
+
+	/// Treat failed integrity checks, such as ECC mismatches, as errors instead of warnings
+	#[arg(long)]
+	strict: bool,
 
 	#[command(subcommand)]
 	command: Command,
@@ -66,9 +69,9 @@ enum CliError {
 		source: io::Error,
 	},
 	#[error(transparent)]
-	Parse(#[from] ParseError),
+	Flash(#[from] SfcxError),
 	#[error(transparent)]
-	Format(#[from] FormatError),
+	Integrity(#[from] IntegrityError),
 	#[error("root file {name:?} was not found")]
 	FileNotFound { name: String },
 	#[error("boot stage {name:?} was not found")]
@@ -126,33 +129,40 @@ fn run() -> Result<()> {
 	let map = unsafe { Mmap::map(&file) }
 		.map_err(|source| CliError::MapImage { path: arguments.image.clone(), source })
 		.into_report()?;
-	let logical = xflash::format::load(&map, arguments.format, Extent::Device).map_err(CliError::from).into_report()?;
-	print_warnings(&logical.warnings);
-	let image = Image::parse(&logical.bytes).map_err(CliError::from).into_report()?;
+	let source = SliceSource(&map[..]);
+	let policy = if arguments.strict { IntegrityPolicy::Deny } else { IntegrityPolicy::Ignore };
+	let image = FlashImage::open(&source, map.len() as u64, arguments.format).map_err(CliError::from).into_report()?;
+	let image = resolve(image, policy)?;
 
 	match arguments.command {
-		Command::Info => print_info(&image, logical.format),
-		Command::List => list_root(&image)?,
-		Command::ExtractFile { name, output } => extract_file(&image, &file, &arguments.image, &name, output)?,
+		Command::Info => print_info(&image),
+		Command::List => list_root(&image, &source, policy)?,
+		Command::ExtractFile { name, output } => {
+			extract_file(&image, &source, policy, &file, &arguments.image, &name, output)?
+		}
 		Command::ExtractStage { name, output } => extract_stage(&image, &file, &arguments.image, &name, output)?,
 	}
 	Ok(())
 }
 
-fn print_warnings(warnings: &[RawWarning]) {
+/// Reports the failed integrity checks of `checked` and applies `policy` to them.
+fn resolve<T>(checked: Checked<T>, policy: IntegrityPolicy) -> Result<T> {
 	const SHOWN: usize = 16;
 
 	let style = Style::new().bold().fg_color(Some(AnsiColor::Yellow.into()));
+	let warnings = checked.warnings();
 	for warning in warnings.iter().take(SHOWN) {
 		anstream::eprintln!("xflash: {style}warning{style:#}: {warning}");
 	}
 	if warnings.len() > SHOWN {
 		anstream::eprintln!("xflash: {style}warning{style:#}: {} more warnings", warnings.len() - SHOWN);
 	}
+
+	checked.resolve(policy).map_err(CliError::from).into_report()
 }
 
-fn print_info(image: &Image<'_>, format: ImageFormat) {
-	println!("format={format}");
+fn print_info(image: &FlashImage) {
+	println!("format={}", image.format());
 	let boot_region = image.boot_region();
 	let header = boot_region.header();
 	println!(
@@ -175,48 +185,46 @@ fn print_info(image: &Image<'_>, format: ImageFormat) {
 	}
 }
 
-fn list_root(image: &Image<'_>) -> Result<()> {
-	for entry in image.root_entries() {
-		let entry = entry.map_err(CliError::from).into_report()?;
+fn list_root(image: &FlashImage, source: &SliceSource<&[u8]>, policy: IntegrityPolicy) -> Result<()> {
+	let filesystem = resolve(image.filesystem(source).map_err(CliError::from).into_report()?, policy)?;
+	for entry in filesystem.entries() {
 		println!(
 			"{}\t{:#06x}\t{}\t{:#010x}",
 			entry.name(),
 			entry.start_cluster().get(),
-			entry.size().get(),
+			entry.size(),
 			entry.timestamp(),
 		);
 	}
 	Ok(())
 }
 
-fn extract_file(image: &Image<'_>, image_file: &File, image_path: &Path, name: &str, output: PathBuf) -> Result<()> {
+fn extract_file(
+	image: &FlashImage,
+	source: &SliceSource<&[u8]>,
+	policy: IntegrityPolicy,
+	image_file: &File,
+	image_path: &Path,
+	name: &str,
+	output: PathBuf,
+) -> Result<()> {
 	let span = info_span!("extract_file", file = name, output = %output.display());
 	span.in_scope(|| {
-		let entry = image
-			.find_root_entry(name)
-			.map_err(CliError::from)
-			.into_report()?
+		let filesystem = resolve(image.filesystem(source).map_err(CliError::from).into_report()?, policy)?;
+		let entry = filesystem
+			.find(name)
 			.ok_or_else(|| rootcause::Report::new(CliError::FileNotFound { name: name.to_owned() }))?;
+		let data = resolve(image.read_file(source, &filesystem, entry).map_err(CliError::from).into_report()?, policy)?;
 		let mut file = create_output(image_file, image_path, &output)?;
-		image
-			.visit_file(entry, |chunk| {
-				file.write_all(chunk).map_err(|source| CliError::WriteOutput { path: output.clone(), source })
-			})
-			.map_err(|error| match error {
-				VisitError::Parse(source) => CliError::Parse(source),
-				VisitError::Consumer(source) => source,
-			})
-			.into_report()?;
+		file.write_all(&data).map_err(|source| CliError::WriteOutput { path: output, source }).into_report()?;
 		Ok(())
 	})
 }
 
-fn extract_stage(image: &Image<'_>, image_file: &File, image_path: &Path, name: &str, output: PathBuf) -> Result<()> {
+fn extract_stage(image: &FlashImage, image_file: &File, image_path: &Path, name: &str, output: PathBuf) -> Result<()> {
 	let boot_region = image.boot_region();
 	let stage = boot_region
-		.boot_stages()
-		.iter()
-		.find(|stage| stage.name_str().eq_ignore_ascii_case(name))
+		.find_stage(name)
 		.ok_or_else(|| rootcause::Report::new(CliError::StageNotFound { name: name.to_owned() }))?;
 	let mut file = create_output(image_file, image_path, &output)?;
 	file.write_all(boot_region.boot_stage_data(stage))

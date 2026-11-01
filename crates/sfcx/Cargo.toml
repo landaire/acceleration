@@ -1,0 +1,34 @@
+[package]
+name = "sfcx"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
+authors = ["Lander Brandt"]
+description = "Sans-io reader for Xbox 360 NAND flash images: logical or raw, boot chain, and file system"
+repository = "https://github.com/landaire/acceleration"
+readme = "README.md"
+keywords = ["xbox360", "flash", "nand", "xbox", "parser"]
+categories = ["parser-implementations"]
+include = ["src/**", "README.md"]
+
+[features]
+default = []
+clap = ["dep:clap"]
+vfs = ["dep:vfs"]
+async-vfs = ["vfs", "fskit/async-vfs", "dep:async-trait", "dep:futures"]
+
+[dependencies]
+fskit = { workspace = true }
+thiserror = { workspace = true }
+winnow = { version = "1.0.4", default-features = false, features = ["binary", "parser"] }
+clap = { version = "4.6.1", features = ["derive"], optional = true }
+vfs = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

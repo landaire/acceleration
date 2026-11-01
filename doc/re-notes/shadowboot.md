@@ -16,7 +16,7 @@ This is a persistent flash update path, not a shadowboot path.
 
 `magicboot` is also not a demonstrated shadowboot loader. Its handler at `0x91f49de0` parses title reboot fields (`warm`, `cold`, `wait`, `stop`, `title`, `directory`, and `cmdline`) and enters the title-reboot path.
 
-The `xflash` crate has no image writer and no device access. It maps an existing host file read-only and can only inspect or extract bytes to a separate host file. The `shadowboot` compiler writes only a separate host output assembled from that mapped base.
+The `sfcx` crate and the `xflash` command have no image writer and no device access. `xflash` maps an existing host file read-only and can only inspect or extract bytes to a separate host file. The `shadowboot` compiler writes only a separate host output assembled from that mapped base.
 
 ## Read-only acquisition performed
 
