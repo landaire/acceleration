@@ -36,12 +36,12 @@ jobs:
           - os: ubuntu-latest
             container: quay.io/pypa/manylinux_2_28_x86_64
             artifact: linux_x86_64
-          # Single macos-14 (arm64 host) cross-compiles for both
+          # Single macos-15 (arm64 host) cross-compiles for both
           # aarch64 and x86_64, lipo's the result into a fat static
           # archive, and feeds it into a universal2 wheel. macos-13
           # (Intel) hosted runners have been effectively deprecated
           # and reliably fail to pick up jobs.
-          - os: macos-14
+          - os: macos-15
             artifact: macos_universal2
           - os: windows-2022
             artifact: windows_x86_64
@@ -81,13 +81,13 @@ jobs:
       # covering Apple Silicon and Intel Macs with one artifact.
       # Other platforms use cargo's default host-target build.
       - name: Add macOS x86_64 target
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
       - name: Build xex2-ffi (static, universal on macOS)
         shell: bash
         run: |
-          if [[ "${{ matrix.os }}" == "macos-14" ]]; then
+          if [[ "${{ matrix.os }}" == "macos-15" ]]; then
               cargo build -p xex2-ffi --release --target aarch64-apple-darwin
               cargo build -p xex2-ffi --release --target x86_64-apple-darwin
               mkdir -p target/release
@@ -135,7 +135,7 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: linux_x86_64
-          - os: macos-14
+          - os: macos-15
             artifact: macos_universal2
           - os: windows-2022
             artifact: windows_x86_64
