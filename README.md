@@ -32,6 +32,16 @@ Libraries and tools for Xbox 360 file formats.
 
 Each [GitHub release](https://github.com/landaire/acceleration/releases) has an archive for Linux x86_64, macOS arm64 and Windows x86_64 with `acceleration`, `acceleration_ui`, `xex2ool`, `xflash` and `shadowboot`. The published tools also install from crates.io, for example `cargo install xex2ool`.
 
+Once a day, if `main` has moved since the last nightly, its head is published as a nightly pre-release tagged `nightly-YYYY-MM-DD-COMMIT`. Nightlies are kept, so you can pin one the same way as a versioned release.
+
+### DotSlash
+
+Each release, nightlies included, also has a [DotSlash](https://dotslash-cli.com/) file for every tool. A DotSlash file names the archive for each platform with its size and hash, so checking it into your repository pins the tool to that release. Download the file, for example `xflash`, from the release, make it executable, and run it like the tool:
+
+```text
+./xflash /path/to/nand.bin info
+```
+
 ### Nix
 
 The flake builds `acceleration`, `xex2ool`, `xflash` and `shadowboot` from source on x86_64 and aarch64 Linux and on macOS arm64. The package of each tool has its name; `default` has all four.

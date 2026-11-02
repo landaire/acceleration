@@ -1,0 +1,39 @@
+{
+  "outputs": {
+    "acceleration": {
+      "platforms": {
+        "linux-x86_64": { "regex": "^acceleration-.+-x86_64-unknown-linux-gnu\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/acceleration" },
+        "macos-aarch64": { "regex": "^acceleration-.+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/acceleration" },
+        "windows-x86_64": { "regex": "^acceleration-.+-x86_64-pc-windows-msvc\\.zip$", "format": "zip", "path": "acceleration/acceleration.exe" }
+      }
+    },
+    "acceleration_ui": {
+      "platforms": {
+        "linux-x86_64": { "regex": "^acceleration-.+-x86_64-unknown-linux-gnu\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/acceleration_ui" },
+        "macos-aarch64": { "regex": "^acceleration-.+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/acceleration_ui" },
+        "windows-x86_64": { "regex": "^acceleration-.+-x86_64-pc-windows-msvc\\.zip$", "format": "zip", "path": "acceleration/acceleration_ui.exe" }
+      }
+    },
+    "shadowboot": {
+      "platforms": {
+        "linux-x86_64": { "regex": "^acceleration-.+-x86_64-unknown-linux-gnu\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/shadowboot" },
+        "macos-aarch64": { "regex": "^acceleration-.+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/shadowboot" },
+        "windows-x86_64": { "regex": "^acceleration-.+-x86_64-pc-windows-msvc\\.zip$", "format": "zip", "path": "acceleration/shadowboot.exe" }
+      }
+    },
+    "xex2ool": {
+      "platforms": {
+        "linux-x86_64": { "regex": "^acceleration-.+-x86_64-unknown-linux-gnu\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/xex2ool" },
+        "macos-aarch64": { "regex": "^acceleration-.+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/xex2ool" },
+        "windows-x86_64": { "regex": "^acceleration-.+-x86_64-pc-windows-msvc\\.zip$", "format": "zip", "path": "acceleration/xex2ool.exe" }
+      }
+    },
+    "xflash": {
+      "platforms": {
+        "linux-x86_64": { "regex": "^acceleration-.+-x86_64-unknown-linux-gnu\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/xflash" },
+        "macos-aarch64": { "regex": "^acceleration-.+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/xflash" },
+        "windows-x86_64": { "regex": "^acceleration-.+-x86_64-pc-windows-msvc\\.zip$", "format": "zip", "path": "acceleration/xflash.exe" }
+      }
+    }
+  }
+}

@@ -6,8 +6,10 @@ Usage: build_defs/package_release.py --version VERSION --target TRIPLE
 
 Runs from the repository root. The executables are the `rust_binary` rules
 of the workspace crates. The archive, `acceleration-VERSION-TRIPLE.zip` on
-Windows and `.tar.gz` elsewhere, holds one directory with the executables,
-README.md and the license files. Prints the archive path.
+Windows and `.tar.gz` elsewhere, holds an `acceleration` directory with the
+executables, README.md and the license files. The directory name carries no
+version, so a tool has the same path in every release; the DotSlash files in
+.github/dotslash-config.json depend on it. Prints the archive path.
 """
 
 import argparse
@@ -83,11 +85,11 @@ def main():
     args = parser.parse_args()
 
     executables = build_executables(args.buck2)
-    directory = f"acceleration-{args.version}-{args.target}"
+    name = f"acceleration-{args.version}-{args.target}"
     extension = ".zip" if "windows" in args.target else ".tar.gz"
-    archive = args.out_dir.resolve() / (directory + extension)
+    archive = args.out_dir.resolve() / (name + extension)
     archive.parent.mkdir(parents=True, exist_ok=True)
-    write_archive(archive, directory, executables + [ROOT / name for name in DOCUMENTS])
+    write_archive(archive, "acceleration", executables + [ROOT / name for name in DOCUMENTS])
     print(archive)
     return 0
 
