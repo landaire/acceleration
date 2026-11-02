@@ -52,6 +52,7 @@ jobs:
         with:
           files: dist/*
           fail_on_unmatched_files: true
+          body_path: .github/release-assets.md
           generate_release_notes: true
 
       - uses: facebook/dotslash-publish-release@v2

@@ -72,12 +72,17 @@ jobs:
           HEAD: ${{ needs.check.outputs.head }}
           TAG: ${{ needs.check.outputs.tag }}
         run: |
+          {
+            echo "Built from $HEAD. Nightly builds are not versioned releases."
+            echo
+            cat .github/release-assets.md
+          } > notes.md
           gh release create "$TAG" dist/* \
             --prerelease \
             --latest=false \
             --target "$HEAD" \
             --title "Nightly ${TAG#nightly-}" \
-            --notes "Built from $HEAD. Nightly builds are not versioned releases."
+            --notes-file notes.md
 
       - uses: facebook/dotslash-publish-release@v2
         env:

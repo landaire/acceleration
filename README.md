@@ -30,17 +30,27 @@ Libraries and tools for Xbox 360 file formats.
 
 ## Executables
 
-Each [GitHub release](https://github.com/landaire/acceleration/releases) has an archive for Linux x86_64, macOS arm64 and Windows x86_64 with `acceleration`, `acceleration_ui`, `xex2ool`, `xflash` and `shadowboot`. The published tools also install from crates.io, for example `cargo install xex2ool`.
+Each [GitHub release](https://github.com/landaire/acceleration/releases) has an archive for each platform with `acceleration`, `acceleration_ui`, `xex2ool`, `xflash` and `shadowboot`. The published tools also install from crates.io, for example `cargo install xex2ool`.
+
+| File | Contents |
+|---|---|
+| `acceleration-<tag>-x86_64-unknown-linux-gnu.tar.gz` | Executables for Linux x86_64 |
+| `acceleration-<tag>-aarch64-apple-darwin.tar.gz` | Executables for macOS arm64 |
+| `acceleration-<tag>-x86_64-pc-windows-msvc.zip` | Executables for Windows x86_64 |
+| `acceleration`, `acceleration_ui`, `shadowboot`, `xex2ool`, `xflash` | DotSlash files for every platform |
 
 Once a day, if `main` has moved since the last nightly, its head is published as a nightly pre-release tagged `nightly-YYYY-MM-DD-COMMIT`. Nightlies are kept, so you can pin one the same way as a versioned release.
 
 ### DotSlash
 
-Each release, nightlies included, also has a [DotSlash](https://dotslash-cli.com/) file for every tool. A DotSlash file names the archive for each platform with its size and hash, so checking it into your repository pins the tool to that release. Download the file, for example `xflash`, from the release, make it executable, and run it like the tool:
+The files without an extension are [DotSlash](https://dotslash-cli.com/) files, not executables. Each one is a small text file that names the archive for each platform with its size and hash. With DotSlash installed, a DotSlash file runs like the tool itself. DotSlash downloads the archive for your platform, checks it, and caches it. Checking the file into your repository pins the tool to that release.
 
 ```text
+chmod +x xflash
 ./xflash /path/to/nand.bin info
 ```
+
+On Windows, run `dotslash xflash /path/to/nand.bin info`.
 
 ### Nix
 
