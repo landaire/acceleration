@@ -11,6 +11,7 @@ use crate::io::ReadAt;
 use crate::machine::Machine;
 use crate::machine::Step;
 use crate::machine::expect_len;
+use crate::volume::MAXIMUM_READ_SIZE;
 use crate::volume::Volume;
 
 impl Volume {
@@ -46,7 +47,8 @@ impl Volume {
 	}
 }
 
-/// Reads source ranges and returns their bytes concatenated.
+/// Reads source ranges and returns their bytes concatenated, at most [`MAXIMUM_READ_SIZE`] bytes
+/// per read.
 #[derive(Debug)]
 pub struct ReadRanges {
 	ranges: VecDeque<Range<u64>>,
@@ -77,9 +79,14 @@ impl Machine for ReadRanges {
 		assert!(self.requested.is_none(), "ReadRanges stepped before the requested read was fed");
 		assert!(self.bytes.is_some(), "ReadRanges stepped after completion");
 
-		let Some(range) = self.ranges.pop_front() else {
+		let Some(mut range) = self.ranges.pop_front() else {
 			return Ok(Step::Done(self.bytes.take().expect("checked above")));
 		};
+		if range.end - range.start > MAXIMUM_READ_SIZE {
+			let split = range.start + MAXIMUM_READ_SIZE;
+			self.ranges.push_front(split..range.end);
+			range.end = split;
+		}
 		self.requested = Some(range.clone());
 
 		Ok(Step::Read(range))

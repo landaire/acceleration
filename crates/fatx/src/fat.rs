@@ -182,13 +182,18 @@ impl fmt::Debug for Fat {
 
 /// The entry of `cluster` in a FAT stored as `table`, or `None` past the end of the table.
 pub(crate) fn decode_entry(width: FatWidth, table: &[u8], cluster: ClusterNumber) -> Option<FatEntry> {
+	let size = width.entry_size() as usize;
+	let offset = usize::try_from(cluster.get()).ok()?.checked_mul(size)?;
+
+	table.get(offset..offset + size).map(|bytes| decode_bytes(width, bytes))
+}
+
+/// The entry stored in `bytes`, one entry of `width`.
+pub(crate) fn decode_bytes(width: FatWidth, bytes: &[u8]) -> FatEntry {
 	const FREE: u32 = 0;
 	const LAST: u32 = u32::MAX;
 	const RESERVED_16: u16 = 0xfff0;
 
-	let size = width.entry_size() as usize;
-	let offset = usize::try_from(cluster.get()).ok()?.checked_mul(size)?;
-	let bytes = table.get(offset..offset + size)?;
 	let value = match width {
 		FatWidth::Fat16 => {
 			let value = u16::from_be_bytes([bytes[0], bytes[1]]);
@@ -198,9 +203,9 @@ pub(crate) fn decode_entry(width: FatWidth, table: &[u8], cluster: ClusterNumber
 		FatWidth::Fat32 => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
 	};
 
-	Some(match value {
+	match value {
 		FREE => FatEntry::Free,
 		LAST => FatEntry::Last,
 		next => FatEntry::Link(next),
-	})
+	}
 }

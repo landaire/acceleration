@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::ops::Range;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use fatx::ReadAt;
 
@@ -31,10 +33,15 @@ impl Image {
 
 	pub fn write(&mut self, offset: u64, bytes: &[u8]) {
 		assert!(offset + bytes.len() as u64 <= self.length, "write past the image");
-		for (index, byte) in bytes.iter().enumerate() {
-			let position = offset + index as u64;
+		let mut position = offset;
+		let mut rest = bytes;
+		while !rest.is_empty() {
+			let within = (position % PAGE) as usize;
+			let length = rest.len().min(PAGE as usize - within);
 			let page = self.pages.entry(position / PAGE).or_insert_with(|| vec![0; PAGE as usize]);
-			page[(position % PAGE) as usize] = *byte;
+			page[within..within + length].copy_from_slice(&rest[..length]);
+			rest = &rest[length..];
+			position += length as u64;
 		}
 	}
 
@@ -62,6 +69,34 @@ impl ReadAt for Image {
 		}
 
 		Ok(self.read(range))
+	}
+}
+
+/// A source that fails any read longer than `limit` and records the longest read.
+#[derive(Debug)]
+pub struct BoundedReads<'a> {
+	pub image: &'a Image,
+	pub limit: u64,
+	pub longest: AtomicU64,
+}
+
+impl<'a> BoundedReads<'a> {
+	pub fn new(image: &'a Image, limit: u64) -> Self {
+		Self { image, limit, longest: AtomicU64::new(0) }
+	}
+
+	pub fn longest(&self) -> u64 {
+		self.longest.load(Ordering::Relaxed)
+	}
+}
+
+impl ReadAt for BoundedReads<'_> {
+	fn read_at(&self, context: &(), range: Range<u64>) -> io::Result<impl AsRef<[u8]>> {
+		let length = range.end - range.start;
+		assert!(length <= self.limit, "a read of {length:#x} bytes exceeds the {:#x}-byte limit", self.limit);
+		self.longest.fetch_max(length, Ordering::Relaxed);
+
+		ReadAt::read_at(self.image, context, range)
 	}
 }
 

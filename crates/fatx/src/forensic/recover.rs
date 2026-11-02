@@ -22,6 +22,7 @@ use crate::io::ReadAt;
 use crate::machine::Machine;
 use crate::machine::Step;
 use crate::machine::expect_len;
+use crate::volume::MAXIMUM_READ_SIZE;
 use crate::volume::Volume;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +137,7 @@ impl Volume {
 
 	/// A machine that recovers a deleted file's data with `strategy`, holding all of it.
 	pub fn recoverer(&self, record: &EntryRecord, strategy: RecoveryStrategy) -> Result<RecoverDeleted, FatxError> {
-		Ok(RecoverDeleted::new(self.recovery_reader(record, strategy, u64::MAX)?))
+		Ok(RecoverDeleted::new(self.recovery_reader(record, strategy, MAXIMUM_READ_SIZE)?))
 	}
 
 	/// A machine that recovers `size` bytes from the consecutive clusters from `first`, for data
@@ -147,11 +148,11 @@ impl Volume {
 		size: u32,
 		strategy: RecoveryStrategy,
 	) -> Result<RecoverDeleted, FatxError> {
-		Ok(RecoverDeleted::new(self.cluster_recovery_reader(first, size, strategy, u64::MAX)?))
+		Ok(RecoverDeleted::new(self.cluster_recovery_reader(first, size, strategy, MAXIMUM_READ_SIZE)?))
 	}
 
-	/// The reads of a deleted file's recovery, each at most `chunk_size` bytes, for a caller
-	/// that writes the data out as it reads it.
+	/// The reads of a deleted file's recovery, each at most `chunk_size` bytes and never more
+	/// than [`MAXIMUM_READ_SIZE`], for a caller that writes the data out as it reads it.
 	pub fn recovery_reader(
 		&self,
 		record: &EntryRecord,
@@ -164,7 +165,7 @@ impl Volume {
 	}
 
 	/// The reads of a recovery of `size` bytes from the consecutive clusters from `first`, each at
-	/// most `chunk_size` bytes.
+	/// most `chunk_size` bytes and never more than [`MAXIMUM_READ_SIZE`].
 	pub fn cluster_recovery_reader(
 		&self,
 		first: ClusterNumber,
@@ -184,7 +185,7 @@ impl Volume {
 		chunk_size: u64,
 	) -> Result<RecoveryReader, FatxError> {
 		assert!(chunk_size > 0, "a recovery reads at least one byte at a time");
-		let reads = self.recovery_reads(&plan, chunk_size)?;
+		let reads = self.recovery_reads(&plan, chunk_size.min(MAXIMUM_READ_SIZE))?;
 
 		Ok(RecoveryReader { expected, plan, reads, requested: None, head: Vec::new(), read: 0 })
 	}
@@ -341,6 +342,19 @@ impl RecoveryReader {
 		Ok(())
 	}
 
+	/// Bytes that the pending reads add directly after file offset `end`, so a caller can size a
+	/// segment once instead of growing it chunk by chunk.
+	fn continuing_length(&self, mut end: u64) -> u64 {
+		let start = end;
+		for read in &self.reads {
+			if read.file_offset != end {
+				break;
+			}
+			end += read.range.end - read.range.start;
+		}
+		end - start
+	}
+
 	/// The plan, and the content check of the recovered file's first bytes.
 	pub fn finish(self) -> RecoveryAssessment {
 		assert!(self.requested.is_none() && self.reads.is_empty(), "RecoveryReader finished before its last read");
@@ -392,8 +406,20 @@ impl Machine for RecoverDeleted {
 
 	fn feed(&mut self, bytes: &[u8]) -> Result<(), FatxError> {
 		let file_offset = self.requested.take().expect("RecoverDeleted fed without a requested read");
-		self.reader.as_mut().expect("reader present while a read is requested").accept(bytes)?;
-		self.segments.push(RecoveredSegment { file_offset, bytes: bytes.to_vec() });
+		let reader = self.reader.as_mut().expect("reader present while a read is requested");
+		reader.accept(bytes)?;
+		match self.segments.last_mut() {
+			Some(last) if last.file_offset + last.bytes.len() as u64 == file_offset => {
+				last.bytes.extend_from_slice(bytes)
+			}
+			_ => {
+				let end = file_offset + bytes.len() as u64;
+				let capacity = bytes.len() as u64 + reader.continuing_length(end);
+				let mut segment = Vec::with_capacity(capacity as usize);
+				segment.extend_from_slice(bytes);
+				self.segments.push(RecoveredSegment { file_offset, bytes: segment });
+			}
+		}
 
 		Ok(())
 	}

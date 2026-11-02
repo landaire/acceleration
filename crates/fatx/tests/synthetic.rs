@@ -1,5 +1,6 @@
 mod common;
 
+use common::BoundedReads;
 use common::Builder;
 use common::Image;
 use common::Record;
@@ -15,6 +16,7 @@ use fatx::FatWidth;
 use fatx::FatxError;
 use fatx::GeometryError;
 use fatx::Listing;
+use fatx::MAXIMUM_READ_SIZE;
 use fatx::PartitionKind;
 use fatx::Volume;
 use fatx::VolumeOptions;
@@ -689,6 +691,74 @@ fn names_that_make_the_path_too_long_are_skipped() {
 			location: fatx::EntryLocation { cluster: cluster(parent), offset: 0x40 },
 			reason: InvalidEntryReason::PathTooLong { length: 35, maximum: 34 },
 		}]
+	);
+}
+
+/// A FAT32 volume whose FAT is larger than one read: a file whose chain crosses the first FAT
+/// read, and a contiguous file larger than one read.
+fn large_fat_volume() -> (Builder, u64, Vec<u8>, Vec<u8>) {
+	// 0x140001 four-byte entries: a 0x501000-byte FAT.
+	const PARTITION: u64 = 0x1_4000_0000;
+	// FAT entry 0x100000 starts the second read.
+	const CROSSING: [u32; 3] = [0x000f_ffff, 0x0010_0000, 0x0010_0001];
+
+	let mut builder = Builder::new(PARTITION, 8);
+	let crossing = pattern(7, 3 * CLUSTER);
+	builder.record(1, 0, Record::file("crossing.bin", CROSSING[0], crossing.len() as u32));
+	builder.file(&CROSSING, &crossing);
+	let large = pattern(9, MAXIMUM_READ_SIZE as usize + CLUSTER);
+	let large_clusters: Vec<u32> = (2..2 + (large.len() / CLUSTER) as u32).collect();
+	builder.record(1, 1, Record::file("large.bin", 2, large.len() as u32));
+	builder.file(&large_clusters, &large);
+	builder.record(1, 2, Record::file("old.bin", 2, large.len() as u32).deleted());
+
+	(builder, PARTITION, crossing, large)
+}
+
+#[test]
+fn every_read_fits_the_maximum_read_size() {
+	let (builder, partition, crossing, large) = large_fat_volume();
+	let source = BoundedReads::new(&builder.image, MAXIMUM_READ_SIZE);
+
+	let volume = Volume::open(&source, 0..partition).unwrap();
+	assert_eq!(volume.geometry().fat_width(), FatWidth::Fat32);
+	assert!(volume.geometry().fat_length() > MAXIMUM_READ_SIZE);
+	assert_eq!(source.longest(), MAXIMUM_READ_SIZE);
+
+	let listing = volume.walk(&source).unwrap().deny_warnings().unwrap();
+	assert_eq!(paths(&listing), ["/crossing.bin", "/large.bin"]);
+	assert_eq!(volume.read_file(&source, listing.find("/crossing.bin").unwrap().record()).unwrap(), crossing);
+	assert_eq!(volume.read_file(&source, listing.find("/large.bin").unwrap().record()).unwrap(), large);
+
+	let recovery = volume.recover(&source, listing.deleted()[0].record(), RecoveryStrategy::Contiguous).unwrap();
+	assert_eq!(recovery.segments.len(), 1);
+	assert_eq!(recovery.segments[0].bytes, large);
+
+	// A volume file holding the FAT, with the partition length inferred from it. The prefix the
+	// inference reads is longer than one read.
+	let length = builder.cluster_offset(2);
+	let image = file_prefix(&builder, length);
+	let source = BoundedReads::new(&image, MAXIMUM_READ_SIZE);
+	let inference = Volume::infer_partition_length(&source, 0..length, PartitionKind::Standard).unwrap();
+	assert_eq!(inference.fat_length(), volume.geometry().fat_length());
+}
+
+#[test]
+fn plain_geometry_check_reads_no_whole_fat() {
+	let (builder, partition, _, _) = large_fat_volume();
+	let source = BoundedReads::new(&builder.image, 0x1000);
+
+	let evidence = Volume::check_geometry(&source, 0..partition, VolumeOptions::new()).unwrap().unwrap();
+	assert_eq!(evidence, RootEvidence { fat_entry: FatEntry::Last, live_records: 2, deleted_records: 1 });
+
+	// The volume file's own length gives a 16-bit FAT that places the root directory inside the
+	// real 32-bit FAT, whose first entry reads as a reserved link.
+	let length = builder.cluster_offset(2);
+	let image = file_prefix(&builder, length);
+	let source = BoundedReads::new(&image, 0x1000);
+	assert_eq!(
+		Volume::check_geometry(&source, 0..length, VolumeOptions::new()).unwrap(),
+		Err(CandidateRejection::RootLinkInvalid { next: 0xffff_fff8 })
 	);
 }
 

@@ -21,6 +21,7 @@
 //! big-endian entries and zero pages seldom parse as live records. An empty root directory
 //! gives no evidence, so the partition length of a volume with an empty root cannot be inferred.
 
+use std::collections::BTreeMap;
 use std::ops::Range;
 
 use thiserror::Error;
@@ -35,6 +36,7 @@ use crate::error::GeometryError;
 use crate::fat::ClusterNumber;
 use crate::fat::FatEntry;
 use crate::fat::FatWidth;
+use crate::fat::decode_bytes;
 use crate::fat::decode_entry;
 use crate::io;
 use crate::io::AsyncReadAt;
@@ -45,6 +47,7 @@ use crate::machine::expect_len;
 use crate::volume::Geometry;
 use crate::volume::HEADER_SIZE;
 use crate::volume::MAXIMUM_CLUSTERS_16;
+use crate::volume::MAXIMUM_READ_SIZE;
 use crate::volume::METADATA_SIZE;
 use crate::volume::PartitionKind;
 use crate::volume::Volume;
@@ -138,6 +141,10 @@ pub enum CandidateRejection {
 	UnallocatedFirstCluster { location: EntryLocation, cluster: ClusterNumber },
 	#[error("record at {location} is a directory or a file with data, but stores cluster 0")]
 	MissingFirstCluster { location: EntryLocation },
+	#[error("the root directory cluster lies past the end of the image")]
+	RootOutsideImage,
+	#[error("the FAT lies past the end of the image")]
+	FatOutsideImage,
 }
 
 impl Volume {
@@ -148,7 +155,7 @@ impl Volume {
 			range,
 			kind,
 			prefix: Vec::new(),
-			state: InferState::Reading { header: None, needed: HEADER_SIZE },
+			state: InferState::Reading { header: None, needed: HEADER_SIZE, target: None },
 			requested: None,
 		}
 	}
@@ -178,7 +185,177 @@ impl Volume {
 	}
 }
 
-/// Reads a prefix of a volume file until [`infer_partition_length`] can decide.
+impl Volume {
+	/// A machine that checks the geometry `options` give the volume at `range` against the same
+	/// root directory evidence the inference requires. It reads the header, the root
+	/// directory's first cluster and the FAT pages that hold the entries the evidence needs,
+	/// not the whole FAT.
+	pub fn geometry_checker(range: Range<u64>, options: VolumeOptions) -> CheckGeometry {
+		CheckGeometry { range, options, state: CheckState::Header, requested: None }
+	}
+
+	/// Checks the geometry `options` give the volume at `range`. The outer error is a failed
+	/// read or an unreadable header; the inner result is the evidence or why it fails.
+	pub fn check_geometry<R>(
+		source: &R,
+		range: Range<u64>,
+		options: VolumeOptions,
+	) -> Result<Result<RootEvidence, CandidateRejection>, FatxError>
+	where
+		R: ReadAt,
+	{
+		io::drive(Self::geometry_checker(range, options), source)
+	}
+
+	pub async fn check_geometry_async<R>(
+		source: &R,
+		range: Range<u64>,
+		options: VolumeOptions,
+	) -> Result<Result<RootEvidence, CandidateRejection>, FatxError>
+	where
+		R: AsyncReadAt,
+	{
+		io::drive_async(Self::geometry_checker(range, options), source).await
+	}
+}
+
+/// Checks one geometry's root directory evidence with a few small reads.
+#[derive(Debug)]
+pub struct CheckGeometry {
+	range: Range<u64>,
+	options: VolumeOptions,
+	state: CheckState,
+	requested: Option<Range<u64>>,
+}
+
+#[derive(Debug)]
+enum CheckState {
+	Header,
+	RootCluster {
+		geometry: Geometry,
+	},
+	/// FAT pages by their offset in the volume; `None` until read.
+	FatPages {
+		geometry: Geometry,
+		root: Vec<u8>,
+		pages: BTreeMap<u64, Option<Vec<u8>>>,
+	},
+	Done(Result<RootEvidence, CandidateRejection>),
+	Finished,
+}
+
+impl CheckGeometry {
+	fn image_length(&self) -> u64 {
+		self.range.end.saturating_sub(self.range.start)
+	}
+
+	fn root_range(&self, geometry: &Geometry) -> Range<u64> {
+		let start = geometry.cluster_offset(geometry.root_cluster());
+
+		start..start + u64::from(geometry.bytes_per_cluster())
+	}
+
+	/// The state after the header: the root cluster to read, or a verdict.
+	fn after_header(&self, header: &VolumeHeader) -> CheckState {
+		let partition_length = self.options.partition_length().unwrap_or(self.image_length());
+		let geometry = match Geometry::compute(header, partition_length, self.options.kind()) {
+			Ok(geometry) => geometry,
+			Err(error) => return CheckState::Done(Err(error.into())),
+		};
+		if self.root_range(&geometry).end > self.image_length() {
+			return CheckState::Done(Err(CandidateRejection::RootOutsideImage));
+		}
+
+		CheckState::RootCluster { geometry }
+	}
+
+	/// The state after the root cluster: the FAT pages to read, or a verdict.
+	fn after_root(&self, geometry: Geometry, root: Vec<u8>) -> CheckState {
+		let entry_size = geometry.fat_width().entry_size();
+		let mut pages = BTreeMap::new();
+		for cluster in root_record_clusters(&geometry, &root) {
+			let offset = geometry.fat_offset() + u64::from(cluster.get()) * entry_size;
+			pages.insert(offset - offset % METADATA_SIZE, None);
+		}
+		if pages.keys().any(|page| page + METADATA_SIZE > self.image_length()) {
+			return CheckState::Done(Err(CandidateRejection::FatOutsideImage));
+		}
+
+		CheckState::FatPages { geometry, root, pages }
+	}
+}
+
+impl Machine for CheckGeometry {
+	type Output = Result<RootEvidence, CandidateRejection>;
+	type Error = FatxError;
+
+	fn step(&mut self) -> Result<Step<Self::Output>, FatxError> {
+		assert!(self.requested.is_none(), "CheckGeometry stepped before the requested read was fed");
+
+		let range = match &self.state {
+			CheckState::Header => {
+				if self.image_length() < HEADER_SIZE {
+					return Err(FatxError::ImageTooShort { required: HEADER_SIZE, available: self.image_length() });
+				}
+				0..HEADER_SIZE
+			}
+			CheckState::RootCluster { geometry } => self.root_range(geometry),
+			CheckState::FatPages { pages, .. } => match pages.iter().find(|(_, bytes)| bytes.is_none()) {
+				Some((page, _)) => *page..page + METADATA_SIZE,
+				None => {
+					let CheckState::FatPages { geometry, root, pages } =
+						std::mem::replace(&mut self.state, CheckState::Finished)
+					else {
+						unreachable!("matched FatPages");
+					};
+					let entry_size = geometry.fat_width().entry_size();
+					let entry = |cluster: ClusterNumber| {
+						let offset = geometry.fat_offset() + u64::from(cluster.get()) * entry_size;
+						let page = pages[&(offset - offset % METADATA_SIZE)].as_ref().expect("every page was read");
+						let within = (offset % METADATA_SIZE) as usize;
+						decode_bytes(geometry.fat_width(), &page[within..within + entry_size as usize])
+					};
+					return Ok(Step::Done(assess_root_cluster(&geometry, entry, &root)));
+				}
+			},
+			CheckState::Done(_) => {
+				let CheckState::Done(verdict) = std::mem::replace(&mut self.state, CheckState::Finished) else {
+					unreachable!("matched Done");
+				};
+				return Ok(Step::Done(verdict));
+			}
+			CheckState::Finished => panic!("CheckGeometry stepped after completion"),
+		};
+		let range = self.range.start + range.start..self.range.start + range.end;
+		self.requested = Some(range.clone());
+
+		Ok(Step::Read(range))
+	}
+
+	fn feed(&mut self, bytes: &[u8]) -> Result<(), FatxError> {
+		let range = self.requested.take().expect("CheckGeometry fed without a requested read");
+		expect_len(&range, bytes)?;
+
+		self.state = match std::mem::replace(&mut self.state, CheckState::Finished) {
+			CheckState::Header => {
+				let header = VolumeHeader::parse(bytes.try_into().expect("length checked"))?;
+				self.after_header(&header)
+			}
+			CheckState::RootCluster { geometry } => self.after_root(geometry, bytes.to_vec()),
+			CheckState::FatPages { geometry, root, mut pages } => {
+				let page = range.start - self.range.start;
+				*pages.get_mut(&page).expect("the requested page is listed") = Some(bytes.to_vec());
+				CheckState::FatPages { geometry, root, pages }
+			}
+			CheckState::Done(_) | CheckState::Finished => panic!("CheckGeometry fed after completion"),
+		};
+
+		Ok(())
+	}
+}
+
+/// Reads a prefix of a volume file until [`infer_partition_length`] can decide, in reads of at
+/// most [`MAXIMUM_READ_SIZE`] bytes.
 #[derive(Debug)]
 pub struct InferPartitionLength {
 	range: Range<u64>,
@@ -190,10 +367,12 @@ pub struct InferPartitionLength {
 
 #[derive(Debug)]
 enum InferState {
-	/// The prefix must reach `needed` bytes.
+	/// The prefix must reach `needed` bytes. It grows to `target`, at least twice its length,
+	/// before the inference runs again, so a large FAT needs few inference passes.
 	Reading {
 		header: Option<VolumeHeader>,
 		needed: u64,
+		target: Option<u64>,
 	},
 	Done(PartitionInference),
 	Finished,
@@ -210,13 +389,19 @@ impl Machine for InferPartitionLength {
 	type Error = FatxError;
 
 	fn step(&mut self) -> Result<Step<Self::Output>, FatxError> {
-		// Each read at least doubles the prefix, so a large FAT takes few reads.
 		const FIRST_READ: u64 = 0x10000;
 
 		assert!(self.requested.is_none(), "InferPartitionLength stepped before the requested read was fed");
 
-		let needed = match &self.state {
-			InferState::Reading { needed, .. } => *needed,
+		let available = self.image_length();
+		let start = self.prefix.len() as u64;
+		let target = match &mut self.state {
+			InferState::Reading { needed, target, .. } => {
+				if *needed > available {
+					return Err(FatxError::ImageTooShort { required: *needed, available });
+				}
+				*target.get_or_insert((*needed).max(start * 2).max(FIRST_READ).min(available))
+			}
 			InferState::Done(_) => {
 				let InferState::Done(inference) = std::mem::replace(&mut self.state, InferState::Finished) else {
 					unreachable!("matched Done");
@@ -226,13 +411,7 @@ impl Machine for InferPartitionLength {
 			InferState::Finished => panic!("InferPartitionLength stepped after completion"),
 		};
 
-		let available = self.image_length();
-		if needed > available {
-			return Err(FatxError::ImageTooShort { required: needed, available });
-		}
-
-		let start = self.prefix.len() as u64;
-		let end = needed.max(start * 2).max(FIRST_READ).min(available);
+		let end = target.min(start + MAXIMUM_READ_SIZE);
 		let range = self.range.start + start..self.range.start + end;
 		self.requested = Some(range.clone());
 
@@ -244,9 +423,12 @@ impl Machine for InferPartitionLength {
 		expect_len(&range, bytes)?;
 		self.prefix.extend_from_slice(bytes);
 
-		let InferState::Reading { header, .. } = &self.state else {
+		let InferState::Reading { header, target, .. } = &self.state else {
 			panic!("InferPartitionLength fed after completion");
 		};
+		if target.is_some_and(|target| (self.prefix.len() as u64) < target) {
+			return Ok(());
+		}
 		let header = match header {
 			Some(header) => *header,
 			None => VolumeHeader::parse(self.prefix[..HEADER_SIZE as usize].try_into().expect("the header was read"))?,
@@ -254,7 +436,7 @@ impl Machine for InferPartitionLength {
 
 		self.state = match infer_from_prefix(&header, self.kind, self.image_length(), &self.prefix)? {
 			Progress::Inferred(inference) => InferState::Done(inference),
-			Progress::NeedsPrefix(needed) => InferState::Reading { header: Some(header), needed },
+			Progress::NeedsPrefix(needed) => InferState::Reading { header: Some(header), needed, target: None },
 		};
 
 		Ok(())
@@ -377,13 +559,47 @@ fn candidates(bytes_per_cluster: u32, kind: PartitionKind, image_length: u64) ->
 fn assess_root(geometry: &Geometry, image: &[u8]) -> Result<RootEvidence, CandidateRejection> {
 	let fat_start = geometry.fat_offset() as usize;
 	let fat = &image[fat_start..fat_start + geometry.fat_length() as usize];
-	let allocated = |cluster: ClusterNumber| {
-		geometry.is_data_cluster(cluster)
-			&& decode_entry(geometry.fat_width(), fat, cluster).is_some_and(|entry| entry != FatEntry::Free)
-	};
+	let start = geometry.cluster_offset(geometry.root_cluster()) as usize;
+	let cluster = &image[start..start + geometry.bytes_per_cluster() as usize];
+
+	assess_root_cluster(
+		geometry,
+		|cluster| decode_entry(geometry.fat_width(), fat, cluster).expect("the FAT covers every data cluster"),
+		cluster,
+	)
+}
+
+/// The data clusters whose FAT entries [`assess_root_cluster`] reads: the root directory's and
+/// the first cluster of each live record in the root directory's first cluster.
+fn root_record_clusters(geometry: &Geometry, cluster: &[u8]) -> Vec<ClusterNumber> {
+	let root = geometry.root_cluster();
+	let mut clusters = vec![root];
+	for (index, record) in cluster.as_chunks::<DIRECTORY_ENTRY_SIZE>().0.iter().enumerate() {
+		let location = EntryLocation { cluster: root, offset: (index * DIRECTORY_ENTRY_SIZE) as u32 };
+		match parse_slot(record, location) {
+			Slot::End => break,
+			Slot::Live(record) => {
+				clusters.extend(record.first_cluster().filter(|first| geometry.is_data_cluster(*first)))
+			}
+			Slot::Deleted(_) | Slot::Invalid(_) | Slot::UnreadableDeleted => {
+				// The assessment reads no FAT entry for these.
+			}
+		}
+	}
+
+	clusters
+}
+
+/// The root directory evidence for `geometry`, from the root directory's first cluster and
+/// `entry`, the FAT entry of a data cluster.
+fn assess_root_cluster<F>(geometry: &Geometry, entry: F, cluster: &[u8]) -> Result<RootEvidence, CandidateRejection>
+where
+	F: Fn(ClusterNumber) -> FatEntry,
+{
+	let allocated = |cluster: ClusterNumber| geometry.is_data_cluster(cluster) && entry(cluster) != FatEntry::Free;
 
 	let root = geometry.root_cluster();
-	let fat_entry = decode_entry(geometry.fat_width(), fat, root).expect("the FAT covers every data cluster");
+	let fat_entry = entry(root);
 	match fat_entry {
 		FatEntry::Free => return Err(CandidateRejection::RootClusterFree),
 		FatEntry::Last => {}
@@ -394,8 +610,6 @@ fn assess_root(geometry: &Geometry, image: &[u8]) -> Result<RootEvidence, Candid
 		}
 	}
 
-	let start = geometry.cluster_offset(root) as usize;
-	let cluster = &image[start..start + geometry.bytes_per_cluster() as usize];
 	let mut live_records = 0;
 	let mut deleted_records = 0;
 	for (index, record) in cluster.as_chunks::<DIRECTORY_ENTRY_SIZE>().0.iter().enumerate() {

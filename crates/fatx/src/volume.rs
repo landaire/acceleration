@@ -23,6 +23,11 @@ use crate::machine::expect_len;
 pub const SECTOR_SIZE: u64 = 0x200;
 /// The metadata page: the sector size rounded up to the 4 KiB page. The FAT starts after it.
 pub const METADATA_SIZE: u64 = 0x1000;
+/// The largest read any machine of this crate asks for. A source never has to return more than
+/// this at once, and a large FAT or file arrives in several reads.
+pub const MAXIMUM_READ_SIZE: u64 = 0x40_0000;
+// Directory, update and scan reads cover whole clusters, which this bound keeps within one read.
+const _: () = assert!(128 * SECTOR_SIZE <= MAXIMUM_READ_SIZE);
 
 const SIGNATURE: [u8; 4] = *b"XTAF";
 pub(crate) const HEADER_SIZE: u64 = 0x10;
@@ -285,7 +290,7 @@ impl Volume {
 
 	/// A machine that opens the volume stored at `range` of a source.
 	pub fn opener(range: Range<u64>, options: VolumeOptions) -> OpenVolume {
-		OpenVolume { range, options, state: OpenState::Header, requested: false }
+		OpenVolume { range, options, state: OpenState::Header, requested: None }
 	}
 
 	pub fn open<R>(source: &R, range: Range<u64>) -> Result<Self, FatxError>
@@ -467,20 +472,20 @@ pub(crate) fn push_cluster(runs: &mut Vec<ClusterRun>, cluster: ClusterNumber) {
 	}
 }
 
-/// Reads a volume's header and FAT.
+/// Reads a volume's header and FAT. The FAT arrives in reads of at most
+/// [`MAXIMUM_READ_SIZE`] bytes, appended to one buffer that becomes the volume's table.
 #[derive(Debug)]
 pub struct OpenVolume {
 	range: Range<u64>,
 	options: VolumeOptions,
 	state: OpenState,
-	requested: bool,
+	requested: Option<Range<u64>>,
 }
 
 #[derive(Debug)]
 enum OpenState {
 	Header,
-	Fat { geometry: Geometry },
-	Done(Volume),
+	Fat { geometry: Geometry, table: Vec<u8> },
 	Finished,
 }
 
@@ -511,45 +516,49 @@ impl Machine for OpenVolume {
 	type Error = FatxError;
 
 	fn step(&mut self) -> Result<Step<Self::Output>, FatxError> {
-		assert!(!self.requested, "OpenVolume stepped before the requested read was fed");
+		assert!(self.requested.is_none(), "OpenVolume stepped before the requested read was fed");
 
 		let range = match &self.state {
 			OpenState::Header => self.range.start..self.range.start + HEADER_SIZE,
-			OpenState::Fat { geometry } => self.fat_range(geometry),
-			OpenState::Done(_) => {
-				let OpenState::Done(volume) = std::mem::replace(&mut self.state, OpenState::Finished) else {
-					unreachable!("matched Done");
-				};
-				return Ok(Step::Done(volume));
+			OpenState::Fat { geometry, table } => {
+				let whole = self.fat_range(geometry);
+				let start = whole.start + table.len() as u64;
+				if start == whole.end {
+					let OpenState::Fat { geometry, table } = std::mem::replace(&mut self.state, OpenState::Finished)
+					else {
+						unreachable!("matched Fat");
+					};
+					let fat = Fat::new(geometry.fat_width, table);
+					return Ok(Step::Done(Volume { range: self.range.clone(), geometry, fat }));
+				}
+
+				start..whole.end.min(start + MAXIMUM_READ_SIZE)
 			}
 			OpenState::Finished => panic!("OpenVolume stepped after completion"),
 		};
 		self.require(range.end)?;
-		self.requested = true;
+		self.requested = Some(range.clone());
 
 		Ok(Step::Read(range))
 	}
 
 	fn feed(&mut self, bytes: &[u8]) -> Result<(), FatxError> {
-		assert!(self.requested, "OpenVolume fed without a requested read");
-		self.requested = false;
+		let range = self.requested.take().expect("OpenVolume fed without a requested read");
+		expect_len(&range, bytes)?;
 
-		match std::mem::replace(&mut self.state, OpenState::Finished) {
+		match &mut self.state {
 			OpenState::Header => {
-				expect_len(&(0..HEADER_SIZE), bytes)?;
 				let header = VolumeHeader::parse(bytes.try_into().expect("length checked"))?;
 				// Without an override the image range is the partition, as a partition table gives it.
 				let partition_length = self.options.partition_length.unwrap_or(self.image_length());
 				let geometry = Geometry::compute(&header, partition_length, self.options.kind)?;
-				self.state = OpenState::Fat { geometry };
+				let whole = self.fat_range(&geometry);
+				self.require(whole.end)?;
+				let capacity = usize::try_from(whole.end - whole.start).map_err(|_| FatxError::ReadTooLarge)?;
+				self.state = OpenState::Fat { geometry, table: Vec::with_capacity(capacity) };
 			}
-			OpenState::Fat { geometry } => {
-				let range = self.fat_range(&geometry);
-				expect_len(&range, bytes)?;
-				let fat = Fat::new(geometry.fat_width, bytes.to_vec());
-				self.state = OpenState::Done(Volume { range: self.range.clone(), geometry, fat });
-			}
-			OpenState::Done(_) | OpenState::Finished => panic!("OpenVolume fed after completion"),
+			OpenState::Fat { table, .. } => table.extend_from_slice(bytes),
+			OpenState::Finished => panic!("OpenVolume fed after completion"),
 		}
 
 		Ok(())

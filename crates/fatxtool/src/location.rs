@@ -20,10 +20,11 @@ impl VolumeLocation {
 		Self { range, options, inference: None }
 	}
 
-	/// The volume at `range` of a standard partition, mounted with the partition length that
-	/// its FAT gives. A volume file shorter than its partition, such as a flash `.fdf` file,
-	/// opens with the inferred partition length. When the root directory gives no evidence, the
-	/// range is the partition, as a partition table gives it.
+	/// The volume at `range` of a standard partition. When the range's own length gives a
+	/// geometry whose root directory holds valid evidence, that geometry is used. Otherwise the
+	/// partition length comes from the FAT: a volume file shorter than its partition, such as a
+	/// flash `.fdf` file, opens with the inferred partition length. When the root directory gives
+	/// no evidence either way, the range is the partition, as a partition table gives it.
 	pub fn infer<R>(source: &R, range: Range<u64>) -> Result<Self, FatxError>
 	where
 		R: ReadAt,
@@ -36,8 +37,14 @@ impl VolumeLocation {
 	where
 		R: ReadAt,
 	{
-		let image_length = range.end - range.start;
 		let unextended = VolumeOptions::new().with_kind(kind);
+		// The plain geometry needs a few small reads; the inference reads a prefix up to the
+		// root directory, which for a large FAT is the whole FAT.
+		if Volume::check_geometry(source, range.clone(), unextended)?.is_ok() {
+			return Ok(Self::new(range, unextended));
+		}
+
+		let image_length = range.end - range.start;
 		match Volume::infer_partition_length(source, range.clone(), kind) {
 			Ok(inference) => {
 				let options = if inference.partition_lengths().contains(&image_length) {

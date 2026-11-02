@@ -29,6 +29,7 @@ use crate::io::ReadAt;
 use crate::machine::Machine;
 use crate::machine::Step;
 use crate::machine::expect_len;
+use crate::volume::MAXIMUM_READ_SIZE;
 use crate::volume::Volume;
 use crate::walk::Listing;
 
@@ -42,7 +43,8 @@ impl ScanOptions {
 		Self { read_size: 0x10_0000 }
 	}
 
-	/// Largest read, in bytes. A read always covers at least one cluster.
+	/// Largest read, in bytes. A read always covers at least one cluster, and never more than
+	/// [`MAXIMUM_READ_SIZE`].
 	pub const fn with_read_size(self, read_size: u64) -> Self {
 		Self { read_size }
 	}
@@ -141,7 +143,8 @@ pub struct ScanVolume<'a> {
 impl<'a> ScanVolume<'a> {
 	fn new(volume: &'a Volume, listing: &'a Listing, options: ScanOptions) -> Self {
 		let cluster_size = u64::from(volume.geometry().bytes_per_cluster());
-		let clusters_per_read = (options.read_size / cluster_size).clamp(1, u64::from(u32::MAX)) as u32;
+		let read_size = options.read_size.min(MAXIMUM_READ_SIZE);
+		let clusters_per_read = (read_size / cluster_size).clamp(1, u64::from(u32::MAX)) as u32;
 
 		let mut interest: HashMap<ClusterNumber, Vec<usize>> = HashMap::new();
 		for (index, deleted) in listing.deleted().iter().enumerate() {
