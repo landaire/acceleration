@@ -7,6 +7,12 @@
 //! device that only the caller can reach. [`drive`] and [`drive_async`] run a machine to
 //! completion against a [`ReadAt`] or [`AsyncReadAt`] source.
 //!
+//! A machine that also modifies its source is a [`WriteMachine`]. Its [`Effect::Write`] steps
+//! name bytes to write, in the order they must reach the source. [`drive_write`] and
+//! [`drive_write_async`] run one against a source that implements [`ReadAt`] and [`WriteAt`], or
+//! their async forms. [`MemorySource`] is a writable in-memory image and [`FileSource`] a
+//! writable image file.
+//!
 //! Each crate keeps its own error type as [`Machine::Error`]. A failed or short read is a
 //! [`ReadError`], which the drivers and [`expect_len`] convert into the machine's error.
 //!
@@ -78,6 +84,7 @@
 
 pub mod checked;
 pub mod error;
+pub mod file;
 pub mod io;
 pub mod machine;
 
@@ -86,11 +93,21 @@ pub use checked::IntegrityError;
 pub use checked::IntegrityPolicy;
 pub use error::ReadError;
 pub use error::ReadErrorKind;
+pub use error::WriteError;
+pub use file::FileSource;
 pub use io::AsyncReadAt;
+pub use io::AsyncWriteAt;
+pub use io::MemorySource;
 pub use io::ReadAt;
+pub use io::ReadOnly;
 pub use io::SliceSource;
+pub use io::WriteAt;
 pub use io::drive;
 pub use io::drive_async;
+pub use io::drive_write;
+pub use io::drive_write_async;
+pub use machine::Effect;
 pub use machine::Machine;
 pub use machine::Step;
+pub use machine::WriteMachine;
 pub use machine::expect_len;

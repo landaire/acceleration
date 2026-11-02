@@ -18,6 +18,7 @@ use system_update::FlashFiles;
 use system_update::UpdatePackage;
 use vfs::VfsPath;
 use xcontent::xecrypt::XContentKeyMaterial;
+use xcontent::xecrypt::XContentVerification;
 
 #[derive(Debug, Subcommand)]
 enum Commands {
@@ -167,10 +168,17 @@ fn main() -> anyhow::Result<()> {
 		println!(
 			"{: <padding$} {}",
 			"Hash Valid:",
-			if let Ok(console_kind) = signature_verification {
-				format!("\u{2705} ({:?})", console_kind)
-			} else {
-				"\u{274c}".to_string()
+			match &signature_verification {
+				Ok(XContentVerification::Strong(console_kind)) => format!("\u{2705} ({console_kind:?})"),
+				Ok(XContentVerification::Console(verification)) => {
+					let mark = if verification.is_verified() { "\u{2705}" } else { "\u{274c}" };
+					let signature = match verification.signature {
+						Ok(()) => "package signature verified".to_owned(),
+						Err(error) => format!("package signature: {error}"),
+					};
+					format!("{mark} (certificate {}; {signature})", verification.certificate)
+				}
+				Err(_) => "\u{274c}".to_string(),
 			},
 			padding = GENERAL_PADDING,
 		);
@@ -178,9 +186,8 @@ fn main() -> anyhow::Result<()> {
 
 		let content_id = header.content_id.to_string();
 		let signature = match &header.key_material {
-			XContentKeyMaterial::Certificate(_cert) => {
-				hex::encode([0x0])
-				//todo!("certificate");
+			XContentKeyMaterial::ConsoleSignature(signature) => {
+				hex::encode(xcontent::xecrypt::raw_signature_to_standard(&signature.signature))
 			}
 			XContentKeyMaterial::Signature(sig, _) => hex::encode(xcontent::xecrypt::raw_signature_to_standard(sig)),
 		};

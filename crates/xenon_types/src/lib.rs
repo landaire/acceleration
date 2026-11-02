@@ -13,11 +13,14 @@
 //!   and `jiff::Timestamp`.
 
 mod serde_hex;
+mod text;
 
 use bitflags::bitflags;
 use serde::Deserialize;
 use serde::Serialize;
 use serde::Serializer;
+
+pub use text::FixedText;
 
 /// Xbox 360 title identifier (32-bit).
 ///

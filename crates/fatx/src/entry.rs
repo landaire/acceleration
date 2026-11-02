@@ -225,8 +225,88 @@ pub(crate) fn parse_slot(record: &[u8], location: EntryLocation) -> Slot {
 	if marked_deleted { Slot::Deleted(record) } else { Slot::Live(record) }
 }
 
+/// What a raw slot holds, as fatsup.c and create.c test its FileNameLength.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SlotState<'a> {
+	/// FileNameLength 0x00 or 0xff: this slot and those after it are free.
+	End,
+	/// FileNameLength 0xe5: free for a new record.
+	Deleted,
+	/// A record whose stored name is `name`. The driver compares only records with a name
+	/// length of at most 42 bytes.
+	Named { name: &'a [u8] },
+	/// A record with a name length past 42 bytes, which no name matches.
+	Unnamed,
+}
+
+pub(crate) fn slot_state(slot: &[u8]) -> SlotState<'_> {
+	match slot[0] {
+		NEVER_USED | NEVER_USED2 => SlotState::End,
+		DELETED => SlotState::Deleted,
+		length if usize::from(length) <= MAXIMUM_FILE_NAME_LENGTH => {
+			SlotState::Named { name: &slot[NAME_OFFSET..NAME_OFFSET + usize::from(length)] }
+		}
+		_ => SlotState::Unnamed,
+	}
+}
+
+/// The fields of a record that fatsup.c FatxUpdateDirectoryEntry writes. It copies only the
+/// name's own bytes, so the rest of the name field keeps what the slot held before.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EntryFields<'a> {
+	pub name: &'a [u8],
+	pub attributes: FileAttributes,
+	pub first_cluster: Option<ClusterNumber>,
+	pub size: u32,
+	pub created: Timestamp,
+	pub modified: Timestamp,
+	pub accessed: Timestamp,
+}
+
+impl<'a> EntryFields<'a> {
+	/// The fields of a live record in `slot`.
+	pub(crate) fn read(slot: &'a [u8]) -> Self {
+		let name_length = usize::from(slot[0]).min(MAXIMUM_FILE_NAME_LENGTH);
+
+		Self {
+			name: &slot[NAME_OFFSET..NAME_OFFSET + name_length],
+			attributes: FileAttributes(slot[1]),
+			first_cluster: ClusterNumber::new(read_u32(slot, FIRST_CLUSTER_OFFSET)),
+			size: read_u32(slot, SIZE_OFFSET),
+			created: Timestamp::from_raw(read_u32(slot, CREATED_OFFSET)),
+			modified: Timestamp::from_raw(read_u32(slot, MODIFIED_OFFSET)),
+			accessed: Timestamp::from_raw(read_u32(slot, ACCESSED_OFFSET)),
+		}
+	}
+
+	/// The slot with these fields stored over it. `name` is at most 42 bytes.
+	pub(crate) fn store(&self, slot: &[u8]) -> [u8; DIRECTORY_ENTRY_SIZE] {
+		let mut stored: [u8; DIRECTORY_ENTRY_SIZE] = slot.try_into().expect("a directory slot is 64 bytes");
+		stored[0] = self.name.len() as u8;
+		stored[1] = self.attributes.0;
+		stored[NAME_OFFSET..NAME_OFFSET + self.name.len()].copy_from_slice(self.name);
+		let first_cluster = self.first_cluster.map_or(0, ClusterNumber::get);
+		stored[FIRST_CLUSTER_OFFSET..SIZE_OFFSET].copy_from_slice(&first_cluster.to_be_bytes());
+		stored[SIZE_OFFSET..CREATED_OFFSET].copy_from_slice(&self.size.to_be_bytes());
+		stored[CREATED_OFFSET..MODIFIED_OFFSET].copy_from_slice(&self.created.raw().to_be_bytes());
+		stored[MODIFIED_OFFSET..ACCESSED_OFFSET].copy_from_slice(&self.modified.raw().to_be_bytes());
+		stored[ACCESSED_OFFSET..].copy_from_slice(&self.accessed.raw().to_be_bytes());
+
+		stored
+	}
+}
+
+/// The slot with its FileNameLength set to the deleted marker, as fatsup.c FatxDeleteFile and
+/// FatxMarkDirectoryEntryDeleted leave it. The name, first cluster and size stay.
+pub(crate) fn mark_deleted(slot: &[u8]) -> [u8; DIRECTORY_ENTRY_SIZE] {
+	let mut marked: [u8; DIRECTORY_ENTRY_SIZE] = slot.try_into().expect("a directory slot is 64 bytes");
+	marked[0] = DELETED;
+
+	marked
+}
+
 /// fatsup.c FatxIsValidFatFileName.
-fn validate_name(name: &[u8]) -> Result<(), InvalidEntryReason> {
+pub(crate) fn validate_name(name: &[u8]) -> Result<(), InvalidEntryReason> {
 	if name.is_empty() {
 		return Err(InvalidEntryReason::NameLength { length: 0 });
 	}

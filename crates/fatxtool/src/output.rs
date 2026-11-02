@@ -13,20 +13,39 @@ use same_file::Handle;
 
 use crate::error::OutputError;
 
-/// The file a command reads, kept open so that outputs can be compared with it.
+/// The file a command reads, or the files of an input made of several, kept open so that
+/// outputs can be compared with them.
 #[derive(Debug)]
 pub struct InputFile {
 	path: PathBuf,
-	handle: Handle,
+	files: Vec<(PathBuf, Handle)>,
 }
 
 impl InputFile {
 	pub fn new(file: &File, path: &Path) -> Result<Self, OutputError> {
-		Ok(Self { path: path.to_owned(), handle: file_handle(file, path)? })
+		Ok(Self { path: path.to_owned(), files: vec![(path.to_owned(), file_handle(file, path)?)] })
+	}
+
+	/// An input at `path` that is read from `files`, such as a directory of USB storage files.
+	pub fn with_files<'a, I>(path: &Path, files: I) -> Result<Self, OutputError>
+	where
+		I: IntoIterator<Item = (&'a File, &'a Path)>,
+	{
+		let files = files
+			.into_iter()
+			.map(|(file, file_path)| Ok((file_path.to_owned(), file_handle(file, file_path)?)))
+			.collect::<Result<_, OutputError>>()?;
+
+		Ok(Self { path: path.to_owned(), files })
 	}
 
 	pub fn path(&self) -> &Path {
 		&self.path
+	}
+
+	/// The input file that `handle` refers to.
+	fn aliased(&self, handle: &Handle) -> Option<&Path> {
+		self.files.iter().find(|(_, input)| input == handle).map(|(path, _)| path.as_path())
 	}
 }
 
@@ -42,8 +61,8 @@ pub fn create_output(input: &InputFile, output: &Path) -> Result<File, OutputErr
 		.truncate(false)
 		.open(output)
 		.map_err(|source| OutputError::CreateOutput { path: output.to_owned(), source })?;
-	if file_handle(&output_file, output)? == input.handle {
-		return Err(OutputError::OutputAliasesInput { input: input.path.clone(), output: output.to_owned() });
+	if let Some(input) = input.aliased(&file_handle(&output_file, output)?) {
+		return Err(OutputError::OutputAliasesInput { input: input.to_owned(), output: output.to_owned() });
 	}
 
 	output_file.set_len(0).map_err(|source| OutputError::TruncateOutput { path: output.to_owned(), source })?;
@@ -111,6 +130,44 @@ impl Drop for TemporaryOutput<'_> {
 	}
 }
 
+/// Opens `path` for reading and writing when it is a regular file, not a device or a symbolic
+/// link.
+pub fn open_writable_image(path: &Path) -> Result<File, OutputError> {
+	let metadata = fs::symlink_metadata(path)
+		.map_err(|source| OutputError::OpenWritableImage { path: path.to_owned(), source })?;
+	if !metadata.file_type().is_file() {
+		return Err(OutputError::NotARegularFile { path: path.to_owned() });
+	}
+
+	let mut options = OpenOptions::new();
+	options.read(true).write(true);
+	#[cfg(unix)]
+	{
+		use std::os::unix::fs::OpenOptionsExt;
+
+		options.custom_flags(libc::O_NOFOLLOW);
+	}
+	#[cfg(windows)]
+	{
+		use std::os::windows::fs::OpenOptionsExt;
+
+		// FILE_FLAG_OPEN_REPARSE_POINT: a link swapped in after the check opens as itself and
+		// fails the regular-file check below.
+		const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+		options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+	}
+	let file = options.open(path).map_err(|source| OutputError::OpenWritableImage { path: path.to_owned(), source })?;
+
+	// The path may have been replaced between the check and the open.
+	let opened = file.metadata().map_err(|source| OutputError::OpenWritableImage { path: path.to_owned(), source })?;
+	if !opened.file_type().is_file() {
+		return Err(OutputError::NotARegularFile { path: path.to_owned() });
+	}
+
+	Ok(file)
+}
+
 /// Rejects `path` when it exists as a symbolic link.
 pub fn reject_symbolic_link(path: &Path) -> Result<(), OutputError> {
 	match fs::symlink_metadata(path) {
@@ -126,10 +183,10 @@ fn check_replaceable(input: &InputFile, output: &Path) -> Result<(), OutputError
 	reject_symbolic_link(output)?;
 
 	match Handle::from_path(output) {
-		Ok(handle) if handle == input.handle => {
-			Err(OutputError::OutputAliasesInput { input: input.path.clone(), output: output.to_owned() })
-		}
-		Ok(_) => Ok(()),
+		Ok(handle) => match input.aliased(&handle) {
+			Some(input) => Err(OutputError::OutputAliasesInput { input: input.to_owned(), output: output.to_owned() }),
+			None => Ok(()),
+		},
 		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
 		Err(source) => Err(OutputError::IdentifyFile { path: output.to_owned(), source }),
 	}

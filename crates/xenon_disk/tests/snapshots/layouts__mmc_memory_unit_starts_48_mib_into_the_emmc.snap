@@ -1,0 +1,12 @@
+---
+source: crates/xenon_disk/tests/layouts.rs
+expression: render(&map)
+---
+eMMC with a built-in memory unit of 0x80000000 bytes (0x400000 sectors)
+ReservationPartition     0x00003000000..0x00023e30000 0x00020e30000 raw
+SystemAuxPartition       0x00003000000..0x0000b000000 0x00008000000
+StorageSystem            0x0000b000000..0x0000f000000 0x00004000000
+TitleURLCachePartition   0x0000f000000..0x00011000000 0x00002000000 raw
+SystemURLCachePartition  0x00011000000..0x00017000000 0x00006000000 raw
+SystemExtPartition       0x00017000000..0x00023e30000 0x0000ce30000
+Storage                  0x00023e30000..0x00080000000 0x0005c1d0000

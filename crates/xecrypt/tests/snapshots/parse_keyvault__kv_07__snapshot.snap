@@ -1,5 +1,5 @@
 ---
-source: xecrypt/tests/parse_keyvault.rs
+source: crates/xecrypt/tests/parse_keyvault.rs
 expression: kv
 ---
 xeika_certificate = [
@@ -15698,6 +15698,10 @@ cardea_private_key = [
 cert_size = 424
 console_id = '0b42a03a49'
 console_part_number = '00443155623'
+reserved = '00000000'
 privileges = 0
-console_type = 16384
-manufacturing_date = ''
+console_type = 1073741825
+manufacturing_date = '11-13-09'
+public_exponent = 65537
+public_modulus = 'd04b735c69aa5993d1496187aa400f0509c93e2ec3451425dbe767025b4fd4ee834dcb8df2fed5ccf5dcd39345752da54a027f95040d262f2d30f9676181ee8f5f13afebfcbb06548c435d566f6ce3b4546890574cfdac7edaf2a2c7fad80ea794261e9e6fe3bef7c2704482b04016ceb5e523ab8fba02d79f1b7bab3704659a'
+signature = '96d8fc1dc827cb91f1b08ad282480d8b05204122e06b5aaf127564ccf45f272733666bcfb2c62bc6afa9e318c99e01011234ae69a883f009d4c67ca6eae0ec87d173c207453a5f72083825b77cf461b45f6ca63ac7ac3e260269922f8c24122e7bfdd825e817db90c036a322d8a7f7f0176dc851878ba3a3f05372a8c034117538327e28b8d3b449c8d8634011df9aadf001322be9ba0cc8c49b5feaca719890c0f0a1a2d8a534eed26b82c32b1dc1aae666308a83d8969f08ad56a7c1a38eb6c19b8b458d5b85f7af2e71059b3c3d90953f6e7b08b33d6c1a4bb6b1b8d7572e98c95a9e4d9a2711f4cc43f6b9951ca8d5696dc555152fe6e3ef9fe657d7cd4c'

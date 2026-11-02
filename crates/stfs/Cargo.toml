@@ -24,10 +24,10 @@ async-vfs = ["vfs", "fskit/async-vfs", "dep:async-trait", "dep:futures"]
 [dependencies]
 sha-1 = { workspace = true }
 thiserror = { workspace = true }
-bitflags = { workspace = true }
 byteorder = { workspace = true }
 num_enum = { workspace = true }
 serde = { workspace = true }
+xecrypt = { version = "0.4", path = "../xecrypt", features = ["serde"] }
 xenon_types = { version = "0.4", path = "../xenon_types" }
 base64 = { workspace = true, optional = true }
 fskit = { workspace = true, optional = true }

@@ -1,10 +1,13 @@
 use thiserror::Error;
 
+use crate::entry::InvalidEntryReason;
 use crate::fat::ClusterNumber;
+use crate::name::PathError;
 use crate::volume_file::RejectedCandidate;
 
 pub use xenon_io::ReadError;
 pub use xenon_io::ReadErrorKind;
+pub use xenon_io::WriteError;
 
 /// A volume header or partition length that the FATX driver would not mount.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +28,8 @@ pub enum GeometryError {
 	TooManyClusters { clusters: u64 },
 	#[error("root directory cluster {cluster:#x} is not a data cluster of the volume")]
 	InvalidRootCluster { cluster: u32 },
+	#[error("{bytes_per_cluster:#x}-byte clusters are not a whole number of sectors")]
+	ClusterSizeNotSectorMultiple { bytes_per_cluster: u32 },
 }
 
 /// A cluster chain that the FAT does not support.
@@ -75,4 +80,48 @@ pub enum FatxError {
 	PartitionLengthNotInferred { rejected: Vec<RejectedCandidate> },
 	#[error(transparent)]
 	Read(#[from] ReadError),
+	#[error(transparent)]
+	Update(#[from] UpdateError),
+	#[error(transparent)]
+	Write(#[from] WriteError),
+}
+
+/// A change that the driver would refuse or that the volume cannot hold. Nothing was written.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum UpdateError {
+	#[error(transparent)]
+	InvalidPath(#[from] PathError),
+	#[error("path {path} is {length} bytes; the driver allows {maximum}")]
+	PathTooLong { path: String, length: usize, maximum: usize },
+	#[error("{path} does not exist")]
+	NotFound { path: String },
+	#[error("{path} already exists")]
+	AlreadyExists { path: String },
+	#[error("{path} is not a directory")]
+	NotADirectory { path: String },
+	#[error("{path} is a directory")]
+	IsADirectory { path: String },
+	#[error("the root directory has no entry to change")]
+	RootDirectory,
+	#[error("directory {path} is not empty")]
+	DirectoryNotEmpty { path: String },
+	#[error("directory {path} already holds the maximum of {maximum} records")]
+	DirectoryFull { path: String, maximum: u64 },
+	#[error("{needed} clusters are needed but {available} are free in the image")]
+	DiskFull { needed: u64, available: u64 },
+	#[error("a file cannot end past {maximum:#x} bytes")]
+	FileTooLarge { maximum: u64 },
+	#[error("{from} cannot move into itself or its subdirectory {to}")]
+	MoveIntoItself { from: String, to: String },
+	/// fatxp.h FATX_SUPPORTED_FILE_ATTRIBUTES: the driver keeps only the hidden and directory
+	/// attributes (fileinfo.c:250).
+	#[error("attributes {attributes:#04x} hold bits other than hidden and directory")]
+	UnsupportedAttributes { attributes: u8 },
+	/// fileinfo.c:255: a file cannot become a directory, nor a directory a file.
+	#[error("the directory attribute of {path} cannot change")]
+	DirectoryAttributeChange { path: String },
+	#[error("timestamp {raw:#010x} is not a date and time from 1980 to 2107")]
+	InvalidTimestamp { raw: u32 },
+	#[error("record {path} is one the driver skips: {reason}")]
+	InvalidRecord { path: String, reason: InvalidEntryReason },
 }

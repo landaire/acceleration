@@ -1,0 +1,12 @@
+---
+source: crates/xenon_disk/tests/layouts.rs
+expression: render(&map)
+---
+built-in memory unit of 0x74000000 bytes (0x3a0000 sectors)
+ReservationPartition     0x00000000000..0x00020e30000 0x00020e30000 raw
+SystemAuxPartition       0x00000000000..0x00008000000 0x00008000000
+StorageSystem            0x00008000000..0x0000c000000 0x00004000000
+TitleURLCachePartition   0x0000c000000..0x0000e000000 0x00002000000 raw
+SystemURLCachePartition  0x0000e000000..0x00014000000 0x00006000000 raw
+SystemExtPartition       0x00014000000..0x00020e30000 0x0000ce30000
+Storage                  0x00020e30000..0x00074000000 0x000531d0000

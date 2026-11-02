@@ -492,6 +492,10 @@ pub(crate) mod retail {
 	/// HV key ID 0x3c (normal consoles) / 0x3a (recovery-generated, zeroed in retail HV).
 	/// XECRYPT_RSA at HV offset 0x11318. Exponent = 3.
 	///
+	/// The devkit hypervisor 16547 (`deanxbox-hv-16547.bin`) holds the same key at offset
+	/// 0x11008, and it verifies devkit console certificates (console type 1) as well as retail
+	/// ones, so devkit certificates of that generation use it too.
+	///
 	/// Functions:
 	/// - `XeKeysConsoleSignatureVerification` (xboxkrnl) -- console cert signature verification
 	/// - `XContent::VerifySignature` (xam) -- CON package verification

@@ -30,8 +30,8 @@ rust_library(
         "vfs",
     ],
     deps = [
+        "//crates/xecrypt:xecrypt",
         "//crates/xenon_types:xenon_types",
-        "//third-party/rust:bitflags",
         "//third-party/rust:byteorder",
         "//third-party/rust:fskit",
         "//third-party/rust:num_enum",
@@ -61,8 +61,8 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/stfs",
     },
     deps = [
+        "//crates/xecrypt:xecrypt",
         "//crates/xenon_types:xenon_types",
-        "//third-party/rust:bitflags",
         "//third-party/rust:byteorder",
         "//third-party/rust:fskit",
         "//third-party/rust:insta",
@@ -89,8 +89,8 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/stfs",
     },
     deps = [
+        "//crates/xecrypt:xecrypt",
         "//crates/xenon_types:xenon_types",
-        "//third-party/rust:bitflags",
         "//third-party/rust:byteorder",
         "//third-party/rust:fskit",
         "//third-party/rust:insta",
@@ -117,10 +117,10 @@ rust_library(
         "vfs",
     ],
     deps = [
+        "//crates/xecrypt:xecrypt",
         "//crates/xenon_types:xenon_types",
         "//third-party/rust:async-trait",
         "//third-party/rust:base64",
-        "//third-party/rust:bitflags",
         "//third-party/rust:byteorder",
         "//third-party/rust:fskit",
         "//third-party/rust:futures",

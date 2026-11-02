@@ -5,7 +5,7 @@ load("//build_defs:rust_test.bzl", "rust_test")
 ENV = {
     "CARGO_MANIFEST_DIR": ".",
     "CARGO_PKG_AUTHORS": "Lander Brandt",
-    "CARGO_PKG_DESCRIPTION": "Command-line inspector and recovery tool for Xbox 360 FATX volumes",
+    "CARGO_PKG_DESCRIPTION": "Command-line inspector, recovery tool and editor for Xbox 360 FATX volumes",
     "CARGO_PKG_HOMEPAGE": "",
     "CARGO_PKG_NAME": "fatxtool",
     "CARGO_PKG_README": "README.md",
@@ -29,6 +29,7 @@ rust_library(
     deps = select({
         "prelude//os:linux": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -41,6 +42,7 @@ rust_library(
         ],
         "prelude//os:macos": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -53,6 +55,7 @@ rust_library(
         ],
         "prelude//os:windows": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -83,6 +86,7 @@ rust_test(
     deps = select({
         "prelude//os:linux": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -96,6 +100,7 @@ rust_test(
         ],
         "prelude//os:macos": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -109,6 +114,7 @@ rust_test(
         ],
         "prelude//os:windows": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -133,6 +139,7 @@ rust_binary(
     deps = select({
         "prelude//os:linux": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -146,6 +153,7 @@ rust_binary(
         ],
         "prelude//os:macos": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -159,6 +167,7 @@ rust_binary(
         ],
         "prelude//os:windows": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -192,6 +201,7 @@ rust_test(
     deps = select({
         "prelude//os:linux": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -206,6 +216,7 @@ rust_test(
         ],
         "prelude//os:macos": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -220,6 +231,7 @@ rust_test(
         ],
         "prelude//os:windows": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -240,7 +252,7 @@ rust_test(
     crate = "commands",
     crate_root = "tests/commands.rs",
     edition = "2024",
-    env = ENV | {"INSTA_WORKSPACE_ROOT": "."},
+    env = ENV | {"CARGO_BIN_EXE_fatxtool": "$(location :fatxtool-bin)"} | {"INSTA_WORKSPACE_ROOT": "."},
     features = [],
     run_env = {
         "CARGO_MANIFEST_DIR": "crates/fatxtool",
@@ -248,6 +260,7 @@ rust_test(
     deps = select({
         "prelude//os:linux": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -262,6 +275,7 @@ rust_test(
         ],
         "prelude//os:macos": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",
@@ -276,6 +290,125 @@ rust_test(
         ],
         "prelude//os:windows": [
             "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
+            "//crates/xenon_io:xenon_io",
+            "//third-party/rust:anstream",
+            "//third-party/rust:anstyle",
+            "//third-party/rust:clap",
+            "//third-party/rust:insta",
+            "//third-party/rust:memmap2",
+            "//third-party/rust:rootcause",
+            "//third-party/rust:same-file",
+            "//third-party/rust:thiserror",
+            ":fatxtool",
+        ],
+    }),
+)
+
+rust_test(
+    name = "disk-test",
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
+    crate = "disk",
+    crate_root = "tests/disk.rs",
+    edition = "2024",
+    env = ENV | {"CARGO_BIN_EXE_fatxtool": "$(location :fatxtool-bin)"} | {"INSTA_WORKSPACE_ROOT": "."},
+    features = [],
+    run_env = {
+        "CARGO_MANIFEST_DIR": "crates/fatxtool",
+    },
+    deps = select({
+        "prelude//os:linux": [
+            "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
+            "//crates/xenon_io:xenon_io",
+            "//third-party/rust:anstream",
+            "//third-party/rust:anstyle",
+            "//third-party/rust:clap",
+            "//third-party/rust:insta",
+            "//third-party/rust:libc",
+            "//third-party/rust:memmap2",
+            "//third-party/rust:rootcause",
+            "//third-party/rust:same-file",
+            "//third-party/rust:thiserror",
+            ":fatxtool",
+        ],
+        "prelude//os:macos": [
+            "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
+            "//crates/xenon_io:xenon_io",
+            "//third-party/rust:anstream",
+            "//third-party/rust:anstyle",
+            "//third-party/rust:clap",
+            "//third-party/rust:insta",
+            "//third-party/rust:libc",
+            "//third-party/rust:memmap2",
+            "//third-party/rust:rootcause",
+            "//third-party/rust:same-file",
+            "//third-party/rust:thiserror",
+            ":fatxtool",
+        ],
+        "prelude//os:windows": [
+            "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
+            "//crates/xenon_io:xenon_io",
+            "//third-party/rust:anstream",
+            "//third-party/rust:anstyle",
+            "//third-party/rust:clap",
+            "//third-party/rust:insta",
+            "//third-party/rust:memmap2",
+            "//third-party/rust:rootcause",
+            "//third-party/rust:same-file",
+            "//third-party/rust:thiserror",
+            ":fatxtool",
+        ],
+    }),
+)
+
+rust_test(
+    name = "write-test",
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
+    crate = "write",
+    crate_root = "tests/write.rs",
+    edition = "2024",
+    env = ENV | {"CARGO_BIN_EXE_fatxtool": "$(location :fatxtool-bin)"} | {"INSTA_WORKSPACE_ROOT": "."},
+    features = [],
+    run_env = {
+        "CARGO_MANIFEST_DIR": "crates/fatxtool",
+    },
+    deps = select({
+        "prelude//os:linux": [
+            "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
+            "//crates/xenon_io:xenon_io",
+            "//third-party/rust:anstream",
+            "//third-party/rust:anstyle",
+            "//third-party/rust:clap",
+            "//third-party/rust:insta",
+            "//third-party/rust:libc",
+            "//third-party/rust:memmap2",
+            "//third-party/rust:rootcause",
+            "//third-party/rust:same-file",
+            "//third-party/rust:thiserror",
+            ":fatxtool",
+        ],
+        "prelude//os:macos": [
+            "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
+            "//crates/xenon_io:xenon_io",
+            "//third-party/rust:anstream",
+            "//third-party/rust:anstyle",
+            "//third-party/rust:clap",
+            "//third-party/rust:insta",
+            "//third-party/rust:libc",
+            "//third-party/rust:memmap2",
+            "//third-party/rust:rootcause",
+            "//third-party/rust:same-file",
+            "//third-party/rust:thiserror",
+            ":fatxtool",
+        ],
+        "prelude//os:windows": [
+            "//crates/fatx:fatx",
+            "//crates/xenon_disk:xenon_disk",
             "//crates/xenon_io:xenon_io",
             "//third-party/rust:anstream",
             "//third-party/rust:anstyle",

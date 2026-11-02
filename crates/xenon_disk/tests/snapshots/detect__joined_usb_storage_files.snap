@@ -1,0 +1,18 @@
+---
+source: crates/xenon_disk/tests/detect.rs
+expression: report(&run(&image))
+---
+kind: UsbStorage
+evidence: VolumeHeader { partition: "SystemAuxPartition", offset: ByteOffset(0x400) }
+evidence: VolumeHeader { partition: "StorageSystem", offset: ByteOffset(0x8000400) }
+evidence: VolumeHeader { partition: "SystemExtPartition", offset: ByteOffset(0x12000400) }
+evidence: VolumeHeader { partition: "Storage", offset: ByteOffset(0x20000000) }
+volume headers: SystemAuxPartition, StorageSystem, SystemExtPartition, Storage
+USB storage files of 0x20402000 bytes (0x102010 sectors)
+Partition0               0x00000000000..0x00020402000 0x00020402000 raw
+ReservationPartition     0x00000000000..0x00020000000 0x00020000000 raw
+SystemAuxPartition       0x00000000400..0x00008000400 0x00008000000
+StorageSystem            0x00008000400..0x0000c000400 0x00004000000
+SystemURLCachePartition  0x0000c000400..0x00012000400 0x00006000000 raw
+SystemExtPartition       0x00012000400..0x0001ee30400 0x0000ce30000
+Storage                  0x00020000000..0x00020402000 0x00000402000 alternate

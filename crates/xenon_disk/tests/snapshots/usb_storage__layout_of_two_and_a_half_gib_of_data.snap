@@ -1,0 +1,12 @@
+---
+source: crates/xenon_disk/tests/usb_storage.rs
+expression: render(&layout.partition_map())
+---
+USB storage files of 0xc00a2000 bytes (0x600510 sectors)
+Partition0               0x00000000000..0x000c00a2000 0x000c00a2000 raw
+ReservationPartition     0x00000000000..0x00020000000 0x00020000000 raw
+SystemAuxPartition       0x00000000400..0x00008000400 0x00008000000
+StorageSystem            0x00008000400..0x0000c000400 0x00004000000
+SystemURLCachePartition  0x0000c000400..0x00012000400 0x00006000000 raw
+SystemExtPartition       0x00012000400..0x0001ee30400 0x0000ce30000
+Storage                  0x00020000000..0x000c00a2000 0x000a00a2000 alternate

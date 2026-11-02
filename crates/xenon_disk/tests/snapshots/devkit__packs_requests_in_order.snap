@@ -1,0 +1,20 @@
+---
+source: crates/xenon_disk/tests/devkit.rs
+expression: render(map.value())
+---
+development kit hard disk of 0x3934b2e000 bytes (0x1c9a5970 sectors)
+PhysicalDisk             0x00000000000..0x03934b2e000 0x03934b2e000 raw
+Partition0               0x00000000000..0x03934b2e000 0x03934b2e000 raw
+Cache0                   0x00000080000..0x00080080000 0x00080000000
+Cache1                   0x00080080000..0x00100080000 0x00080000000
+DumpPartition            0x00100080000..0x00120eb0000 0x00020e30000 raw
+SystemURLCachePartition  0x00100080000..0x00106080000 0x00006000000 raw
+TitleURLCachePartition   0x00106080000..0x00108080000 0x00002000000 raw
+SystemExtPartition       0x0010c080000..0x00118eb0000 0x0000ce30000
+SystemAuxPartition       0x00118eb0000..0x00120eb0000 0x00008000000
+SystemPartition          0x00120eb0000..0x00130eb0000 0x00010000000
+PixDump                  0x00130eb0000..0x00190eb0000 0x00060000000
+PixStream                0x00130eb0000..0x00170080000 0x0003f1d0000
+MemDump                  0x00170080000..0x00190eb0000 0x00020e30000
+AltFlash                 0x00190eb0000..0x00194eb0200 0x00004000200
+Partition1               0x00194eb1000..0x03934b2e000 0x0379fc7d000

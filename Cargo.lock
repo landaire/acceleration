@@ -1931,6 +1931,7 @@ dependencies = [
  "async-trait",
  "fskit",
  "futures",
+ "insta",
  "thiserror 2.0.21",
  "vfs",
  "xenon_io",
@@ -1950,6 +1951,7 @@ dependencies = [
  "rootcause",
  "same-file",
  "thiserror 2.0.21",
+ "xenon_disk",
  "xenon_io",
 ]
 
@@ -4502,7 +4504,6 @@ version = "0.4.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
- "bitflags 2.13.2",
  "byteorder",
  "fskit",
  "futures",
@@ -4512,6 +4513,7 @@ dependencies = [
  "sha-1",
  "thiserror 2.0.21",
  "vfs",
+ "xecrypt",
  "xenon_types",
 ]
 
@@ -5909,6 +5911,21 @@ dependencies = [
  "serde",
  "sha1 0.11.0",
  "thiserror 2.0.21",
+ "xenon_types",
+]
+
+[[package]]
+name = "xenon_disk"
+version = "0.4.0"
+dependencies = [
+ "fskit",
+ "futures",
+ "insta",
+ "rsa",
+ "sha-1",
+ "thiserror 2.0.21",
+ "xecrypt",
+ "xenon_io",
  "xenon_types",
 ]
 

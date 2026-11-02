@@ -1,0 +1,15 @@
+---
+source: crates/fatx/tests/write.rs
+expression: volume.geometry()
+---
+Geometry {
+    serial_number: SerialNumber(0x51ecf2c0),
+    bytes_per_cluster: 16384,
+    root_cluster: ClusterNumber(0x1),
+    kind: Standard,
+    partition_length: 16777216,
+    fat_width: Fat16,
+    fat_length: 4096,
+    file_area_offset: 8192,
+    cluster_count: 1023,
+}

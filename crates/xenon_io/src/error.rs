@@ -21,3 +21,19 @@ pub enum ReadErrorKind {
 	#[error("the source returned {actual:#x} bytes")]
 	Short { actual: usize },
 }
+
+/// A write or flush that the source failed.
+#[derive(Debug, Error)]
+pub enum WriteError {
+	/// Any prefix of the bytes may have reached the source.
+	#[error("writing {length:#x} bytes at {offset:#x} failed")]
+	Write {
+		offset: u64,
+		length: u64,
+		#[source]
+		source: io::Error,
+	},
+	/// The earlier writes may not be durable.
+	#[error("making the writes durable failed")]
+	Flush(#[source] io::Error),
+}

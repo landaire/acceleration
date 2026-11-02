@@ -6,6 +6,8 @@ pub enum SystemUpdateError {
 	Package(#[source] xcontent::XContentError),
 	#[error("the update package signature does not verify")]
 	PackageSignature,
+	#[error("the update package is console signed; system updates are LIVE or PIRS signed")]
+	ConsoleSigned,
 	#[error(
 		"the package has content type {content_type:#x} and installer type {installer_type:?}, not a system update"
 	)]

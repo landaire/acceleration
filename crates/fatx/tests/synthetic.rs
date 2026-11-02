@@ -698,12 +698,13 @@ fn vfs_serves_live_files() {
 	use std::io::Read;
 
 	use fatx::fatx_vfs::FatxVfs;
+	use fatx::io::ReadOnly;
 	use vfs::FileSystem;
 
 	let (builder, readme) = nested_volume();
 	let volume = open(&builder.image);
 	let listing = volume.walk(&builder.image).unwrap().deny_warnings().unwrap();
-	let filesystem = FatxVfs::new(builder.image.clone(), volume, listing);
+	let filesystem = FatxVfs::new(ReadOnly(builder.image.clone()), volume, listing);
 
 	let mut children: Vec<String> = filesystem.read_dir("/docs").unwrap().collect();
 	children.sort();

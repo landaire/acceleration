@@ -279,6 +279,10 @@ pub struct Volume {
 }
 
 impl Volume {
+	pub(crate) fn from_parts(range: Range<u64>, geometry: Geometry, fat: Fat) -> Self {
+		Self { range, geometry, fat }
+	}
+
 	/// A machine that opens the volume stored at `range` of a source.
 	pub fn opener(range: Range<u64>, options: VolumeOptions) -> OpenVolume {
 		OpenVolume { range, options, state: OpenState::Header, requested: false }
@@ -323,6 +327,10 @@ impl Volume {
 
 	pub const fn fat(&self) -> &Fat {
 		&self.fat
+	}
+
+	pub(crate) fn fat_mut(&mut self) -> &mut Fat {
+		&mut self.fat
 	}
 
 	fn image_length(&self) -> u64 {

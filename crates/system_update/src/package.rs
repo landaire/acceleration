@@ -8,6 +8,8 @@ use xcontent::InstallerType;
 use xcontent::XContentHeader;
 use xcontent::XContentPackage;
 use xcontent::XboxFilesystem;
+use xcontent::xecrypt::XContentSignatureType;
+use xcontent::xecrypt::XContentVerification;
 
 use crate::error::SystemUpdateError;
 
@@ -39,7 +41,14 @@ impl<'a> UpdatePackage<'a> {
 	/// Parse the package and verify its LIVE or PIRS signature.
 	pub fn parse(data: &'a [u8]) -> Result<Self, Report<SystemUpdateError>> {
 		let package = XContentPackage::parse(data).map_err(|e| SystemUpdateError::Package(e).into_report())?;
-		package.verify_signature(data).map_err(|_| SystemUpdateError::PackageSignature.into_report())?;
+		if package.header.signature_type == XContentSignatureType::Console {
+			return Err(SystemUpdateError::ConsoleSigned.into_report());
+		}
+		let verification =
+			package.verify_signature(data).map_err(|_| SystemUpdateError::PackageSignature.into_report())?;
+		if !matches!(verification, XContentVerification::Strong(_)) {
+			return Err(SystemUpdateError::PackageSignature.into_report());
+		}
 
 		let metadata = &package.header.metadata;
 		let is_system_update = metadata.content_type == ContentType::Installer

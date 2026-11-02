@@ -17,6 +17,7 @@ members = [
 	"crates/xex2-ffi",
 	"crates/xex2ool",
 	"crates/xenon_io",
+	"crates/xenon_disk",
 	"crates/xenon_lzx",
 	"crates/xenon_types",
 	"third-party/rust",

@@ -6,6 +6,8 @@
 //! - [`symmetric`]: AES-128-CBC/ECB, SHA-1, and `XeCryptRotSumSha` (the
 //!   rolling checksum + SHA-1 hash used for XEX ImageInfo signatures)
 //! - [`keyvault`]: console keyvault parser (owned and zerocopy variants)
+//! - [`console`]: the console certificate and console signature, with verification of the
+//!   signature against the certificate's key (CON packages, the hard disk Josh block)
 //! - [`xex_sig`]: XEX2 header signatures (`XeCryptBnQwBeSig`)
 //! - [`RsaKeyKind`]: Xbox 360 RSA keys (retail + devkit) with verify/sign
 //!   helpers. Signing requires a devkit Executable, PIRS or LIVE key. Public
@@ -46,9 +48,6 @@
 //!
 //! - `serde` (default off) -- enables `Serialize` on keyvault and certificate types.
 
-use bitflags::bitflags;
-use byteorder::BigEndian;
-use byteorder::ReadBytesExt;
 use rsa::BigUint;
 use rsa::Pkcs1v15Sign;
 use rsa::RsaPrivateKey;
@@ -56,6 +55,7 @@ use rsa::RsaPublicKey;
 use std::io::Cursor;
 use std::io::Read;
 
+pub mod console;
 mod error;
 mod keys;
 pub mod keyvault;
@@ -65,6 +65,11 @@ pub mod xex_sig;
 #[cfg(feature = "serde")]
 use serde::Serialize;
 
+pub use console::CertificateStatus;
+pub use console::ConsoleCertificate;
+pub use console::ConsoleSignature;
+pub use console::ConsoleSignatureVerification;
+pub use error::ConsoleSignatureError;
 pub use error::Error;
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -95,12 +100,7 @@ impl XContentSignatureType {
 
 pub const SHA1_DIGEST_SIZE: usize = 20;
 pub const RSA_2048_SIGNATURE_SIZE: usize = 0x100;
-pub const RSA_1024_SIGNATURE_SIZE: usize = 0x80;
-pub const RSA_1024_MODULUS_SIZE: usize = 0x80;
 pub const XCONTENT_KEY_MATERIAL_SIZE: usize = 0x228;
-pub const CONSOLE_PART_NUMBER_WIDE_SIZE: usize = 0x11 * 2;
-pub const DATE_GENERATION_SIZE: usize = 8;
-pub const CONSOLE_ID_SIZE: usize = 5;
 
 impl std::fmt::Display for XContentSignatureType {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -116,7 +116,8 @@ impl std::fmt::Display for XContentSignatureType {
 #[derive(Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum XContentKeyMaterial {
-	Certificate(Certificate),
+	/// The certificate of the console that signed a CON package, and its signature.
+	ConsoleSignature(Box<ConsoleSignature>),
 	Signature(Vec<u8>, Vec<u8>),
 }
 
@@ -124,7 +125,9 @@ impl XContentKeyMaterial {
 	pub fn parse(cursor: &mut Cursor<&[u8]>, signature_type: XContentSignatureType) -> std::io::Result<Self> {
 		let start_pos = cursor.position();
 		let result = if signature_type == XContentSignatureType::Console {
-			Self::Certificate(Certificate::parse(cursor)?)
+			let mut bytes = [0u8; console::CONSOLE_SIGNATURE_SIZE];
+			cursor.read_exact(&mut bytes)?;
+			Self::ConsoleSignature(Box::new(ConsoleSignature::parse(&bytes)))
 		} else {
 			let mut sig = vec![0u8; RSA_2048_SIGNATURE_SIZE];
 			cursor.read_exact(&mut sig)?;
@@ -135,90 +138,6 @@ impl XContentKeyMaterial {
 		cursor.set_position(start_pos + XCONTENT_KEY_MATERIAL_SIZE as u64);
 		Ok(result)
 	}
-}
-
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct Certificate {
-	pub pubkey_cert_size: u16,
-	pub owner_console_id: [u8; 5],
-	pub owner_console_part_number: String,
-	pub console_type_flags: Option<ConsoleTypeFlags>,
-	pub date_generation: String,
-	pub public_exponent: u32,
-	pub public_modulus: Vec<u8>,
-	pub certificate_signature: Vec<u8>,
-	pub signature: Vec<u8>,
-}
-
-impl Certificate {
-	pub fn parse(cursor: &mut Cursor<&[u8]>) -> std::io::Result<Self> {
-		let pubkey_cert_size = cursor.read_u16::<BigEndian>()?;
-		let mut owner_console_id = [0u8; CONSOLE_ID_SIZE];
-		cursor.read_exact(&mut owner_console_id)?;
-
-		let mut part_number_raw = [0u8; CONSOLE_PART_NUMBER_WIDE_SIZE];
-		cursor.read_exact(&mut part_number_raw)?;
-		let owner_console_part_number = read_wide_string(&part_number_raw);
-
-		let console_type_raw = cursor.read_u32::<BigEndian>()?;
-		let console_type_flags = ConsoleTypeFlags::from_bits(console_type_raw);
-
-		let mut date_gen_raw = [0u8; DATE_GENERATION_SIZE];
-		cursor.read_exact(&mut date_gen_raw)?;
-		let date_generation = String::from_utf8_lossy(
-			&date_gen_raw[..date_gen_raw.iter().position(|b| *b == 0).unwrap_or(date_gen_raw.len())],
-		)
-		.into_owned();
-
-		let public_exponent = cursor.read_u32::<BigEndian>()?;
-		let mut public_modulus = vec![0u8; RSA_1024_MODULUS_SIZE];
-		cursor.read_exact(&mut public_modulus)?;
-		let mut certificate_signature = vec![0u8; RSA_2048_SIGNATURE_SIZE];
-		cursor.read_exact(&mut certificate_signature)?;
-		let mut signature = vec![0u8; RSA_1024_SIGNATURE_SIZE];
-		cursor.read_exact(&mut signature)?;
-
-		Ok(Certificate {
-			pubkey_cert_size,
-			owner_console_id,
-			owner_console_part_number,
-			console_type_flags,
-			date_generation,
-			public_exponent,
-			public_modulus,
-			certificate_signature,
-			signature,
-		})
-	}
-}
-
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
-pub struct ConsoleTypeFlags(u32);
-
-bitflags! {
-	impl ConsoleTypeFlags: u32 {
-		const DEVKIT = 0x1;
-		const RETAIL = 0x2;
-		const TESTKIT = 0x40000000;
-		const RECOVERY_GENERATED = 0x80000000;
-	}
-}
-
-fn read_wide_string(data: &[u8]) -> String {
-	let mut chars = Vec::new();
-	for chunk in data.chunks(2) {
-		if chunk.len() < 2 {
-			break;
-		}
-		let c = ((chunk[0] as u16) << 8) | chunk[1] as u16;
-		if c == 0 {
-			break;
-		}
-		chars.push(c);
-	}
-	String::from_utf16_lossy(&chars)
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -355,6 +274,7 @@ impl From<XContentSignatureType> for RsaKeyKind {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
 pub enum ConsoleKind {
 	Devkit,
 	Retail,
@@ -374,23 +294,56 @@ pub fn verify_xcontent_strong_signature(
 	Err(rsa::Error::Verification)
 }
 
+/// What verifying an XContent header signature found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+pub enum XContentVerification {
+	/// A LIVE or PIRS signature verified with the key set of this console kind.
+	Strong(ConsoleKind),
+	/// A CON package: the certificate and the package signature are checked separately, and
+	/// either can fail or be unchecked.
+	Console(console::ConsoleSignatureVerification),
+}
+
+impl XContentVerification {
+	/// Whether every check verified.
+	pub const fn is_verified(&self) -> bool {
+		match self {
+			Self::Strong(_) => true,
+			Self::Console(verification) => verification.is_verified(),
+		}
+	}
+}
+
+/// Verifies the signature of an XContent header whose signed bytes hash to `hash`. A LIVE or
+/// PIRS signature that no key verifies is an error. A CON signature always gives
+/// [`XContentVerification::Console`] with the result of each check; see
+/// [`ConsoleSignature::verify`].
 pub fn verify_xcontent_signature(
 	signature_kind: XContentSignatureType,
 	key_material: &XContentKeyMaterial,
 	hash: &[u8],
-) -> Result<ConsoleKind, crate::Error> {
+) -> Result<XContentVerification, crate::Error> {
 	let key_kind: RsaKeyKind = signature_kind.into();
 	if key_kind == RsaKeyKind::Console {
-		todo!()
-	} else if let XContentKeyMaterial::Signature(sig, _reserved) = key_material {
-		for console_kind in [ConsoleKind::Retail, ConsoleKind::Devkit] {
-			if key_kind.verify_signature(console_kind, sig, hash).is_ok() {
-				return Ok(console_kind);
-			}
-		}
-	} else {
-		panic!("Key material variant cannot satisfy signature kind {:?}", signature_kind);
+		let XContentKeyMaterial::ConsoleSignature(signature) = key_material else {
+			panic!("Key material variant cannot satisfy signature kind {:?}", signature_kind);
+		};
+		let digest: &[u8; SHA1_DIGEST_SIZE] =
+			hash.try_into().map_err(|_| crate::Error::DigestLength { length: hash.len() })?;
+
+		return Ok(XContentVerification::Console(signature.verify(digest)));
 	}
+
+	let XContentKeyMaterial::Signature(sig, _reserved) = key_material else {
+		panic!("Key material variant cannot satisfy signature kind {:?}", signature_kind);
+	};
+	for console_kind in [ConsoleKind::Retail, ConsoleKind::Devkit] {
+		if key_kind.verify_signature(console_kind, sig, hash).is_ok() {
+			return Ok(XContentVerification::Strong(console_kind));
+		}
+	}
+
 	Err(rsa::Error::Verification.into())
 }
 

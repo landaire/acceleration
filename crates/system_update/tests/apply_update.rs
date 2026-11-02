@@ -3,6 +3,7 @@ use std::fs::File;
 use memmap2::Mmap;
 use system_update::FlashFile;
 use system_update::FlashFiles;
+use system_update::SystemUpdateError;
 use system_update::UpdatePackage;
 
 fn map(path: &std::path::Path) -> Mmap {
@@ -38,4 +39,18 @@ fn installs_a_system_update_over_base_files() {
 	let xam = files.module("xam.xex").unwrap();
 	assert!(xam.image() == expected_xam.as_slice());
 	assert!(xam.resource("shrdres").unwrap().is_some());
+}
+
+/// The CON fixture of the xcontent tests, a package any console can sign.
+#[test]
+fn a_console_signed_package_is_not_a_system_update() {
+	let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").expect("the test runner sets CARGO_MANIFEST_DIR");
+	let path = std::path::PathBuf::from(manifest_dir).join("../xcontent/tests/fixtures/con_a.bin");
+	let package = std::fs::read(path).unwrap();
+
+	let Err(error) = UpdatePackage::parse(&package) else {
+		panic!("a console signed package parses as a system update");
+	};
+
+	assert!(matches!(error.current_context(), SystemUpdateError::ConsoleSigned));
 }

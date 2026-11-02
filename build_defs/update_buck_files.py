@@ -348,6 +348,15 @@ def crate_rules(package, directory, resolved, suffix, default):
             rules.append(test(f"{library['name']}-lib-test", library, env(), resolved.deps(with_dev=True)))
 
     own_library = [f":{library['name']}{suffix}"] if library is not None else []
+    # Cargo gives integration tests the paths of the package's binaries as
+    # CARGO_BIN_EXE_<name>; tests run from the project root, where these
+    # locations resolve.
+    binaries = {
+        f"CARGO_BIN_EXE_{target['name']}": f"$(location :{target['name']}{suffix}-bin)"
+        for target in package["targets"]
+        if "bin" in target["kind"] and required_features_enabled(target)
+    }
+    integration_env = f"ENV | {json.dumps(binaries, sort_keys=True)}" if binaries else "ENV"
     for target in package["targets"]:
         if "bin" in target["kind"]:
             if not required_features_enabled(target):
@@ -372,7 +381,7 @@ def crate_rules(package, directory, resolved, suffix, default):
             if target["test"] and default:
                 rules.append(test(f"{target['name']}-bin-test", target, env(target), resolved.deps(own_library, True)))
         elif "test" in target["kind"] and default:
-            rules.append(test(f"{target['name']}-test", target, env(), resolved.deps(own_library, True)))
+            rules.append(test(f"{target['name']}-test", target, integration_env, resolved.deps(own_library, True)))
         elif ("bench" in target["kind"] or "example" in target["kind"]) and default:
             kind = "bench" if "bench" in target["kind"] else "example"
             if kind == "bench" and bench_harness(package, target["name"]):

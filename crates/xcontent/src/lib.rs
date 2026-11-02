@@ -21,10 +21,11 @@
 //! println!("Type:    {:?}", package.header.metadata.content_type);
 //! println!("Version: {}", package.header.metadata.version);
 //!
-//! // Verify a LIVE/PIRS signature (tries retail and devkit keys).
-//! // CON verification is not implemented and panics.
+//! // A LIVE/PIRS signature is tried with the retail and devkit keys; a CON signature reports
+//! // its certificate and package signature checks separately.
 //! match package.verify_signature(&data) {
-//!     Ok(kind) => println!("Signed by {:?} console type", kind),
+//!     Ok(verification) if verification.is_verified() => println!("Verified: {verification:?}"),
+//!     Ok(verification) => println!("Not verified: {verification:?}"),
 //!     Err(e) => println!("Signature invalid: {}", e),
 //! }
 //! # Ok::<(), Box<dyn std::error::Error>>(())

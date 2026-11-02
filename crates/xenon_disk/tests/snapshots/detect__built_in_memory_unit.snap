@@ -1,0 +1,18 @@
+---
+source: crates/xenon_disk/tests/detect.rs
+expression: report(&run(&image))
+---
+kind: UsbBuiltInMemoryUnit
+evidence: VolumeHeader { partition: "SystemAuxPartition", offset: ByteOffset(0x0) }
+evidence: VolumeHeader { partition: "StorageSystem", offset: ByteOffset(0x8000000) }
+evidence: VolumeHeader { partition: "SystemExtPartition", offset: ByteOffset(0x14000000) }
+evidence: VolumeHeader { partition: "Storage", offset: ByteOffset(0x20e30000) }
+volume headers: ReservationPartition, SystemAuxPartition, StorageSystem, SystemExtPartition, Storage
+built-in memory unit of 0x40000000 bytes (0x200000 sectors)
+ReservationPartition     0x00000000000..0x00020e30000 0x00020e30000 raw
+SystemAuxPartition       0x00000000000..0x00008000000 0x00008000000
+StorageSystem            0x00008000000..0x0000c000000 0x00004000000
+TitleURLCachePartition   0x0000c000000..0x0000e000000 0x00002000000 raw
+SystemURLCachePartition  0x0000e000000..0x00014000000 0x00006000000 raw
+SystemExtPartition       0x00014000000..0x00020e30000 0x0000ce30000
+Storage                  0x00020e30000..0x00040000000 0x0001f1d0000

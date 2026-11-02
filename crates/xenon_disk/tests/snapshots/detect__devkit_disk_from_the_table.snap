@@ -1,0 +1,15 @@
+---
+source: crates/xenon_disk/tests/detect.rs
+expression: report(&checked)
+---
+kind: DevkitHdd
+evidence: DevkitTable { minimum: 1393033219 }
+evidence: SecuritySector { user_addressable_sectors: SectorCount(0x1c9a5970) }
+evidence: JoshBlock
+evidence: VolumeHeader { partition: "Partition1", offset: ByteOffset(0x2d0eb0000) }
+warning: Josh block console certificate invalid: key 0x3c does not verify it
+volume headers: Partition1
+development kit hard disk of 0x3934b2e000 bytes (0x1c9a5970 sectors)
+PhysicalDisk             0x00000000000..0x03934b2e000 0x03934b2e000 raw
+Partition0               0x00000000000..0x03934b2e000 0x03934b2e000 raw
+Partition1               0x002d0eb0000..0x03934b2e000 0x03663c7e000

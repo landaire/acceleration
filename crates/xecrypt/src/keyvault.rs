@@ -36,6 +36,10 @@ use std::io::Read;
 use std::ops::Range;
 use thiserror::Error;
 
+use crate::console::ConsoleCertificate;
+use crate::console::ConsoleRevision;
+use crate::console::ConsoleType;
+
 pub const KEYVAULT_SIZE_FULL: usize = 0x4000;
 pub const KEYVAULT_SIZE_TRUNCATED: usize = 0x3FF0;
 const DATA_START: usize = 0x18;
@@ -76,12 +80,7 @@ mod offsets {
 	pub const XEIKA_PRIVATE_KEY: Range<usize> = 0x03D0..0x0760;
 	pub const CARDEA_PRIVATE_KEY: Range<usize> = 0x0760..0x0930;
 
-	pub const CONSOLE_CERTIFICATE: usize = 0x09B0;
-	pub const CERT_CONSOLE_ID: Range<usize> = 0x02..0x07;
-	pub const CERT_PART_NUMBER: Range<usize> = 0x07..0x12;
-	pub const CERT_PRIVILEGES: Range<usize> = 0x12..0x16;
-	pub const CERT_CONSOLE_TYPE: Range<usize> = 0x16..0x1A;
-	pub const CERT_MFG_DATE: Range<usize> = 0x1E..0x26;
+	pub const CONSOLE_CERTIFICATE: Range<usize> = 0x09B0..0x0B58;
 
 	pub const XEIKA_CERTIFICATE: Range<usize> = 0x0B58..0x1EE0;
 	pub const CARDEA_CERTIFICATE: Range<usize> = 0x1EE0..0x3FE8;
@@ -175,34 +174,6 @@ bitflags! {
 impl serde::Serialize for RestrictedPrivileges {
 	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
 		s.serialize_u64(self.bits())
-	}
-}
-
-bitflags! {
-	/// Console certificate privilege flags at cert+0x12 (u32).
-	///
-	/// Part of the signed console certificate in the keyvault. Covered by
-	/// the RSA signature over the certificate -- cannot be modified without
-	/// re-signing with Microsoft's private key.
-	///
-	/// The HV and kernel do not directly mask individual bits of this field
-	/// in the 17559 binaries. `XeKeysConsoleSignatureVerification` verifies
-	/// the certificate's RSA signature and passes the entire cert (including
-	/// privileges) to `XeKeysSetKey(0x1000, ...)` for storage, but no
-	/// bit-level checks on this u32 were found.
-	///
-	/// All test keyvaults have privileges = 0, suggesting this field is
-	/// reserved for future use or only meaningful on special certificates.
-	#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-	pub struct CertificatePrivileges: u32 {
-		const _ = !0;
-	}
-}
-
-#[cfg(feature = "serde")]
-impl serde::Serialize for CertificatePrivileges {
-	fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-		s.serialize_u32(self.bits())
 	}
 }
 
@@ -344,119 +315,6 @@ pub struct KeyVaultKeys {
 	pub cardea_private_key: Vec<u8>,
 }
 
-#[derive(Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct ConsoleCertificate {
-	pub cert_size: u16,
-	pub console_id: xenon_types::ConsoleId,
-	pub console_part_number: String,
-	pub privileges: CertificatePrivileges,
-	pub console_type: ConsoleType,
-	pub manufacturing_date: String,
-}
-
-/// Console type identifier at cert+0x16 (u32).
-///
-/// Part of the signed console certificate. The HV and kernel verify
-/// consistency of this field between the local certificate and any
-/// incoming certificate during `XeKeysConsoleSignatureVerification`:
-///
-/// - **Retail path** (HV flags bit 15 clear): bits 0-23 must match
-///   exactly between the two certificates.
-/// - **Devkit path** (HV flags bit 15 set): bits 0-23 and bit 30
-///   (TESTKIT) must match. Bits 24-29 may differ. Bit 31
-///   (RECOVERY_GENERATED) is explicitly ignored in the comparison.
-///
-/// ## Bit layout
-///
-/// | Bits  | Mask         | Name                | Description |
-/// |-------|--------------|---------------------|-------------|
-/// | 0-1   | 0x0000_0003  | Console kind        | 1=devkit, 2=retail |
-/// | 2-13  | 0x0000_3FFC  | Reserved            | Must match between certs |
-/// | 14    | 0x0000_4000  | (unknown)           | Seen set in test keyvaults. Must match between certs. |
-/// | 15-23 | 0x00FF_8000  | Reserved            | Must match between certs |
-/// | 24-26 | 0x0700_0000  | (variable)          | May differ on devkit; must match on retail |
-/// | 27    | 0x0800_0000  | ODD auth type       | Checked in `HvxKeysInitialize`. May be cleared based on OddAuthType bit 2. |
-/// | 28    | 0x1000_0000  | (variable)          | Checked in `HvxKeysInitialize` (0x77d8). May differ on devkit. |
-/// | 29    | 0x2000_0000  | (reserved)          | May differ on devkit |
-/// | 30    | 0x4000_0000  | Testkit             | Console is a test kit. Must match between certs on both retail and devkit. |
-/// | 31    | 0x8000_0000  | Recovery generated  | Certificate was recovery-generated. Selects key 0x3a instead of 0x3c for verification. Ignored in cert comparison. |
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub struct ConsoleType(pub u32);
-
-impl ConsoleType {
-	/// Console kind mask (bits 0-1).
-	pub const KIND_MASK: u32 = 0x0000_0003;
-	/// Bit 27: ODD authentication type. Checked and potentially cleared in
-	/// `HvxKeysInitialize` based on OddAuthType bit 2.
-	pub const ODD_AUTH_TYPE: u32 = 0x0800_0000;
-	/// Bit 30: Console is a test kit.
-	pub const TESTKIT: u32 = 0x4000_0000;
-	/// Bit 31: Certificate was recovery-generated. When set, the HV uses
-	/// key ID 0x3a (recovery console cert key) instead of 0x3c (normal
-	/// console cert key) for RSA signature verification.
-	pub const RECOVERY_GENERATED: u32 = 0x8000_0000;
-
-	pub fn kind(&self) -> ConsoleKind {
-		match self.0 & Self::KIND_MASK {
-			1 => ConsoleKind::Devkit,
-			2 => ConsoleKind::Retail,
-			_ => ConsoleKind::Unknown,
-		}
-	}
-
-	pub fn is_devkit(&self) -> bool {
-		self.0 & Self::KIND_MASK == 1
-	}
-
-	pub fn is_retail(&self) -> bool {
-		self.0 & Self::KIND_MASK == 2
-	}
-
-	pub fn is_testkit(&self) -> bool {
-		self.0 & Self::TESTKIT != 0
-	}
-
-	pub fn is_recovery_generated(&self) -> bool {
-		self.0 & Self::RECOVERY_GENERATED != 0
-	}
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub enum ConsoleKind {
-	Devkit,
-	Retail,
-	Unknown,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
-pub enum ConsoleRevision {
-	/// Original Xbox 360 (2005). 90nm CPU/GPU.
-	Xenon,
-	/// Second revision (2007). 80nm GPU, HDMI added.
-	Zephyr,
-	/// Third revision (2007). 65nm CPU.
-	Falcon,
-	/// Fourth revision (2008). 65nm CPU, 65nm GPU.
-	Jasper,
-	/// Xbox 360 S "Slim" (2010). CPU+GPU combined into single die.
-	Trinity,
-	/// Xbox 360 S revision (2011). Smaller combined die.
-	Corona,
-	/// Xbox 360 E (2013). Final hardware revision.
-	Winchester,
-	Unknown,
-}
-
-impl ConsoleCertificate {
-	pub fn revision(&self) -> ConsoleRevision {
-		revision_from_part_number(&self.console_part_number)
-	}
-}
-
 impl KeyVault {
 	pub fn parse(data: impl AsRef<[u8]>) -> Result<Self, KeyVaultError> {
 		Self::parse_inner(data.as_ref())
@@ -471,7 +329,8 @@ impl KeyVault {
 		let kv = &data[DATA_START..];
 		let config = KeyVaultConfig::parse(kv)?;
 		let keys = KeyVaultKeys::parse(kv)?;
-		let console_certificate = ConsoleCertificate::parse(&kv[offsets::CONSOLE_CERTIFICATE..])?;
+		let console_certificate =
+			ConsoleCertificate::parse(kv[offsets::CONSOLE_CERTIFICATE].try_into().expect("the range is a certificate"));
 
 		let xeika_end = std::cmp::min(offsets::XEIKA_CERTIFICATE.end, kv.len());
 		let xeika_certificate = kv[offsets::XEIKA_CERTIFICATE.start..xeika_end].to_vec();
@@ -526,7 +385,7 @@ pub struct KeyVaultRef<'a> {
 	pub confounder: &'a [u8; 0x10],
 	pub config: KeyVaultConfig,
 	pub keys: KeyVaultKeysRef<'a>,
-	pub console_certificate: ConsoleCertificateRef<'a>,
+	pub console_certificate: ConsoleCertificate,
 	pub xeika_certificate: &'a [u8],
 	pub cardea_certificate: &'a [u8],
 }
@@ -559,16 +418,6 @@ pub struct KeyVaultKeysRef<'a> {
 	pub console_private_key: &'a [u8],
 	pub xeika_private_key: &'a [u8],
 	pub cardea_private_key: &'a [u8],
-}
-
-#[derive(Debug)]
-pub struct ConsoleCertificateRef<'a> {
-	pub cert_size: u16,
-	pub console_id: xenon_types::ConsoleId,
-	pub console_part_number: &'a str,
-	pub privileges: CertificatePrivileges,
-	pub console_type: ConsoleType,
-	pub manufacturing_date: &'a str,
 }
 
 impl<'a> KeyVaultRef<'a> {
@@ -617,23 +466,8 @@ impl<'a> KeyVaultRef<'a> {
 			cardea_private_key: &kv[offsets::CARDEA_PRIVATE_KEY],
 		};
 
-		let cert = &kv[offsets::CONSOLE_CERTIFICATE..];
-		let cert_size = u16::from_be_bytes([cert[0], cert[1]]);
-		let pn_raw = &cert[offsets::CERT_PART_NUMBER];
-		let pn_end = pn_raw.iter().position(|b| *b == 0).unwrap_or(pn_raw.len());
-		let date_raw = &cert[offsets::CERT_MFG_DATE];
-		let date_end = date_raw.iter().position(|b| *b == 0).unwrap_or(date_raw.len());
-
-		let console_certificate = ConsoleCertificateRef {
-			cert_size,
-			console_id: xenon_types::ConsoleId(cert[offsets::CERT_CONSOLE_ID].try_into().unwrap()),
-			console_part_number: std::str::from_utf8(&pn_raw[..pn_end]).unwrap_or(""),
-			privileges: CertificatePrivileges::from_bits_retain(u32::from_be_bytes(
-				cert[offsets::CERT_PRIVILEGES].try_into().unwrap(),
-			)),
-			console_type: ConsoleType(u32::from_be_bytes(cert[offsets::CERT_CONSOLE_TYPE].try_into().unwrap())),
-			manufacturing_date: std::str::from_utf8(&date_raw[..date_end]).unwrap_or(""),
-		};
+		let console_certificate =
+			ConsoleCertificate::parse(kv[offsets::CONSOLE_CERTIFICATE].try_into().expect("the range is a certificate"));
 
 		let xeika_end = std::cmp::min(offsets::XEIKA_CERTIFICATE.end, kv.len());
 		let cardea_end = std::cmp::min(offsets::CARDEA_CERTIFICATE.end, kv.len());
@@ -681,14 +515,7 @@ impl<'a> KeyVaultRef<'a> {
 				xeika_private_key: self.keys.xeika_private_key.to_vec(),
 				cardea_private_key: self.keys.cardea_private_key.to_vec(),
 			},
-			console_certificate: ConsoleCertificate {
-				cert_size: self.console_certificate.cert_size,
-				console_id: self.console_certificate.console_id,
-				console_part_number: self.console_certificate.console_part_number.to_owned(),
-				privileges: self.console_certificate.privileges,
-				console_type: self.console_certificate.console_type,
-				manufacturing_date: self.console_certificate.manufacturing_date.to_owned(),
-			},
+			console_certificate: self.console_certificate,
 			xeika_certificate: self.xeika_certificate.to_vec(),
 			cardea_certificate: self.cardea_certificate.to_vec(),
 		}
@@ -723,44 +550,8 @@ impl<'a> KeyVaultRef<'a> {
 	}
 
 	pub fn revision(&self) -> ConsoleRevision {
-		revision_from_part_number(self.console_certificate.console_part_number)
+		self.console_certificate.revision()
 	}
-}
-
-impl<'a> ConsoleCertificateRef<'a> {
-	pub fn revision(&self) -> ConsoleRevision {
-		revision_from_part_number(self.console_part_number)
-	}
-}
-
-fn revision_from_part_number(pn: &str) -> ConsoleRevision {
-	if pn.starts_with("X803") || pn.starts_with("X800") {
-		if pn.contains("955") || pn.contains("953") {
-			return ConsoleRevision::Xenon;
-		}
-		if pn.contains("885") || pn.contains("878") {
-			return ConsoleRevision::Zephyr;
-		}
-	}
-	if pn.starts_with("X804") || pn.starts_with("X810") {
-		return ConsoleRevision::Falcon;
-	}
-	if pn.starts_with("X811") || pn.starts_with("X812") || pn.starts_with("X815") {
-		return ConsoleRevision::Jasper;
-	}
-	if pn.starts_with("X816") || pn.starts_with("X818") {
-		return ConsoleRevision::Trinity;
-	}
-	if pn.starts_with("X819") || pn.starts_with("X820") || pn.starts_with("X850") {
-		return ConsoleRevision::Corona;
-	}
-	if pn.starts_with("X851") || pn.starts_with("X852") || pn.starts_with("X86") {
-		return ConsoleRevision::Winchester;
-	}
-	if pn.starts_with("004") {
-		return ConsoleRevision::Xenon;
-	}
-	ConsoleRevision::Unknown
 }
 
 impl KeyVaultHeader {
@@ -865,38 +656,6 @@ impl KeyVaultKeys {
 			console_private_key: data[offsets::CONSOLE_PRIVATE_KEY].to_vec(),
 			xeika_private_key: data[offsets::XEIKA_PRIVATE_KEY].to_vec(),
 			cardea_private_key: data[offsets::CARDEA_PRIVATE_KEY].to_vec(),
-		})
-	}
-}
-
-impl ConsoleCertificate {
-	fn parse(data: &[u8]) -> Result<Self, KeyVaultError> {
-		let mut c = Cursor::new(data);
-		let cert_size = c.read_u16::<BigEndian>()?;
-		let mut console_id_raw = [0u8; 5];
-		c.read_exact(&mut console_id_raw)?;
-		let console_id = xenon_types::ConsoleId(console_id_raw);
-
-		let mut part_number = [0u8; 0x0B];
-		c.read_exact(&mut part_number)?;
-		let pn_end = part_number.iter().position(|b| *b == 0).unwrap_or(part_number.len());
-		let console_part_number = String::from_utf8_lossy(&part_number[..pn_end]).into_owned();
-
-		let privileges = CertificatePrivileges::from_bits_retain(c.read_u32::<BigEndian>()?);
-		let console_type = ConsoleType(c.read_u32::<BigEndian>()?);
-
-		let mut date_raw = [0u8; 0x08];
-		c.read_exact(&mut date_raw)?;
-		let date_end = date_raw.iter().position(|b| *b == 0).unwrap_or(date_raw.len());
-		let manufacturing_date = String::from_utf8_lossy(&date_raw[..date_end]).into_owned();
-
-		Ok(ConsoleCertificate {
-			cert_size,
-			console_id,
-			console_part_number,
-			privileges,
-			console_type,
-			manufacturing_date,
 		})
 	}
 }

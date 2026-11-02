@@ -4,12 +4,12 @@ use byteorder::ReadBytesExt;
 use serde::Serialize;
 use std::io::Cursor;
 use std::io::Read;
+use xecrypt::ConsoleSignature;
+use xecrypt::console::CONSOLE_SIGNATURE_SIZE;
 
 use crate::error::StfsError;
 use crate::serde_bytes;
 use crate::types::*;
-
-const INVALID_STR: &str = "<INVALID>";
 
 fn read_array<const N: usize>(cursor: &mut Cursor<&[u8]>) -> Result<[u8; N], StfsError> {
 	let mut buf = [0u8; N];
@@ -44,23 +44,6 @@ fn read_utf16_cstr(cursor: &mut Cursor<&[u8]>, input: &[u8]) -> String {
 	}
 
 	String::from_utf16(utf16_str.as_slice()).expect("failed to convert data to utf16")
-}
-
-#[derive(Debug, Serialize)]
-pub struct Certificate {
-	pub pubkey_cert_size: u16,
-	pub owner_console_id: ConsoleId,
-	pub owner_console_part_number: String,
-	pub owner_console_type: Option<ConsoleType>,
-	pub console_type_flags: Option<ConsoleTypeFlags>,
-	pub date_generation: String,
-	pub public_exponent: u32,
-	#[serde(with = "serde_bytes::fixed")]
-	pub public_modulus: [u8; 0x80],
-	#[serde(with = "serde_bytes::fixed")]
-	pub certificate_signature: [u8; 0x100],
-	#[serde(with = "serde_bytes::fixed")]
-	pub signature: [u8; 0x80],
 }
 
 #[derive(Debug, Serialize)]
@@ -155,7 +138,7 @@ pub struct SvodVolumeDescriptor {
 pub struct XContentHeader {
 	pub package_type: PackageType,
 	/// Only present in console-signed packages
-	pub certificate: Option<Certificate>,
+	pub certificate: Option<ConsoleSignature>,
 	/// Only present in strong-signed packages
 	#[serde(with = "serde_bytes::fixed_opt")]
 	pub package_signature: Option<[u8; 0x100]>,
@@ -226,39 +209,10 @@ impl XContentHeader {
 	}
 }
 
-fn parse_certificate(cursor: &mut Cursor<&[u8]>) -> Result<Certificate, StfsError> {
-	let pubkey_cert_size = cursor.read_u16::<BigEndian>()?;
-	let owner_console_id = ConsoleId(read_array(cursor)?);
+fn parse_console_signature(cursor: &mut Cursor<&[u8]>) -> Result<ConsoleSignature, StfsError> {
+	let bytes: [u8; CONSOLE_SIGNATURE_SIZE] = read_array(cursor)?;
 
-	let part_number_bytes: [u8; 0x11] = read_array(cursor)?;
-	let end = part_number_bytes.iter().position(|b| *b == 0x0).unwrap_or(part_number_bytes.len());
-	let owner_console_part_number =
-		String::from_utf8(part_number_bytes[..end].to_vec()).unwrap_or_else(|_| INVALID_STR.into());
-
-	let owner_console_type_raw = cursor.read_u32::<BigEndian>()?;
-	let console_type_flags = ConsoleTypeFlags::from_bits(owner_console_type_raw & 0xFFFFFFFC);
-	let owner_console_type = ConsoleType::try_from((owner_console_type_raw & 0x3) as u8).ok();
-
-	let date_generation_bytes: [u8; 0x8] = read_array(cursor)?;
-	let date_generation = String::from_utf8(date_generation_bytes.to_vec()).unwrap_or_else(|_| INVALID_STR.into());
-
-	let public_exponent = cursor.read_u32::<BigEndian>()?;
-	let public_modulus: [u8; 0x80] = read_array(cursor)?;
-	let certificate_signature: [u8; 0x100] = read_array(cursor)?;
-	let signature: [u8; 0x80] = read_array(cursor)?;
-
-	Ok(Certificate {
-		pubkey_cert_size,
-		owner_console_id,
-		owner_console_part_number,
-		owner_console_type,
-		console_type_flags,
-		date_generation,
-		public_exponent,
-		public_modulus,
-		certificate_signature,
-		signature,
-	})
+	Ok(ConsoleSignature::parse(&bytes))
 }
 
 fn parse_avatar_asset_info(cursor: &mut Cursor<&[u8]>) -> Result<AvatarAssetInformation, StfsError> {
@@ -316,7 +270,8 @@ fn parse_header_inner(input: &[u8]) -> Result<XContentHeader, StfsError> {
 		PackageType::try_from(buf)?
 	};
 
-	let certificate = if let PackageType::Con = &package_type { Some(parse_certificate(&mut cursor)?) } else { None };
+	let certificate =
+		if let PackageType::Con = &package_type { Some(parse_console_signature(&mut cursor)?) } else { None };
 
 	let package_signature = if matches!(package_type, PackageType::Live | PackageType::Pirs) {
 		Some(read_array(&mut cursor)?)

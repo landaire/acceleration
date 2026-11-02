@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 license-file = "../LICENSE"
 authors = ["Lander Brandt"]
-description = "Sans-io reader and forensic scanner for Xbox 360 FATX volumes"
+description = "Sans-io reader, writer and forensic scanner for Xbox 360 FATX volumes"
 repository = "https://github.com/landaire/acceleration"
 keywords = ["xbox360", "fatx", "xbox", "forensics", "parser"]
 categories = ["parser-implementations", "filesystem"]
@@ -26,6 +26,7 @@ futures = { workspace = true, optional = true }
 
 [dev-dependencies]
 futures = { workspace = true }
+insta = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

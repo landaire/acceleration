@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 license-file = "../LICENSE"
 authors = ["Lander Brandt"]
-description = "Command-line inspector and recovery tool for Xbox 360 FATX volumes"
+description = "Command-line inspector, recovery tool and editor for Xbox 360 FATX volumes"
 repository = "https://github.com/landaire/acceleration"
 readme = "README.md"
 keywords = ["xbox360", "fatx", "xbox", "forensics", "cli"]
@@ -15,6 +15,7 @@ include = ["src/**", "README.md"]
 [dependencies]
 fatx = { version = "0.4", path = "../fatx" }
 xenon_io = { version = "0.4", path = "../xenon_io" }
+xenon_disk = { version = "0.4", path = "../xenon_disk" }
 thiserror = { workspace = true }
 clap = { version = "4.6.1", features = ["derive"] }
 anstream = "1.0"

@@ -1,0 +1,41 @@
+---
+source: crates/xenon_disk/tests/security.rs
+expression: block
+---
+JoshBlock {
+    console_id: 1122334455,
+    console_part_number: "X000000-001",
+    console_type: ConsoleType(
+        1,
+    ),
+    manufacturing_date: "01-02-03",
+    caches: [
+        CacheEntry {
+            bytes_00: 00000000,
+            word_04: 0x0,
+            bytes_08: 0000000000000000000000000000000000000000,
+            word_1c: 0x0,
+            word_20: 0x0,
+        },
+        CacheEntry {
+            bytes_00: 24f00001,
+            word_04: 0x0,
+            bytes_08: 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a,
+            word_1c: 0x4,
+            word_20: 0x2,
+        },
+    ],
+    version: 1,
+    last_assigned: CacheIndex(
+        1,
+    ),
+    owners: [
+        None,
+        Some(
+            TitleId(
+                1297285121,
+            ),
+        ),
+    ],
+    signed_digest: 5c6d8b50654ce349528db93ead43b8585dee9e3c,
+}

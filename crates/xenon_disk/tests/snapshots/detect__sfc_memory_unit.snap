@@ -1,0 +1,11 @@
+---
+source: crates/xenon_disk/tests/detect.rs
+expression: report(&run(&image))
+---
+kind: SfcMemoryUnit
+evidence: VolumeHeader { partition: "BuiltInMuSfc", offset: ByteOffset(0x0) }
+evidence: VolumeHeader { partition: "BuiltInMuSfcSystem", offset: ByteOffset(0x1a4a1000) }
+volume headers: BuiltInMuSfc, BuiltInMuSfcSystem
+NAND flash memory unit of 0x1aca0000 bytes (0xd6500 sectors)
+BuiltInMuSfc             0x00000000000..0x0001a4a1000 0x0001a4a1000
+BuiltInMuSfcSystem       0x0001a4a1000..0x0001aca0000 0x000007ff000

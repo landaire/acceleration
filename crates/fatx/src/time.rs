@@ -3,6 +3,8 @@
 //! seconds divided by two (5).
 
 use std::fmt;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 const BASE_YEAR: u16 = 1980;
 
@@ -63,6 +65,61 @@ impl Timestamp {
 
 		Some(days * 86400 + seconds)
 	}
+
+	/// The timestamp the driver stores for a time `seconds` and `nanoseconds` after the Unix
+	/// epoch, in the time zone the caller chooses. Like fatsup.c FatxTimeToFatTimestamp, the
+	/// time is rounded up to the next two seconds; `None` when the year is outside 1980 to
+	/// 2107, which the driver rejects.
+	pub fn from_unix(seconds: i64, nanoseconds: u32) -> Option<Self> {
+		const TICKS_PER_SECOND: i128 = 10_000_000;
+
+		// The driver adds 19999999 100-nanosecond ticks, then drops the odd second.
+		let ticks = i128::from(seconds) * TICKS_PER_SECOND + i128::from(nanoseconds / 100);
+		let rounded = (ticks + 2 * TICKS_PER_SECOND - 1).div_euclid(TICKS_PER_SECOND);
+		let rounded = i64::try_from(rounded).ok()?;
+		let (year, month, day) = civil_from_days(rounded.div_euclid(86400));
+		let second_of_day = rounded.rem_euclid(86400);
+
+		Self::from_fields(
+			u16::try_from(year).ok()?,
+			month,
+			day,
+			(second_of_day / 3600) as u8,
+			(second_of_day / 60 % 60) as u8,
+			(second_of_day % 60) as u8,
+		)
+	}
+
+	/// [`Self::from_unix`] for a system time, read as the time zone of the volume.
+	pub fn from_system_time(time: SystemTime) -> Option<Self> {
+		match time.duration_since(UNIX_EPOCH) {
+			Ok(after) => Self::from_unix(i64::try_from(after.as_secs()).ok()?, after.subsec_nanos()),
+			// Before 1970, and so before the first year a timestamp holds.
+			Err(_) => None,
+		}
+	}
+
+	/// A timestamp of a calendar date and time of day; an odd second rounds down, as the field
+	/// holds seconds divided by two. `None` for an impossible date or a year outside 1980 to
+	/// 2107.
+	pub fn from_fields(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> Option<Self> {
+		const LAST_YEAR: u16 = BASE_YEAR + 0x7f;
+
+		if !(BASE_YEAR..=LAST_YEAR).contains(&year) {
+			return None;
+		}
+
+		let raw = (u32::from(year - BASE_YEAR) << 25)
+			| (u32::from(month & 0xf) << 21)
+			| (u32::from(day & 0x1f) << 16)
+			| (u32::from(hour & 0x1f) << 11)
+			| (u32::from(minute & 0x3f) << 5)
+			| u32::from((second / 2) & 0x1f);
+		let timestamp = Self(raw);
+		let fits = timestamp.month() == month && timestamp.day() == day && timestamp.hour() == hour;
+
+		(fits && timestamp.minute() == minute && second < 60 && timestamp.is_valid()).then_some(timestamp)
+	}
 }
 
 impl fmt::Display for Timestamp {
@@ -93,6 +150,21 @@ fn days_in_month(year: u16, month: u8) -> u8 {
 		4 | 6 | 9 | 11 => 30,
 		_ => 31,
 	}
+}
+
+/// The proleptic Gregorian date `days` after 1970-01-01.
+fn civil_from_days(days: i64) -> (i64, u8, u8) {
+	let days = days + 719468;
+	let era = days.div_euclid(146097);
+	let day_of_era = days - era * 146097;
+	let year_of_era = (day_of_era - day_of_era / 1460 + day_of_era / 36524 - day_of_era / 146096) / 365;
+	let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+	let month_index = (5 * day_of_year + 2) / 153;
+	let day = day_of_year - (153 * month_index + 2) / 5 + 1;
+	let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
+	let year = year_of_era + era * 400 + i64::from(month <= 2);
+
+	(year, month as u8, day as u8)
 }
 
 /// Days from 1970-01-01 to a proleptic Gregorian date.
@@ -127,5 +199,31 @@ mod tests {
 		assert!(!Timestamp::from_raw(raw).is_valid());
 		assert_eq!(Timestamp::from_raw(raw).unix_seconds(), None);
 		assert!(!Timestamp::from_raw(0).is_valid());
+	}
+
+	#[test]
+	fn writes_round_up_to_two_seconds() {
+		// 2010-09-09 19:00:42 UTC.
+		let even = 1_284_058_842;
+
+		assert_eq!(Timestamp::from_unix(even, 0).unwrap().raw(), 0x3d29_9815);
+		assert_eq!(Timestamp::from_unix(even - 1, 0).unwrap().raw(), 0x3d29_9815);
+		assert_eq!(Timestamp::from_unix(even - 2, 100).unwrap().raw(), 0x3d29_9815);
+		assert_eq!(Timestamp::from_unix(even, 100).unwrap().to_string(), "2010-09-09 19:00:44");
+		// Fractions below the driver's 100-nanosecond tick are dropped.
+		assert_eq!(Timestamp::from_unix(even, 99).unwrap().raw(), 0x3d29_9815);
+		// 23:59:59 on the last day of a year rounds into the next year.
+		assert_eq!(Timestamp::from_unix(1_293_839_999, 0).unwrap().to_string(), "2011-01-01 00:00:00");
+	}
+
+	#[test]
+	fn years_outside_the_field_are_rejected() {
+		assert_eq!(Timestamp::from_unix(315_532_800, 0).unwrap().to_string(), "1980-01-01 00:00:00");
+		assert_eq!(Timestamp::from_unix(315_532_799, 0).unwrap().to_string(), "1980-01-01 00:00:00");
+		assert_eq!(Timestamp::from_unix(315_532_797, 0), None);
+		assert_eq!(Timestamp::from_fields(2107, 12, 31, 23, 59, 58).unwrap().year(), 2107);
+		assert_eq!(Timestamp::from_fields(2108, 1, 1, 0, 0, 0), None);
+		assert_eq!(Timestamp::from_fields(2010, 2, 30, 0, 0, 0), None);
+		assert_eq!(Timestamp::from_fields(2010, 1, 1, 24, 0, 0), None);
 	}
 }

@@ -1,0 +1,9 @@
+---
+source: crates/fatx/tests/write.rs
+expression: describe(&listing)
+---
+/Content attributes 0x10 first 0x2 size 0x0 created 2026-11-01 12:34:56 modified 2026-11-01 12:34:56
+/name.wav attributes 0x00 first 0x7 size 0x5000 created 2026-11-01 12:34:56 modified 2026-11-01 12:34:56
+/empty attributes 0x00 first 0x0 size 0x0 created 2026-11-01 12:34:56 modified 2026-11-01 12:34:56
+/Content/0000000000000000 attributes 0x10 first 0x3 size 0x0 created 2026-11-01 12:34:56 modified 2026-11-01 12:34:56
+/Content/0000000000000000/save.bin attributes 0x00 first 0x4 size 0x9000 created 2026-11-01 12:34:56 modified 2026-11-01 12:34:56

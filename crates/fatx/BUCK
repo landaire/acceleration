@@ -5,7 +5,7 @@ load("//build_defs:rust_test.bzl", "rust_test")
 ENV = {
     "CARGO_MANIFEST_DIR": ".",
     "CARGO_PKG_AUTHORS": "Lander Brandt",
-    "CARGO_PKG_DESCRIPTION": "Sans-io reader and forensic scanner for Xbox 360 FATX volumes",
+    "CARGO_PKG_DESCRIPTION": "Sans-io reader, writer and forensic scanner for Xbox 360 FATX volumes",
     "CARGO_PKG_HOMEPAGE": "",
     "CARGO_PKG_NAME": "fatx",
     "CARGO_PKG_README": "",
@@ -56,6 +56,7 @@ rust_test(
         "//crates/xenon_io:xenon_io",
         "//third-party/rust:fskit",
         "//third-party/rust:futures",
+        "//third-party/rust:insta",
         "//third-party/rust:thiserror",
     ],
 )
@@ -77,6 +78,7 @@ rust_test(
         "//crates/xenon_io:xenon_io",
         "//third-party/rust:fskit",
         "//third-party/rust:futures",
+        "//third-party/rust:insta",
         "//third-party/rust:thiserror",
         ":fatx",
     ],
@@ -99,6 +101,30 @@ rust_test(
         "//crates/xenon_io:xenon_io",
         "//third-party/rust:fskit",
         "//third-party/rust:futures",
+        "//third-party/rust:insta",
+        "//third-party/rust:thiserror",
+        ":fatx",
+    ],
+)
+
+rust_test(
+    name = "write-test",
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
+    crate = "write",
+    crate_root = "tests/write.rs",
+    edition = "2024",
+    env = ENV | {"INSTA_WORKSPACE_ROOT": "."},
+    features = [
+        "default",
+    ],
+    run_env = {
+        "CARGO_MANIFEST_DIR": "crates/fatx",
+    },
+    deps = [
+        "//crates/xenon_io:xenon_io",
+        "//third-party/rust:fskit",
+        "//third-party/rust:futures",
+        "//third-party/rust:insta",
         "//third-party/rust:thiserror",
         ":fatx",
     ],

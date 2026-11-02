@@ -8,27 +8,13 @@
 //! Run with `cargo test -p fatx --test real -- --ignored --nocapture`.
 
 use std::fs::File;
-use std::io;
 use std::ops::Range;
-use std::os::unix::fs::FileExt;
 
+use fatx::FileSource;
 use fatx::PartitionKind;
-use fatx::ReadAt;
 use fatx::Volume;
 use fatx::VolumeOptions;
 use fatx::forensic::scan::ScanOptions;
-
-/// Reads a file on demand, so large images stay on disk.
-#[derive(Debug)]
-struct FileSource(File);
-
-impl ReadAt for FileSource {
-	fn read_at(&self, _context: &(), range: Range<u64>) -> io::Result<impl AsRef<[u8]>> {
-		let mut bytes = vec![0; (range.end - range.start) as usize];
-		self.0.read_exact_at(&mut bytes, range.start)?;
-		Ok(bytes)
-	}
-}
 
 fn parse_hex(text: &str) -> u64 {
 	u64::from_str_radix(text.trim().trim_start_matches("0x"), 16).expect("a hex number")
@@ -162,7 +148,7 @@ fn real_image_volumes() {
 		Ok(ranges) => parse_ranges(&ranges),
 		Err(_) => std::iter::once(0..length).collect(),
 	};
-	let source = FileSource(file);
+	let source = FileSource::new(file);
 
 	for range in ranges {
 		report(&source, range, VolumeOptions::new());
@@ -175,7 +161,7 @@ fn real_fdf_volume() {
 	let path = std::env::var("FATX_FDF_IMAGE").expect("FATX_FDF_IMAGE names a volume file");
 	let file = File::open(path).expect("the volume file opens");
 	let length = file.metadata().expect("the volume file has metadata").len();
-	let source = FileSource(file);
+	let source = FileSource::new(file);
 
 	let inference = Volume::infer_partition_length(&source, 0..length, PartitionKind::Standard)
 		.expect("the partition length is inferred");

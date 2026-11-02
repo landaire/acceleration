@@ -2,32 +2,47 @@ use std::fs::File;
 use std::io;
 use std::io::BufWriter;
 use std::io::Write;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
+use clap::Subcommand;
 use fatx::FatxError;
 use fatx::IntegrityPolicy;
 use fatx::PartitionKind;
 use fatx::VolumeOptions;
 use fatx::io::SliceSource;
+use fatxtool::DiskToolError;
 use fatxtool::FatxCommand;
 use fatxtool::FatxToolError;
 use fatxtool::InputFile;
 use fatxtool::OutputError;
+use fatxtool::PartitionTableCommand;
 use fatxtool::Session;
 use fatxtool::VolumeLocation;
+use fatxtool::VolumeSource;
+use fatxtool::WriteCommand;
 use fatxtool::parse_number;
+use fatxtool::partition_table;
+use fatxtool::partitions;
+use fatxtool::select_partition;
+use fatxtool::usb_files::open_usb_storage;
+use fatxtool::write;
+use fatxtool::write::WritableImage;
 use memmap2::Mmap;
 use rootcause::prelude::ResultExt;
 use thiserror::Error;
+use xenon_disk::DetectOptions;
+use xenon_disk::MemoryDumpSize;
 
 const PROGRAM: &str = "fatxtool";
 
 #[derive(Debug, Parser)]
-#[command(about = "Read-only Xbox 360 FATX volume inspection and recovery")]
+#[command(about = "Xbox 360 FATX volume inspection, recovery and editing, and disk partition layouts")]
 struct Arguments {
-	/// A partition, memory unit or volume file image
+	/// A disk, partition, memory unit or volume file image, or a directory of USB storage
+	/// Data#### files
 	#[arg(value_name = "IMAGE")]
 	image: PathBuf,
 
@@ -39,22 +54,60 @@ struct Arguments {
 	#[arg(long, value_parser = parse_number, conflicts_with = "partition_length")]
 	length: Option<u64>,
 
+	/// The volume of the named partition of the device the image holds, such as Partition1;
+	/// `partitions` lists the names
+	#[arg(long, value_name = "NAME", conflicts_with_all = ["offset", "length"])]
+	partition: Option<String>,
+
 	/// Partition length to mount the volume with, for a volume file shorter than its partition;
 	/// inferred from the FAT by default
 	#[arg(long, value_parser = parse_number)]
 	partition_length: Option<u64>,
 
 	/// Mount the volume as a partition in a growable file, which always has a 32-bit FAT and
-	/// 16 KiB clusters
+	/// 16 KiB clusters. A partition selected by name gets this from its layout.
 	#[arg(long)]
 	alternate_partition: bool,
+
+	/// The devkit has the large memory, which makes its MemDump partition 0x40e30000 bytes
+	#[arg(long)]
+	large_memory: bool,
 
 	/// Treat failed integrity checks, such as unreadable directories, as errors instead of warnings
 	#[arg(long)]
 	strict: bool,
 
 	#[command(subcommand)]
-	command: FatxCommand,
+	command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+	#[command(flatten)]
+	Volume(FatxCommand),
+	/// Identify the device the image holds and print its partitions
+	Partitions,
+	/// Create a devkit partition table on an image file
+	#[command(subcommand)]
+	PartitionTable(PartitionTableCommand),
+	#[command(flatten)]
+	Write(WriteCommand),
+}
+
+/// The range that `--partition`, or `--offset` and `--length`, select, and how to mount it.
+#[derive(Debug)]
+struct Selection {
+	range: Range<u64>,
+	options: VolumeOptions,
+	/// Whether the partition length comes from the volume's FAT.
+	infer: bool,
+}
+
+/// A command that reads the image.
+#[derive(Debug, Clone, Copy)]
+enum SourceCommand<'a> {
+	Partitions,
+	Volume(&'a FatxCommand),
 }
 
 #[derive(Debug, Error)]
@@ -79,12 +132,39 @@ enum CliError {
 	Output(#[from] OutputError),
 	#[error(transparent)]
 	Tool(#[from] FatxToolError),
+	#[error(transparent)]
+	Disk(#[from] DiskToolError),
 }
 
 type Result<T, E = rootcause::Report<CliError>> = std::result::Result<T, E>;
 
 fn run() -> Result<()> {
 	let arguments = Arguments::parse();
+	let memory_dump = detect_options(&arguments).memory_dump;
+	let mut out = BufWriter::new(io::stdout().lock());
+
+	let command = match &arguments.command {
+		Command::PartitionTable(command) => {
+			partition_table::run(command, &arguments.image, memory_dump, &mut out)
+				.map_err(CliError::from)
+				.into_report()?;
+			return flush(&mut out);
+		}
+		Command::Write(command) => {
+			run_write(&arguments, command, &mut out)?;
+			return flush(&mut out);
+		}
+		Command::Partitions => SourceCommand::Partitions,
+		Command::Volume(command) => SourceCommand::Volume(command),
+	};
+
+	if arguments.image.is_dir() {
+		let (source, input) = open_usb_storage(&arguments.image).map_err(CliError::from).into_report()?;
+		let image_length = source.layout().logical_length().get();
+		run_on(&arguments, command, &source, image_length, &input, &mut out)?;
+		return flush(&mut out);
+	}
+
 	let file = File::open(&arguments.image)
 		.map_err(|source| CliError::OpenImage { path: arguments.image.clone(), source })
 		.into_report()?;
@@ -93,10 +173,100 @@ fn run() -> Result<()> {
 		.map_err(|source| CliError::MapImage { path: arguments.image.clone(), source })
 		.into_report()?;
 	let input = InputFile::new(&file, &arguments.image).map_err(CliError::from).into_report()?;
-	let policy = if arguments.strict { IntegrityPolicy::Deny } else { IntegrityPolicy::Ignore };
-	let session = Session::new(PROGRAM, policy, &input);
+	run_on(&arguments, command, &SliceSource(&map[..]), map.len() as u64, &input, &mut out)?;
 
-	let image_length = map.len() as u64;
+	flush(&mut out)
+}
+
+fn run_on<S, W>(
+	arguments: &Arguments,
+	command: SourceCommand<'_>,
+	source: &S,
+	image_length: u64,
+	input: &InputFile,
+	out: &mut W,
+) -> Result<()>
+where
+	S: VolumeSource,
+	W: Write,
+{
+	let policy = if arguments.strict { IntegrityPolicy::Deny } else { IntegrityPolicy::Ignore };
+	let session = Session::new(PROGRAM, policy, input);
+
+	match command {
+		SourceCommand::Partitions => {
+			partitions::run(source, image_length, detect_options(arguments), &session, out)
+				.map_err(CliError::from)
+				.into_report()?;
+		}
+		SourceCommand::Volume(command) => {
+			let location = locate(arguments, source, image_length, &session)?;
+			fatxtool::run(command, source, &location, &session, out).map_err(CliError::from).into_report()?;
+		}
+	}
+
+	Ok(())
+}
+
+/// Runs a write command on the image file, which is opened for writing only when it is a
+/// regular file.
+fn run_write<W>(arguments: &Arguments, command: &WriteCommand, out: &mut W) -> Result<()>
+where
+	W: Write,
+{
+	let image = WritableImage::open(&arguments.image).map_err(CliError::from).into_report()?;
+	let policy = if arguments.strict { IntegrityPolicy::Deny } else { IntegrityPolicy::Ignore };
+	let session = Session::new(PROGRAM, policy, image.input());
+	let selection = select(arguments, image.source(), image.length(), &session)?;
+
+	let result = match command {
+		WriteCommand::Format(format) => write::format(format, image.source(), selection.range, selection.options, out),
+		command => {
+			let location = locate_selection(image.source(), selection)?;
+			write::run(command, image.source(), &location, &session, out)
+		}
+	};
+	result.map_err(CliError::from).into_report()?;
+
+	Ok(())
+}
+
+/// The volume that `--partition`, or `--offset` and `--length`, select.
+fn locate<S>(arguments: &Arguments, source: &S, image_length: u64, session: &Session<'_>) -> Result<VolumeLocation>
+where
+	S: VolumeSource,
+{
+	let selection = select(arguments, source, image_length, session)?;
+
+	locate_selection(source, selection)
+}
+
+fn select<S>(arguments: &Arguments, source: &S, image_length: u64, session: &Session<'_>) -> Result<Selection>
+where
+	S: VolumeSource,
+{
+	let requested_kind = arguments.alternate_partition.then_some(PartitionKind::Alternate);
+
+	if let Some(name) = &arguments.partition {
+		let selected = select_partition(source, image_length, name, detect_options(arguments), session)
+			.map_err(CliError::from)
+			.into_report()?;
+		let kind = requested_kind.unwrap_or(selected.kind);
+		let mut options = VolumeOptions::new().with_kind(kind);
+		if let Some(partition_length) = arguments.partition_length.or(selected.truncated_length) {
+			options = options.with_partition_length(partition_length);
+		}
+		if let Some(partition_length) = selected.truncated_length {
+			session.note(format_args!(
+				"the image ends {:#x} bytes into the {partition_length:#x}-byte {} partition",
+				selected.range.end - selected.range.start,
+				selected.name
+			));
+		}
+
+		return Ok(Selection { range: selected.range, options, infer: false });
+	}
+
 	let end = match arguments.length {
 		Some(length) => arguments.offset.checked_add(length),
 		None => Some(image_length),
@@ -112,17 +282,38 @@ fn run() -> Result<()> {
 		}
 	};
 
-	let source = SliceSource(&map[..]);
-	let kind = if arguments.alternate_partition { PartitionKind::Alternate } else { PartitionKind::Standard };
-	let location = match arguments.partition_length {
+	let options = VolumeOptions::new().with_kind(requested_kind.unwrap_or(PartitionKind::Standard));
+	let selection = match arguments.partition_length {
 		Some(partition_length) => {
-			VolumeLocation::new(range, VolumeOptions::new().with_kind(kind).with_partition_length(partition_length))
+			Selection { range, options: options.with_partition_length(partition_length), infer: false }
 		}
-		None => VolumeLocation::infer_with(&source, range, kind).map_err(CliError::from).into_report()?,
+		None => Selection { range, options, infer: true },
 	};
 
-	let mut out = BufWriter::new(io::stdout().lock());
-	fatxtool::run(&arguments.command, &source, &location, &session, &mut out).map_err(CliError::from).into_report()?;
+	Ok(selection)
+}
+
+fn locate_selection<S>(source: &S, selection: Selection) -> Result<VolumeLocation>
+where
+	S: VolumeSource,
+{
+	if !selection.infer {
+		return Ok(VolumeLocation::new(selection.range, selection.options));
+	}
+
+	VolumeLocation::infer_with(source, selection.range, selection.options.kind()).map_err(CliError::from).into_report()
+}
+
+fn detect_options(arguments: &Arguments) -> DetectOptions {
+	let memory_dump = if arguments.large_memory { MemoryDumpSize::Large } else { MemoryDumpSize::Standard };
+
+	DetectOptions { memory_dump }
+}
+
+fn flush<W>(out: &mut W) -> Result<()>
+where
+	W: Write,
+{
 	out.flush().map_err(|error| CliError::from(FatxToolError::WriteListing(error))).into_report()?;
 
 	Ok(())

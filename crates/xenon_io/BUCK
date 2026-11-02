@@ -5,7 +5,7 @@ load("//build_defs:rust_test.bzl", "rust_test")
 ENV = {
     "CARGO_MANIFEST_DIR": ".",
     "CARGO_PKG_AUTHORS": "Lander Brandt",
-    "CARGO_PKG_DESCRIPTION": "Sans-io machine and integrity-check types shared by the Xbox 360 storage readers",
+    "CARGO_PKG_DESCRIPTION": "Sans-io machine, source and integrity-check types shared by the Xbox 360 storage crates",
     "CARGO_PKG_HOMEPAGE": "",
     "CARGO_PKG_NAME": "xenon_io",
     "CARGO_PKG_README": "",

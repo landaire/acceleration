@@ -91,6 +91,21 @@ impl FatWidth {
 			Self::Fat32 => 4,
 		}
 	}
+
+	/// Stores `entry` big-endian in `out`, which holds one entry. A 16-bit link must name a
+	/// cluster below 0xfff0, which a 16-bit FAT always has.
+	pub(crate) fn encode(self, entry: FatEntry, out: &mut [u8]) {
+		let value = match entry {
+			FatEntry::Free => 0,
+			FatEntry::Last => u32::MAX,
+			FatEntry::Link(next) => next,
+		};
+
+		match self {
+			Self::Fat16 => out.copy_from_slice(&(value as u16).to_be_bytes()),
+			Self::Fat32 => out.copy_from_slice(&value.to_be_bytes()),
+		}
+	}
 }
 
 /// A decoded FAT entry.
@@ -135,6 +150,27 @@ impl Fat {
 
 	pub fn is_free(&self, cluster: ClusterNumber) -> bool {
 		self.entry(cluster) == Some(FatEntry::Free)
+	}
+
+	/// The table as stored.
+	pub(crate) fn bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+
+	/// Replaces the entry of a cluster the table covers.
+	pub(crate) fn set(&mut self, cluster: ClusterNumber, entry: FatEntry) {
+		self.set_index(cluster.get() as usize, entry);
+	}
+
+	/// Replaces reserved entry 0.
+	pub(crate) fn set_reserved(&mut self, entry: FatEntry) {
+		self.set_index(0, entry);
+	}
+
+	fn set_index(&mut self, index: usize, entry: FatEntry) {
+		let size = self.width.entry_size() as usize;
+		let offset = index * size;
+		self.width.encode(entry, &mut self.bytes[offset..offset + size]);
 	}
 }
 

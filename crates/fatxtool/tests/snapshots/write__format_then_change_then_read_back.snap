@@ -1,0 +1,6 @@
+---
+source: crates/fatxtool/tests/write.rs
+expression: "stdout(&[image, \"list\"])"
+---
+/Content/
+/b.wav

@@ -9,7 +9,8 @@ Libraries and tools for Xbox 360 file formats.
 - Reimplement the kernel's AES, RSA and RotSumSha primitives (`xecrypt`).
 - Read STFS packages (CON/LIVE/PIRS) and browse them as a filesystem (`xcontent`, `stfs`).
 - Inspect devkit flash captures and their internal memory unit, and compile shadowboot images (`xflash`, `shadowboot`).
-- List, extract and recover files of FATX volumes, including deleted ones (`fatx`, `fatxtool`).
+- List, extract and recover files of FATX volumes, including deleted ones, and format and change volumes in image files (`fatx`, `fatxtool`).
+- Identify hard disk, memory unit and USB storage images, list their partitions, and write devkit partition tables (`xenon_disk`, `fatxtool`).
 - Prebuilt executables for Linux, macOS and Windows on every release, a Nix flake, and `cargo install` for the published tools.
 
 ## Crates
@@ -23,14 +24,15 @@ Libraries and tools for Xbox 360 file formats.
 | [`xecrypt`](crates/xecrypt/) | AES, RSA, and RotSumSha primitives from the Xbox 360 kernel |
 | [`sfcx`](crates/sfcx/) | Sans-io reader for devkit flash images, logical or raw NAND with spare areas, with a VFS |
 | [`xflash`](crates/xflash/) | Command-line inspector for devkit flash images and their memory unit |
-| [`fatx`](crates/fatx/) | Sans-io reader and forensic scanner for FATX volumes |
-| [`fatxtool`](crates/fatxtool/) | Command-line inspector and recovery tool for FATX volumes |
+| [`fatx`](crates/fatx/) | Sans-io reader, writer and forensic scanner for FATX volumes |
+| [`fatxtool`](crates/fatxtool/) | Command-line inspector, recovery tool and editor for FATX volumes |
 | [`shadowboot`](crates/shadowboot/) | Layer compiler for deanxbox shadowboot images |
 | [`xcontent`](crates/xcontent/) | "STFS" package (CON/LIVE/PIRS) parser |
 | [`stfs`](crates/stfs/) | STFS filesystem/VFS handler |
 | [`system_update`](crates/system_update/) | Installs a system update package over a set of system flash files |
 | [`xenon_types`](crates/xenon_types/) | Shared newtypes (`TitleId`, `Sha1Hash`, `AesKey`, etc.) |
 | [`xenon_io`](crates/xenon_io/) | Sans-io machine, read driver and integrity-check types shared by the storage readers |
+| [`xenon_disk`](crates/xenon_disk/) | Partition layouts, devkit partition tables and device detection for hard disks, memory units and USB storage |
 
 ## Executables
 
@@ -142,6 +144,20 @@ xflash /path/to/nand.bin fatx mu-data extract /DataRec360.xex /tmp/DataRec360.xe
 
 ```text
 fatxtool /path/to/xlaunch.fdf list
+```
+
+On a whole disk or memory unit image, it finds the partitions and opens a volume by name:
+
+```text
+fatxtool /path/to/hdd.bin partitions
+fatxtool /path/to/hdd.bin --partition Partition1 list
+```
+
+It also changes volumes in image files, never in devices:
+
+```text
+fatxtool /tmp/xlaunch-copy.fdf put notes.txt /data/notes.txt
+fatxtool /tmp/xlaunch-copy.fdf rm /data/notes.txt
 ```
 
 Compile a shadowboot boot-region image from a flash capture and a boot layer:

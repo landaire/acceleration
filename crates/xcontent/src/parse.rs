@@ -346,7 +346,7 @@ pub struct XContentPackage {
 }
 
 impl XContentPackage {
-	pub fn verify_signature(&self, data: &[u8]) -> Result<xecrypt::ConsoleKind, xecrypt::Error> {
+	pub fn verify_signature(&self, data: &[u8]) -> Result<xecrypt::XContentVerification, xecrypt::Error> {
 		xecrypt::verify_xcontent_signature(
 			self.header.signature_type,
 			&self.header.key_material,

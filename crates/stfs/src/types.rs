@@ -1,4 +1,3 @@
-use bitflags::bitflags;
 use num_enum::TryFromPrimitive;
 use serde::Serialize;
 
@@ -225,23 +224,6 @@ pub enum XContentFlags {
 	MetadataIsPEC = 1,
 	MetadataSkipRead = 2,
 	MetadataDontFreeThumbnails = 4,
-}
-
-#[derive(Debug, Serialize, TryFromPrimitive)]
-#[repr(u8)]
-pub enum ConsoleType {
-	DevKit = 1,
-	Retail = 2,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ConsoleTypeFlags(u32);
-
-bitflags! {
-	impl ConsoleTypeFlags: u32 {
-		const TESTKIT = 0x40000000;
-		const RECOVERY_GENERATED = 0x80000000;
-	}
 }
 
 #[derive(Debug, Serialize, TryFromPrimitive)]
