@@ -14,6 +14,51 @@ The base can also be a raw NAND image with spare areas. The format is detected b
 
 A failed integrity check, such as an ECC mismatch in a raw base or an SD signature that does not verify, prints a warning and the image is still written. Pass `--strict` to stop with an error instead.
 
+## How a shadowboot starts
+
+A shadowboot does not reset the console. The kernel that booted from flash reads the image into memory, and the hypervisor starts the image's boot chain from there. This takes the place of the boot ROM's work at power-on. The SMC is not reset, and the image's chain does not come from NAND.
+
+```mermaid
+flowchart TD
+    power["Power on"] --> rom["Boot ROM: decrypt SB from NAND into SRAM, verify its signature"]
+    rom --> nandsb["SB from NAND: fuse checks, binding check"]
+    nandsb --> nandsd["SB verifies and runs SC, verifies and starts SD"]
+    nandsd --> nandse["SD: decrypt SE from NAND, start its hypervisor and kernel"]
+    nandse --> init["Kernel Phase 1 init, after the SATA drivers start"]
+    init --> shadowed{"BootFlags has 0x200 (shadow booted)?"}
+    shadowed -->|"yes"| running["Shadowbooted system keeps booting"]
+    shadowed -->|"no"| search["Open xboxromw2d.bin: host:\, then \Device\CdRom0\, \Device\FlashFs\, \Device\Harddisk0\Partition1\ (first one that opens)"]
+    search -->|"no file, allocation or read failure"| flashboot["Flash system keeps booting"]
+    search -->|"file read into physical 0x01000000..0x01800000"| quiesce["KiShadowBoot(address, file length, 0x200): stop all processors, notify drivers"]
+    quiesce --> hvx["Processor 0 calls HvxShadowBoot"]
+    subgraph restart ["In-memory restart: no console reset"]
+        hvx --> bounds{"Magic, entry point and SB inside the file?"}
+        bounds -->|"no"| hang["Hang: power cycle the console"]
+        bounds -->|"yes"| sbverify{"SB decrypts with the boot ROM key and its signature verifies?"}
+        sbverify -->|"no"| hang
+        sbverify -->|"yes"| sbjump["SB placed in SRAM, flags OR 0x200, binding in r27-r30, image pointer in r26, jump to SB"]
+    end
+    sbjump --> imagesb{"SB fuse checks pass, and the binding is zero or matches this console?"}
+    imagesb -->|"no"| post["Halt with a POST code"]
+    imagesb -->|"yes"| scsd{"SC and SD in the image verify against SB's key?"}
+    scsd -->|"no"| post
+    scsd -->|"yes"| imagese{"SD: SE from the image matches the digest SD keeps?"}
+    imagese -->|"no"| post
+    imagese -->|"yes"| newsystem["Image's hypervisor and kernel start; BootFlags includes 0x200"]
+    newsystem --> init
+```
+
+The steps, with the sources in [noscope360](https://github.com/landaire/noscope360) that show them:
+
+1. Early in Phase 1 initialization, after the SATA drivers start, the devkit kernel looks for a shadowboot image unless its boot flags carry `0x200` (`xbox/kernel/src/init/init.c`, `ExpTryToShadowBoot`). It opens `xboxromw2d.bin` under each path in order and uses the first one that opens.
+2. The kernel allocates the file's size in physically contiguous memory between `0x01000000` and `0x01800000` and reads the whole file (`ExpTryToBootMediaKernel`). A missing file, a file larger than that window, or a read error prints a diagnostic and the normal boot continues.
+3. The kernel waits for the boot animation, then calls `KiShadowBoot` with the image's physical address, its length and the flags `0x200` (`0x600` from the CD-ROM). `KiShadowBoot` stops all processors and notifies the drivers (`xbox/kernel/src/ke/quiesce.c`). Processor 0 calls `HvxShadowBoot`.
+4. The hypervisor parks the other threads and checks the flash magic, the entry point and SB's bounds against the file length (`xbox/hv/src/shadowboot/shadowboot.s`, `HvpShadowBootStart`). It decrypts SB with the boot ROM's CB key into SRAM and verifies SB's signature (`HvpShadowBootVerifyCb`), ORs the kernel's flags into SB's header, and jumps to SB. A failure here stops the processor, and the console hangs until it is power cycled.
+5. SB runs as it does at power-on, but takes its data from the image in memory because of flag `0x200`. It checks the fuses, checks the console binding unless the binding is zero, verifies SC and SD with its embedded key, and starts SD. SD decrypts SE from the image, compares its digest, and starts the image's hypervisor and kernel. A failed check halts with a POST code.
+6. The new kernel sees `0x200` in its boot flags, so it does not look for a shadowboot image again and shows no boot animation. It still reads the console's own NAND for the key vault, the flash boot loader check and the file system.
+
+The boot flags that the new system reports combine the kernel's request with the bits SB sets. For example, a shadowboot of the stock 16547 boot region reports `0x029E`, and the same region with an unbound SB reports `0x029F`. See [Console binding](#console-binding).
+
 ## Retail consoles and retail flash dumps
 
 A shadowboot image is built entirely from a devkit boot chain. Nothing in it comes from the flash of the console that boots it:
@@ -109,6 +154,8 @@ is unchanged. It cannot be combined with `boot/se.bin`.
 A devkit SB taken from a console's NAND is bound to that console. SB+0x20..0x40, decrypted, holds the sequence and digest that the hypervisor writes when it saves the boot loader (`HvxKeysSaveBootLoader`). The digest is an HMAC under the console's CPU key, and SB 14352 halts at POST 0xa2 or 0xa4 on any other console. SB skips the check when the binding is zero, as it is in the RGLoader ROM. The binding lies outside the signed part of SB, which covers the header and 0x140 onward.
 
 By default the compiler writes an unbound SB, so the image boots on any devkit or unlocked console. It decrypts SB with the key derived from the boot ROM key and the SB nonce, clears the binding, and encrypts SB again with the same key. When nothing else changes, only SB+0x20..0x40 is rewritten. The build report says what happened (`sb-binding=cleared` or `sb-binding=unchanged`). This applies to a supplied `sb.bin` too. Pass `--bind` to keep the SB as it is in the base or the layer, for an image that only the bound console boots.
+
+An unbound SB marks itself in the boot flags. When SB finds a zero binding it sets bit `0x0001`, which SD and the hypervisor pass on to the kernel's `XboxHardwareInfo.BootFlags` (SB 14352 `0x1570`). On the stock 16547 devkit, a shadowboot of the stock boot region reports `0x029E` with the bound SB and `0x029F` with the unbound one. The kernel's boot animation check also reads this bit, but a shadowboot already skips the animation. The hypervisor's system update code reads it too (`HvxKeysSaveSystemUpdate`), so do not install system updates or write the flash from a system started with an unbound image.
 
 ## Flash header
 
