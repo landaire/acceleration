@@ -14,6 +14,13 @@
         "windows-x86_64": { "regex": "^acceleration-.+-x86_64-pc-windows-msvc\\.zip$", "format": "zip", "path": "acceleration/acceleration_ui.exe" }
       }
     },
+    "fatxtool": {
+      "platforms": {
+        "linux-x86_64": { "regex": "^acceleration-.+-x86_64-unknown-linux-gnu\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/fatxtool" },
+        "macos-aarch64": { "regex": "^acceleration-.+-aarch64-apple-darwin\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/fatxtool" },
+        "windows-x86_64": { "regex": "^acceleration-.+-x86_64-pc-windows-msvc\\.zip$", "format": "zip", "path": "acceleration/fatxtool.exe" }
+      }
+    },
     "shadowboot": {
       "platforms": {
         "linux-x86_64": { "regex": "^acceleration-.+-x86_64-unknown-linux-gnu\\.tar\\.gz$", "format": "tar.gz", "path": "acceleration/shadowboot" },

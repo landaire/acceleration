@@ -167,6 +167,7 @@ pub struct ReadLogical {
 
 impl Machine for ReadLogical {
 	type Output = Checked<Vec<u8>>;
+	type Error = SfcxError;
 
 	fn step(&mut self) -> Result<Step<Self::Output>, SfcxError> {
 		assert!(!self.requested, "ReadLogical stepped before the requested read was fed");
@@ -349,6 +350,7 @@ impl OpenImage {
 
 impl Machine for OpenImage {
 	type Output = Checked<FlashImage>;
+	type Error = SfcxError;
 
 	fn step(&mut self) -> Result<Step<Self::Output>, SfcxError> {
 		assert!(!self.requested, "OpenImage stepped before the requested read was fed");

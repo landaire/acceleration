@@ -1,0 +1,31 @@
+[package]
+name = "fatx"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
+authors = ["Lander Brandt"]
+description = "Sans-io reader and forensic scanner for Xbox 360 FATX volumes"
+repository = "https://github.com/landaire/acceleration"
+keywords = ["xbox360", "fatx", "xbox", "forensics", "parser"]
+categories = ["parser-implementations", "filesystem"]
+include = ["src/**"]
+
+[features]
+default = []
+vfs = ["dep:vfs"]
+async-vfs = ["vfs", "fskit/async-vfs", "dep:async-trait", "dep:futures"]
+
+[dependencies]
+fskit = { workspace = true }
+thiserror = { workspace = true }
+xenon_io = { version = "0.4", path = "../xenon_io" }
+vfs = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

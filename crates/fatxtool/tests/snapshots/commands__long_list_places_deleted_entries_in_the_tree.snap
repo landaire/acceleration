@@ -1,0 +1,11 @@
+---
+source: crates/fatxtool/tests/commands.rs
+expression: "scratch.run(&[\"list\", \"--long\", \"--deleted\"]).unwrap()"
+---
+dir	0	0x2	2010-09-09 19:00:42	2010-09-09 19:00:42	2010-09-09 19:00:42	/docs/
+deleted-file	4	0xa	2010-09-09 19:00:42	2010-09-09 19:00:42	2010-09-09 19:00:42	/docs/draft.txt	deleted from /docs (in a live directory)
+file	3	0x5	2010-09-09 19:00:42	2010-09-09 19:00:42	2010-09-09 19:00:42	/docs/note.txt
+deleted-dir	0	0x8	2010-09-09 19:00:42	2010-09-09 19:00:42	2010-09-09 19:00:42	/gone/	deleted from / (in a live directory)
+deleted-file	5	0x9	2010-09-09 19:00:42	2010-09-09 19:00:42	2010-09-09 19:00:42	/gone/lost.txt	deleted from /gone (in a deleted directory)
+deleted-file	5120	0x6	2010-09-09 19:00:42	2010-09-09 19:00:42	2010-09-09 19:00:42	/intro.bik	deleted from / (in a live directory)
+file	6144	0x3	2010-09-09 19:00:42	2010-09-09 19:00:42	2010-09-09 19:00:42	/readme.txt

@@ -1925,6 +1925,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "fatx"
+version = "0.4.0"
+dependencies = [
+ "async-trait",
+ "fskit",
+ "futures",
+ "thiserror 2.0.21",
+ "vfs",
+ "xenon_io",
+]
+
+[[package]]
+name = "fatxtool"
+version = "0.4.0"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "clap",
+ "fatx",
+ "insta",
+ "libc",
+ "memmap2",
+ "rootcause",
+ "same-file",
+ "thiserror 2.0.21",
+ "xenon_io",
+]
+
+[[package]]
 name = "fdeflate"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4219,6 +4248,7 @@ dependencies = [
  "thiserror 2.0.21",
  "vfs",
  "winnow 1.0.4",
+ "xenon_io",
 ]
 
 [[package]]
@@ -5883,6 +5913,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "xenon_io"
+version = "0.4.0"
+dependencies = [
+ "fskit",
+ "futures",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "xenon_lzx"
 version = "0.4.0"
 dependencies = [
@@ -5948,13 +5987,12 @@ dependencies = [
 name = "xflash"
 version = "0.4.0"
 dependencies = [
- "anstream",
- "anstyle",
  "clap",
  "dhat",
+ "fatx",
+ "fatxtool",
  "memmap2",
  "rootcause",
- "same-file",
  "sfcx",
  "thiserror 2.0.21",
  "tracing",

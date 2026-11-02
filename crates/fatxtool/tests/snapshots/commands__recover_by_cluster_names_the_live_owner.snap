@@ -1,0 +1,12 @@
+---
+source: crates/fatxtool/tests/commands.rs
+expression: report
+---
+wrote 9216 bytes to SCRATCH/clusters.bin with the contiguous-free strategy
+clusters 0x3..=0x5, 3 now allocated
+9216 bytes were not read and are zero
+content: no known signature; expected no type; type unknown, size unknown
+confidence: low
+clusters allocated since the deletion:
+  0x3..=0x4: /readme.txt
+  0x5: /docs/note.txt

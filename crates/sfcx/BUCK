@@ -30,6 +30,7 @@ rust_library(
         "default",
     ],
     deps = [
+        "//crates/xenon_io:xenon_io",
         "//third-party/rust:clap",
         "//third-party/rust:fskit",
         "//third-party/rust:thiserror",
@@ -56,6 +57,7 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/sfcx",
     },
     deps = [
+        "//crates/xenon_io:xenon_io",
         "//third-party/rust:clap",
         "//third-party/rust:fskit",
         "//third-party/rust:futures",
@@ -79,6 +81,32 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/sfcx",
     },
     deps = [
+        "//crates/xenon_io:xenon_io",
+        "//third-party/rust:clap",
+        "//third-party/rust:fskit",
+        "//third-party/rust:futures",
+        "//third-party/rust:thiserror",
+        "//third-party/rust:winnow",
+        ":sfcx",
+    ],
+)
+
+rust_test(
+    name = "memory_unit-test",
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
+    crate = "memory_unit",
+    crate_root = "tests/memory_unit.rs",
+    edition = "2024",
+    env = ENV | {"INSTA_WORKSPACE_ROOT": "."},
+    features = [
+        "clap",
+        "default",
+    ],
+    run_env = {
+        "CARGO_MANIFEST_DIR": "crates/sfcx",
+    },
+    deps = [
+        "//crates/xenon_io:xenon_io",
         "//third-party/rust:clap",
         "//third-party/rust:fskit",
         "//third-party/rust:futures",
@@ -102,6 +130,7 @@ rust_library(
         "vfs",
     ],
     deps = [
+        "//crates/xenon_io:xenon_io",
         "//third-party/rust:async-trait",
         "//third-party/rust:clap",
         "//third-party/rust:fskit",

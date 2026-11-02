@@ -1,0 +1,22 @@
+[package]
+name = "xenon_io"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
+authors = ["Lander Brandt"]
+description = "Sans-io machine and integrity-check types shared by the Xbox 360 storage readers"
+repository = "https://github.com/landaire/acceleration"
+keywords = ["xbox360", "xbox", "sans-io", "parser"]
+categories = ["parser-implementations"]
+include = ["src/**"]
+
+[dependencies]
+fskit = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

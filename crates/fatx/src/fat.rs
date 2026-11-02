@@ -1,0 +1,170 @@
+//! Cluster numbers and the file allocation table.
+
+use std::fmt;
+use std::num::NonZeroU32;
+
+/// A data cluster number. Data clusters run from 1; FAT entry 0 is reserved.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClusterNumber(NonZeroU32);
+
+impl ClusterNumber {
+	/// `None` for 0, which a directory entry stores when a file has no clusters.
+	pub const fn new(value: u32) -> Option<Self> {
+		match NonZeroU32::new(value) {
+			Some(value) => Some(Self(value)),
+			None => None,
+		}
+	}
+
+	pub const fn get(self) -> u32 {
+		self.0.get()
+	}
+
+	/// The physically following cluster.
+	pub fn following(self) -> Option<Self> {
+		self.0.checked_add(1).map(Self)
+	}
+}
+
+impl fmt::Display for ClusterNumber {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "{:#x}", self.0)
+	}
+}
+
+impl fmt::Debug for ClusterNumber {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "ClusterNumber({:#x})", self.0)
+	}
+}
+
+/// Physically consecutive clusters, all with numbers that fit a `u32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterRun {
+	first: ClusterNumber,
+	count: u32,
+}
+
+impl ClusterRun {
+	/// `None` when the run would pass the largest cluster number.
+	pub fn new(first: ClusterNumber, count: u32) -> Option<Self> {
+		let last = u64::from(first.get()) + u64::from(count);
+
+		(last <= u64::from(u32::MAX) + 1).then_some(Self { first, count })
+	}
+
+	pub const fn first(&self) -> ClusterNumber {
+		self.first
+	}
+
+	pub const fn count(&self) -> u32 {
+		self.count
+	}
+
+	pub fn contains(&self, cluster: ClusterNumber) -> bool {
+		cluster >= self.first && u64::from(cluster.get()) < u64::from(self.first.get()) + u64::from(self.count)
+	}
+
+	pub fn clusters(&self) -> impl Iterator<Item = ClusterNumber> + use<> {
+		let first = u64::from(self.first.get());
+		(first..first + u64::from(self.count))
+			.map(|cluster| ClusterNumber::new(cluster as u32).expect("runs start at 1"))
+	}
+
+	/// Extends the run by the cluster after it.
+	pub(crate) fn extend(&mut self) {
+		self.count = self.count.checked_add(1).expect("a run never passes the largest cluster number");
+	}
+}
+
+/// FAT entry width, chosen from the partition length at mount time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FatWidth {
+	Fat16,
+	Fat32,
+}
+
+impl FatWidth {
+	pub const fn entry_size(self) -> u64 {
+		match self {
+			Self::Fat16 => 2,
+			Self::Fat32 => 4,
+		}
+	}
+}
+
+/// A decoded FAT entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FatEntry {
+	Free,
+	/// The last cluster of a chain.
+	Last,
+	/// The next cluster of a chain. The value may not name a data cluster.
+	Link(u32),
+}
+
+/// The FAT entries of the volume's data clusters, as stored: big-endian.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Fat {
+	width: FatWidth,
+	bytes: Vec<u8>,
+}
+
+impl Fat {
+	pub(crate) fn new(width: FatWidth, bytes: Vec<u8>) -> Self {
+		Self { width, bytes }
+	}
+
+	pub const fn width(&self) -> FatWidth {
+		self.width
+	}
+
+	/// Number of entries, including reserved entry 0.
+	pub fn len(&self) -> u64 {
+		self.bytes.len() as u64 / self.width.entry_size()
+	}
+
+	pub fn is_empty(&self) -> bool {
+		self.bytes.is_empty()
+	}
+
+	/// The entry of `cluster`, or `None` past the end of the table.
+	pub fn entry(&self, cluster: ClusterNumber) -> Option<FatEntry> {
+		decode_entry(self.width, &self.bytes, cluster)
+	}
+
+	pub fn is_free(&self, cluster: ClusterNumber) -> bool {
+		self.entry(cluster) == Some(FatEntry::Free)
+	}
+}
+
+impl fmt::Debug for Fat {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		f.debug_struct("Fat").field("width", &self.width).field("entries", &self.len()).finish()
+	}
+}
+
+/// The entry of `cluster` in a FAT stored as `table`, or `None` past the end of the table.
+pub(crate) fn decode_entry(width: FatWidth, table: &[u8], cluster: ClusterNumber) -> Option<FatEntry> {
+	const FREE: u32 = 0;
+	const LAST: u32 = u32::MAX;
+	const RESERVED_16: u16 = 0xfff0;
+
+	let size = width.entry_size() as usize;
+	let offset = usize::try_from(cluster.get()).ok()?.checked_mul(size)?;
+	let bytes = table.get(offset..offset + size)?;
+	let value = match width {
+		FatWidth::Fat16 => {
+			let value = u16::from_be_bytes([bytes[0], bytes[1]]);
+			// fatxp.h FatxReadFatEntry: reserved 16-bit values sign-extend to 32 bits.
+			if value >= RESERVED_16 { value as i16 as i32 as u32 } else { u32::from(value) }
+		}
+		FatWidth::Fat32 => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+	};
+
+	Some(match value {
+		FREE => FatEntry::Free,
+		LAST => FatEntry::Last,
+		next => FatEntry::Link(next),
+	})
+}

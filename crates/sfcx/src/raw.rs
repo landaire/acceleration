@@ -6,6 +6,7 @@ use std::ops::Range;
 
 use crate::error::RawError;
 use crate::error::SfcxError;
+use crate::mu::MuBlockIndex;
 
 pub const SECTOR_DATA_SIZE: usize = 0x200;
 pub const SPARE_SIZE: usize = 0x10;
@@ -31,6 +32,12 @@ impl SectorIndex {
 	/// Offset of the sector's record in the raw image.
 	pub const fn raw_offset(self) -> u64 {
 		(self.0 * RAW_SECTOR_SIZE) as u64
+	}
+
+	/// The raw records of `count` sectors starting at this one.
+	pub const fn records(self, count: usize) -> Range<u64> {
+		let start = self.raw_offset();
+		start..start + (count * RAW_SECTOR_SIZE) as u64
 	}
 }
 
@@ -204,6 +211,10 @@ impl Geometry {
 		(self.logical_block_count() as u64) << self.kind.block_shift()
 	}
 
+	pub const fn block_shift(&self) -> u32 {
+		self.kind.block_shift()
+	}
+
 	pub const fn sectors_per_block(&self) -> usize {
 		self.block_size() / SECTOR_DATA_SIZE
 	}
@@ -225,6 +236,13 @@ pub enum RawWarning {
 	/// The stored ECC of a sector does not match its data and spare area. The sector is used as
 	/// stored, including the block metadata in its spare area.
 	EccMismatch { sector: SectorIndex, stored: Ecc, computed: Ecc },
+	/// Two memory unit blocks hold the same logical block with the same sequence number. The
+	/// block scanned first is used, as the kernel does.
+	MuDuplicateSequence { logical: MuBlockIndex, used: BlockIndex, ignored: BlockIndex },
+	/// A memory unit secondary block is the newest copy of its logical block, but the primary
+	/// block it names does not hold that logical block. The kernel discards the mapping, so the
+	/// whole logical block reads as erased.
+	MuOrphanedSecondary { logical: MuBlockIndex, secondary: BlockIndex, primary: BlockIndex },
 }
 
 impl fmt::Display for RawWarning {
@@ -237,6 +255,23 @@ impl fmt::Display for RawWarning {
 				sector.raw_offset(),
 				stored.0,
 				computed.0
+			),
+			Self::MuDuplicateSequence { logical, used, ignored } => write!(
+				formatter,
+				"memory unit blocks {:#x} and {:#x} both hold logical block {:#x} with the same sequence number; \
+				 using {:#x}",
+				used.0,
+				ignored.0,
+				logical.get(),
+				used.0
+			),
+			Self::MuOrphanedSecondary { logical, secondary, primary } => write!(
+				formatter,
+				"memory unit secondary block {:#x} of logical block {:#x} names primary block {:#x}, which does \
+				 not hold it; the logical block reads as erased",
+				secondary.0,
+				logical.get(),
+				primary.0
 			),
 		}
 	}
@@ -366,6 +401,15 @@ impl RawLayout {
 		})
 	}
 
+	/// Spare blocks that replace no logical block and are not bad, in the order the kernel
+	/// allocates them (`SfcxAllocateSpareBlockReplacement`).
+	pub fn unassigned_spares(&self) -> impl Iterator<Item = BlockIndex> {
+		self.spare_map.iter().enumerate().filter_map(|(index, replaced)| {
+			let physical = self.geometry.block_count - 1 - index;
+			(replaced.is_none() && !self.bad_blocks[physical]).then_some(BlockIndex(physical))
+		})
+	}
+
 	/// The raw reads that cover the logical range, one per physically contiguous run.
 	pub(crate) fn runs(&self, range: Range<u64>) -> Result<Vec<RawRun>, SfcxError> {
 		let block_size = self.geometry.block_size() as u64;
@@ -380,10 +424,8 @@ impl RawLayout {
 			let skip = within_block % SECTOR_DATA_SIZE;
 			let first_sector =
 				SectorIndex(self.geometry.first_sector(physical_block).0 + within_block / SECTOR_DATA_SIZE);
-			let sectors = (skip + len).div_ceil(SECTOR_DATA_SIZE);
-			let start = first_sector.raw_offset();
 
-			runs.push(RawRun { raw: start..start + (sectors * RAW_SECTOR_SIZE) as u64, first_sector, skip, len });
+			runs.push(RawRun::new(first_sector, skip, len));
 			position += len as u64;
 		}
 
@@ -402,6 +444,23 @@ pub(crate) struct RawRun {
 }
 
 impl RawRun {
+	/// The records that hold `len` data bytes starting `skip` bytes into `first_sector`.
+	pub fn new(first_sector: SectorIndex, skip: usize, len: usize) -> Self {
+		let sectors = (skip + len).div_ceil(SECTOR_DATA_SIZE);
+		Self { raw: first_sector.records(sectors), first_sector, skip, len }
+	}
+
+	/// Extends this run by `next` when `next` starts at the data byte where this run ends.
+	pub fn try_append(&mut self, next: &RawRun) -> bool {
+		let end = self.first_sector.0 * SECTOR_DATA_SIZE + self.skip + self.len;
+		if end != next.first_sector.0 * SECTOR_DATA_SIZE + next.skip {
+			return false;
+		}
+
+		*self = Self::new(self.first_sector, self.skip, self.len + next.len);
+		true
+	}
+
 	/// Appends the run's logical bytes from its raw records, checking each sector's ECC.
 	pub fn strip(&self, raw: &[u8], out: &mut Vec<u8>, warnings: &mut Vec<RawWarning>) {
 		let mut skip = self.skip;

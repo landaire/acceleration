@@ -38,6 +38,10 @@
           cargoPackage = "xflash";
           description = "Inspect and extract Xbox 360 devkit flash images";
         };
+        fatxtool = {
+          cargoPackage = "fatxtool";
+          description = "Inspect Xbox 360 FATX volumes and recover deleted files";
+        };
         shadowboot = {
           cargoPackage = "shadowboot";
           description = "Compile Xbox 360 devkit shadowboot images";

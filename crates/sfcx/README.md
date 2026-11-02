@@ -5,6 +5,7 @@ Reader for Xbox 360 NAND flash images, named after the console's flash controlle
 - Opens a logical image (as XBDM `getfile FLASH:\` returns it) or a raw NAND image with spare areas, and detects which one it has.
 - Reads a raw image the way the console's flash driver does: spare areas removed, bad blocks replaced by their spare blocks, every sector checked against its ECC.
 - Parses the boot region (flash header and the SB, SC, SD and SE stages) and the file system of the observed devkit profile.
+- Reads the internal memory unit of a raw big-block image, the FATX storage the kernel keeps in flash blocks outside the system file system, as a byte device.
 - Works with any data source through sans-io machines, with synchronous and asynchronous APIs, and mounts the file system as a [`vfs`](https://crates.io/crates/vfs) file system.
 
 ## Usage
@@ -23,6 +24,17 @@ let xbdm = image.read_file(&source, &filesystem, entry)?.deny_warnings()?;
 ```
 
 Every read returns a `Checked` value. A failed integrity check, such as an ECC mismatch, never stops a read. You choose what happens with `deny_warnings`, `ignore_warnings` or `warnings`.
+
+The memory unit of a raw image reads like any other source. `MemoryUnitSource` lets a FATX reader use it directly:
+
+```rust
+let unit = image.memory_unit(&source)?.deny_warnings()?;
+let system = unit.partitions().system;
+let header = unit.read(&source, system.start..system.start + 4)?.deny_warnings()?;
+let device = sfcx::MemoryUnitSource::new(&unit, &source);
+```
+
+Pages the memory unit never wrote read as all ones, as they do on the console.
 
 Any type that implements [`fskit`](https://crates.io/crates/fskit)'s `ReadAt` or `AsyncReadAt` can be a source. Each operation has an `_async` form. To drive the reads yourself, step an `OpenImage` or a `FlashImage::reader` machine and feed it the bytes it asks for.
 

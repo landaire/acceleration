@@ -4,7 +4,8 @@ use std::ops::Range;
 pub use fskit::AsyncReadAt;
 pub use fskit::ReadAt;
 
-use crate::error::SfcxError;
+use crate::error::ReadError;
+use crate::error::ReadErrorKind;
 use crate::machine::Machine;
 use crate::machine::Step;
 
@@ -32,7 +33,7 @@ where
 }
 
 /// Runs `machine` to completion with synchronous reads.
-pub fn drive<M, R>(mut machine: M, source: &R) -> Result<M::Output, SfcxError>
+pub fn drive<M, R>(mut machine: M, source: &R) -> Result<M::Output, M::Error>
 where
 	M: Machine,
 	R: ReadAt,
@@ -42,13 +43,13 @@ where
 			Step::Done(output) => return Ok(output),
 			Step::Read(range) => range,
 		};
-		let data = ReadAt::read_at(source, &(), range.clone()).map_err(|source| SfcxError::Read { range, source })?;
+		let data = ReadAt::read_at(source, &(), range.clone()).map_err(|error| read_failed(range, error))?;
 		machine.feed(data.as_ref())?;
 	}
 }
 
 /// Runs `machine` to completion with asynchronous reads.
-pub async fn drive_async<M, R>(mut machine: M, source: &R) -> Result<M::Output, SfcxError>
+pub async fn drive_async<M, R>(mut machine: M, source: &R) -> Result<M::Output, M::Error>
 where
 	M: Machine,
 	R: AsyncReadAt,
@@ -58,9 +59,11 @@ where
 			Step::Done(output) => return Ok(output),
 			Step::Read(range) => range,
 		};
-		let data = AsyncReadAt::read_at(source, &(), range.clone())
-			.await
-			.map_err(|source| SfcxError::Read { range, source })?;
+		let data = AsyncReadAt::read_at(source, &(), range.clone()).await.map_err(|error| read_failed(range, error))?;
 		machine.feed(data.as_ref())?;
 	}
+}
+
+fn read_failed(range: Range<u64>, error: io::Error) -> ReadError {
+	ReadError { range, kind: ReadErrorKind::Io(error) }
 }

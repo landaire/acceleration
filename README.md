@@ -8,7 +8,8 @@ Libraries and tools for Xbox 360 file formats.
 - Compress with LZX (`lzxc`)
 - Reimplement the kernel's AES, RSA and RotSumSha primitives (`xecrypt`).
 - Read STFS packages (CON/LIVE/PIRS) and browse them as a filesystem (`xcontent`, `stfs`).
-- Inspect devkit flash captures and compile shadowboot images (`xflash`, `shadowboot`).
+- Inspect devkit flash captures and their internal memory unit, and compile shadowboot images (`xflash`, `shadowboot`).
+- List, extract and recover files of FATX volumes, including deleted ones (`fatx`, `fatxtool`).
 - Prebuilt executables for Linux, macOS and Windows on every release, a Nix flake, and `cargo install` for the published tools.
 
 ## Crates
@@ -21,23 +22,26 @@ Libraries and tools for Xbox 360 file formats.
 | [`xenon_lzx`](crates/xenon_lzx/) | LZX decoder that behaves like the console kernel's, including delta patch reference data |
 | [`xecrypt`](crates/xecrypt/) | AES, RSA, and RotSumSha primitives from the Xbox 360 kernel |
 | [`sfcx`](crates/sfcx/) | Sans-io reader for devkit flash images, logical or raw NAND with spare areas, with a VFS |
-| [`xflash`](crates/xflash/) | Command-line inspector for devkit flash images |
+| [`xflash`](crates/xflash/) | Command-line inspector for devkit flash images and their memory unit |
+| [`fatx`](crates/fatx/) | Sans-io reader and forensic scanner for FATX volumes |
+| [`fatxtool`](crates/fatxtool/) | Command-line inspector and recovery tool for FATX volumes |
 | [`shadowboot`](crates/shadowboot/) | Layer compiler for deanxbox shadowboot images |
 | [`xcontent`](crates/xcontent/) | "STFS" package (CON/LIVE/PIRS) parser |
 | [`stfs`](crates/stfs/) | STFS filesystem/VFS handler |
 | [`system_update`](crates/system_update/) | Installs a system update package over a set of system flash files |
 | [`xenon_types`](crates/xenon_types/) | Shared newtypes (`TitleId`, `Sha1Hash`, `AesKey`, etc.) |
+| [`xenon_io`](crates/xenon_io/) | Sans-io machine, read driver and integrity-check types shared by the storage readers |
 
 ## Executables
 
-Each [GitHub release](https://github.com/landaire/acceleration/releases) has an archive for each platform with `acceleration`, `acceleration_ui`, `xex2ool`, `xflash` and `shadowboot`. The published tools also install from crates.io, for example `cargo install xex2ool`.
+Each [GitHub release](https://github.com/landaire/acceleration/releases) has an archive for each platform with `acceleration`, `acceleration_ui`, `xex2ool`, `xflash`, `fatxtool` and `shadowboot`. The published tools also install from crates.io, for example `cargo install xex2ool`.
 
 | File | Contents |
 |---|---|
 | `acceleration-<tag>-x86_64-unknown-linux-gnu.tar.gz` | Executables for Linux x86_64 |
 | `acceleration-<tag>-aarch64-apple-darwin.tar.gz` | Executables for macOS arm64 |
 | `acceleration-<tag>-x86_64-pc-windows-msvc.zip` | Executables for Windows x86_64 |
-| `acceleration`, `acceleration_ui`, `shadowboot`, `xex2ool`, `xflash` | DotSlash files for every platform |
+| `acceleration`, `acceleration_ui`, `fatxtool`, `shadowboot`, `xex2ool`, `xflash` | DotSlash files for every platform |
 
 Once a day, if `main` has moved since the last nightly, its head is published as a nightly pre-release tagged `nightly-YYYY-MM-DD-COMMIT`. Nightlies are kept, so you can pin one the same way as a versioned release.
 
@@ -54,7 +58,7 @@ On Windows, run `dotslash xflash /path/to/nand.bin info`.
 
 ### Nix
 
-The flake builds `acceleration`, `xex2ool`, `xflash` and `shadowboot` from source on x86_64 and aarch64 Linux and on macOS arm64. The package of each tool has its name; `default` has all four.
+The flake builds `acceleration`, `xex2ool`, `xflash`, `fatxtool` and `shadowboot` from source on x86_64 and aarch64 Linux and on macOS arm64. The package of each tool has its name; `default` has all five.
 
 Run one tool:
 
@@ -125,6 +129,19 @@ Inspect a read-only flash capture:
 ```text
 xflash /path/to/nand.bin info
 xflash /path/to/nand.bin list
+```
+
+List the files of the memory unit in a raw NAND image, deleted ones included, and copy one out:
+
+```text
+xflash /path/to/nand.bin fatx mu-data list --deleted
+xflash /path/to/nand.bin fatx mu-data extract /DataRec360.xex /tmp/DataRec360.xex
+```
+
+`fatxtool` runs the same commands on a FATX image file, such as a partition or a flash `.fdf` file:
+
+```text
+fatxtool /path/to/xlaunch.fdf list
 ```
 
 Compile a shadowboot boot-region image from a flash capture and a boot layer:

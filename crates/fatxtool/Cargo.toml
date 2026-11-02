@@ -1,0 +1,34 @@
+[package]
+name = "fatxtool"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
+authors = ["Lander Brandt"]
+description = "Command-line inspector and recovery tool for Xbox 360 FATX volumes"
+repository = "https://github.com/landaire/acceleration"
+readme = "README.md"
+keywords = ["xbox360", "fatx", "xbox", "forensics", "cli"]
+categories = ["command-line-utilities", "filesystem"]
+include = ["src/**", "README.md"]
+
+[dependencies]
+fatx = { version = "0.4", path = "../fatx" }
+xenon_io = { version = "0.4", path = "../xenon_io" }
+thiserror = { workspace = true }
+clap = { version = "4.6.1", features = ["derive"] }
+anstream = "1.0"
+anstyle = "1.0"
+memmap2 = "0.9.9"
+rootcause = "0.12"
+same-file = "1.0.6"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+insta = { workspace = true }
+
+[[bin]]
+name = "fatxtool"
+path = "src/main.rs"

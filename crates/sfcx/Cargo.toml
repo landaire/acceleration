@@ -21,6 +21,7 @@ async-vfs = ["vfs", "fskit/async-vfs", "dep:async-trait", "dep:futures"]
 [dependencies]
 fskit = { workspace = true }
 thiserror = { workspace = true }
+xenon_io = { version = "0.4", path = "../xenon_io" }
 winnow = { version = "1.0.4", default-features = false, features = ["binary", "parser"] }
 clap = { version = "4.6.1", features = ["derive"], optional = true }
 vfs = { workspace = true, optional = true }

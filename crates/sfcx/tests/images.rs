@@ -6,6 +6,7 @@ use sfcx::AsyncReadAt;
 use sfcx::FlashImage;
 use sfcx::FormatSelection;
 use sfcx::ImageFormat;
+use sfcx::MemoryUnitError;
 use sfcx::ParseError;
 use sfcx::RawError;
 use sfcx::RawWarning;
@@ -121,6 +122,16 @@ fn unrecognized_image_reports_both_formats() {
 			raw: RawError::PartialSector { size: 0x1000 }
 		})
 	));
+}
+
+/// A logical image has no spare areas, so its memory unit cannot be found.
+#[test]
+fn logical_image_has_no_memory_unit() {
+	let logical = logical_image();
+	let source = SliceSource(logical.as_slice());
+	let image = FlashImage::open(&source, logical.len() as u64, FormatSelection::Logical).unwrap().ignore_warnings();
+
+	assert!(matches!(image.memory_unit(&source), Err(SfcxError::MemoryUnit(MemoryUnitError::LogicalImage))));
 }
 
 /// Runs against a private raw NAND dump named by `SFCX_RAW_IMAGE`. Every sector read passes the

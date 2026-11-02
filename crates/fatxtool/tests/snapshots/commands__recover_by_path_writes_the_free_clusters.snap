@@ -1,0 +1,8 @@
+---
+source: crates/fatxtool/tests/commands.rs
+expression: report
+---
+wrote 5120 bytes to SCRATCH/intro.bik with the contiguous strategy
+clusters 0x6..=0x7, free
+content: Bink, declares 5120 bytes; expected Bink; type agrees, size agrees
+confidence: high

@@ -5,6 +5,9 @@ use thiserror::Error;
 use crate::raw::BlockIndex;
 use crate::raw::RawKind;
 
+pub use xenon_io::ReadError;
+pub use xenon_io::ReadErrorKind;
+
 /// A malformed or unsupported flash header, boot chain, or file system.
 #[derive(Debug, Error, Clone, Copy, PartialEq, Eq)]
 pub enum ParseError {
@@ -63,24 +66,35 @@ pub enum RawError {
 	UntranslatedBlock { block: BlockIndex },
 }
 
+/// A flash image that has no memory unit the kernel would mount, or a request outside it.
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum MemoryUnitError {
+	#[error("a logical image has no spare areas, so its memory unit cannot be read")]
+	LogicalImage,
+	#[error("the kernel mounts a memory unit only on big-block flash, not {kind} flash")]
+	UnsupportedKind { kind: RawKind },
+	#[error("{usable_blocks} usable blocks leave no memory unit data blocks")]
+	NoDataBlocks { usable_blocks: u64 },
+	#[error("the {size:#x}-byte memory unit is smaller than the 0xc00000-byte minimum")]
+	TooSmall { size: u64 },
+	#[error("range {range:#x?} extends past the {size:#x}-byte memory unit")]
+	RangeOutOfBounds { range: Range<u64>, size: u64 },
+}
+
 #[derive(Debug, Error)]
 pub enum SfcxError {
 	#[error(transparent)]
 	Parse(#[from] ParseError),
 	#[error(transparent)]
 	Raw(#[from] RawError),
+	#[error(transparent)]
+	MemoryUnit(#[from] MemoryUnitError),
 	#[error("the image is neither a logical image ({logical}) nor a raw image ({raw})")]
 	Unrecognized { logical: ParseError, raw: RawError },
 	#[error("the requested ranges hold more bytes than this host can buffer")]
 	ReadTooLarge,
 	#[error("logical range {range:#x?} extends past the {size:#x}-byte logical device")]
 	LogicalRangeOutOfBounds { range: Range<u64>, size: u64 },
-	#[error("reading {range:#x?} failed")]
-	Read {
-		range: Range<u64>,
-		#[source]
-		source: std::io::Error,
-	},
-	#[error("reading {range:#x?} returned {actual:#x} bytes")]
-	ShortRead { range: Range<u64>, actual: usize },
+	#[error(transparent)]
+	Read(#[from] ReadError),
 }
