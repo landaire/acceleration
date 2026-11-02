@@ -8,7 +8,21 @@ The compiler reads a base image, applies a boot layer, and writes the image's bo
 
 The base is a flash capture or a boot region, such as an earlier compiler output or a shadowboot ROM like RGLoader's `xboxromw2d.bin`. Only the flash header and the SB, SC, SD, and SE stages are read, so any build with that boot chain is accepted, including chains that mix builds and custom stages. The chain may start right after the 0x80-byte flash header, and the header may declare no SMC. Bytes past the boot region are ignored. The base is mapped read-only and is never modified. The output is written to a separate temporary file and renamed into place.
 
-A retail flash cannot be a base. The compiler stops with an error that names the retail stage it found:
+A retail flash cannot be a base. See [Retail consoles and retail flash dumps](#retail-consoles-and-retail-flash-dumps) for why, and for the path to use instead.
+
+The base can also be a raw NAND image with spare areas. The format is detected by default, and `--format` names it when detection fails. The formats are the same as for [`xflash`](../xflash/README.md#image-formats).
+
+A failed integrity check, such as an ECC mismatch in a raw base or an SD signature that does not verify, prints a warning and the image is still written. Pass `--strict` to stop with an error instead.
+
+## Retail consoles and retail flash dumps
+
+A shadowboot image is built entirely from a devkit boot chain. Nothing in it comes from the flash of the console that boots it:
+
+- The SMC slot and the key vault area of the image are not read on the shadowboot path. See [SMC slot and key vault](#smc-slot-and-key-vault).
+- A bound SB checks the console's own NAND, not the image. See [Console binding](#console-binding).
+- The retail boot stages (CB, CD, CE) cannot load a shadowboot image. See [Why a retail chain cannot shadowboot](#why-a-retail-chain-cannot-shadowboot).
+
+A retail flash dump is therefore not needed, and the compiler stops with an error when you pass one as `--base`:
 
 ```text
 shadowboot: error: base image has retail boot stage "CB" at 0x8000.
@@ -17,19 +31,29 @@ A retail boot chain does not know how to shadowboot. A devkit boot chain is requ
 Pass --ignore-retail-checks if you really want to use the retail image.
 ```
 
-To build for a console that runs a devkit chain, start from an existing devkit shadowboot image or a devkit flash image, take out what you want to change, and rebuild:
+### Suggested path
 
-```text
-shadowboot --base xboxromw2d.bin --extract layer
-# edit layer/boot/hypervisor.bin or layer/boot/xboxkrnl.exe
-shadowboot --base xboxromw2d.bin --layer layer --output new-xboxromw2d.bin
-```
+1. Get an existing devkit shadowboot image, such as the `xboxromw2d.bin` that RGLoader ships, or a devkit flash image.
+2. Extract its hypervisor and kernel:
 
-The base can also be a raw NAND image with spare areas. The format is detected by default, and `--format` names it when detection fails. The formats are the same as for [`xflash`](../xflash/README.md#image-formats).
+   ```text
+   shadowboot --base xboxromw2d.bin --extract layer
+   ```
 
-A failed integrity check, such as an ECC mismatch in a raw base or an SD signature that does not verify, prints a warning and the image is still written. Pass `--strict` to stop with an error instead.
+3. Replace `layer/boot/hypervisor.bin` or `layer/boot/xboxkrnl.exe` with the hypervisor and kernel you want. Each must have the size of the one it replaces. Delete the file you do not change, or leave it as extracted.
+4. Rebuild:
 
-## Why a retail chain cannot shadowboot
+   ```text
+   shadowboot --base xboxromw2d.bin --layer layer --output new-xboxromw2d.bin
+   ```
+
+5. Copy `new-xboxromw2d.bin` to the root of the HDD as `xboxromw2d.bin`. See [Console filename](#console-filename).
+
+The compiler writes an unbound SB by default, so the image is not tied to the console that the base came from. It also writes the layer directory's name as the copyright text of the flash header. Pass `--default-copyright` to keep the base's text. See [Flash header](#flash-header).
+
+The console must also be able to start a shadowboot. A devkit kernel looks for `xboxromw2d.bin` at boot. See [Loader availability](#loader-availability). The retail build 17559 kernel has no such loader, and its hypervisor halts on the shadowboot call: the handler at `0x31c68` branches to `HvpHalt`. A retail console therefore needs a modified system that provides both. This README does not cover that setup.
+
+### Why a retail chain cannot shadowboot
 
 A shadowboot image needs three parts from a devkit chain. The SE can be any payload that the SD accepts.
 
@@ -39,13 +63,20 @@ A shadowboot image needs three parts from a devkit chain. The SE can be any payl
 
 These findings come from analysis of the hypervisor and SB code, not from tests on hardware.
 
-`--ignore-retail-checks` accepts a retail base with a warning that gives the same explanation. Only changes that need no stage keys apply. A layer can replace whole stages of the base's own chain (`boot/cb.bin`, `cb_a.bin`, `cb_b.bin`, `cc.bin`, `cd.bin`, `ce.bin`), each checked by loader ID and the 16-byte placement rules, and `--copyright` applies. Anything that needs the devkit key chain fails with an error that says so: `hypervisor.bin`, `xboxkrnl.exe`, `--rebuild-se`, digest updates and `--extract`. The CB binding is not an SB binding, so the compiler leaves it alone and reports `sb-binding=not applicable to a retail CB`. A stock console does not shadowboot the result.
+Third-party ROMs such as the freeboot and XeLL `xboxromw2d.bin` carry patched SBs. From code analysis, and unverified on hardware, such an SB loads only on a console whose hypervisor skips `HvpShadowBootVerifyCb`. A stock devkit hypervisor rejects it.
 
-Third-party ROMs such as the freeboot and XeLL `xboxromw2d.bin` carry patched SBs. From code analysis, and unverified on hardware, such an SB loads only on a console whose hypervisor skips `HvpShadowBootVerifyCb`; a stock devkit hypervisor rejects it.
+### Using a retail image anyway
+
+`--ignore-retail-checks` accepts a retail base with a warning that gives the same explanation. A stock console does not shadowboot the result. Only changes that need no stage keys apply:
+
+- A layer can replace whole stages of the base's own chain: `boot/cb.bin`, `cb_a.bin`, `cb_b.bin`, `cc.bin`, `cd.bin` and `ce.bin`. Each is checked by loader ID and the 16-byte placement rules. A replacement CB must keep the retail stage letter and the base's split flag.
+- The copyright text applies. See [Flash header](#flash-header).
+
+Anything that needs the devkit key chain fails with an error that says so: `hypervisor.bin`, `xboxkrnl.exe`, `--rebuild-se`, digest updates and `--extract`. The CB binding is not an SB binding, so the compiler leaves it alone and reports `sb-binding=not applicable to a retail CB`. With `--strict`, the retail warning is an error.
 
 ## Layer
 
-A layer contains only changed boot inputs. Missing entries are copied from the base image. An empty layer directory reproduces the base boot region byte-for-byte, unless the base SB is bound to a console (see below) and `--bind` is not given.
+A layer contains only changed boot inputs. Missing entries are copied from the base image. With `--default-copyright`, an empty layer directory reproduces the base boot region byte-for-byte, unless the base SB is bound to a console (see below) and `--bind` is not given. Without it, the copyright text in the flash header becomes the layer directory's name.
 
 ```text
 layer/
@@ -86,10 +117,13 @@ On the shadowboot path the hypervisor reads only the magic and the entry point o
 - the entry point lies inside the image;
 - SB's entry point and SB's end both lie before the end of the image.
 
-`--copyright <TEXT>` replaces the copyright text of the flash header, the bytes `0x10..0x60`. The text is written NUL-terminated in Latin-1, as Microsoft's own text writes the copyright sign as `0xa9`, and the rest of the field is zero. It can be at most 0x4f bytes. The word at `0x60` stays as it is. Since nothing on the shadowboot path reads the text, it cannot affect the boot.
+The compiler writes a copyright text into the flash header, the bytes `0x10..0x60`. By default the text is the name of the layer directory, so an image built from `--layer rgloader-17489` says `rgloader-17489`. `--copyright <TEXT>` writes the given text instead, and `--default-copyright` keeps the base's own text. The build report says which text was written, for example `copyright="rgloader-17489"` or `copyright=base`.
+
+The text is written NUL-terminated in Latin-1, as Microsoft's own text writes the copyright sign as `0xa9`, and the rest of the field is zero. It can be at most 0x4f bytes. A layer directory name that is longer, or that is not Latin-1, stops the compiler with an error that asks for `--copyright` or `--default-copyright`. The word at `0x60` stays as it is. Since nothing on the shadowboot path reads the text, it cannot affect the boot.
 
 ```text
 shadowboot --base xboxromw2d.bin --layer layer --copyright "My shadowboot build" --output new-xboxromw2d.bin
+shadowboot --base xboxromw2d.bin --layer layer --default-copyright --output new-xboxromw2d.bin
 ```
 
 ## SMC slot and key vault
@@ -116,6 +150,9 @@ shadowboot \
   --layer layer \
   [--rebuild-se] \
   [--bind] \
+  [--copyright TEXT | --default-copyright] \
+  [--strict] \
+  [--ignore-retail-checks] \
   --output shadowboot.bin
 ```
 

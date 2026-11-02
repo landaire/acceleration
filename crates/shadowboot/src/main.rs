@@ -60,10 +60,15 @@ struct Arguments {
 	#[arg(long, conflicts_with = "extract")]
 	bind: bool,
 
-	/// Replace the copyright text of the flash header, in Latin-1, at most 0x4f bytes. Nothing on
-	/// the shadowboot path reads it.
+	/// Replace the copyright text of the flash header, in Latin-1, at most 0x4f bytes. Without
+	/// this option the text is the layer directory's name. Nothing on the shadowboot path reads
+	/// it.
 	#[arg(long, value_name = "TEXT", conflicts_with = "extract")]
 	copyright: Option<Copyright>,
+
+	/// Keep the base image's copyright text instead of writing the layer directory's name.
+	#[arg(long, conflicts_with_all = ["copyright", "extract"])]
+	default_copyright: bool,
 
 	/// Accept a retail base with a warning. Only whole-stage replacements of its own stages
 	/// (boot/cb.bin, cb_a.bin, cb_b.bin, cc.bin, cd.bin, ce.bin) and --copyright apply; the
@@ -94,6 +99,16 @@ enum CliError {
 	UnknownBootInput { path: PathBuf },
 	#[error("layer input {path:?} is empty")]
 	EmptyInput { path: PathBuf },
+	#[error(
+		"layer directory {path:?} has no UTF-8 name to use as the copyright text; pass --copyright TEXT or --default-copyright"
+	)]
+	LayerNameUnusable { path: PathBuf },
+	#[error("layer directory name {name:?} cannot be the copyright text; pass --copyright TEXT or --default-copyright")]
+	LayerNameCopyright {
+		name: String,
+		#[source]
+		source: shadowboot::CopyrightError,
+	},
 	#[error("output {output:?} aliases base image {base:?}")]
 	OutputAliasesBase { base: PathBuf, output: PathBuf },
 	#[error("output {output:?} aliases layer input {input:?}")]
@@ -163,9 +178,11 @@ fn run(arguments: Arguments) -> Result<()> {
 		rebuild_se: arguments.rebuild_se,
 		bind: arguments.bind,
 		copyright: arguments.copyright,
+		default_copyright: arguments.default_copyright,
 		ignore_retail_checks: arguments.ignore_retail_checks,
 	};
 	let mapped_layer = load_layer(&arguments.layer)?;
+	let copyright = output_copyright(arguments.copyright, arguments.default_copyright, &arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
 
 	let base = load_base(&base, arguments.format, policy(arguments.strict))?;
@@ -179,7 +196,7 @@ fn run(arguments: Arguments) -> Result<()> {
 		kernel: mapped_layer.boot.kernel.as_deref(),
 		rebuild_se: arguments.rebuild_se,
 		bind: arguments.bind,
-		copyright: arguments.copyright.as_ref(),
+		copyright: copyright.as_ref(),
 		ignore_retail_checks: arguments.ignore_retail_checks,
 	};
 
@@ -204,16 +221,41 @@ fn run(arguments: Arguments) -> Result<()> {
 	reject_warnings(&report.warnings, policy(arguments.strict))?;
 	temporary.persist(&arguments.output).map_err(|error| io_error("replace output", &arguments.output, error.error))?;
 
+	let copyright = match &copyright {
+		Some(text) => format!("{:?}", text.to_string()),
+		None => "base".to_owned(),
+	};
 	println!(
-		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-signed={} sb-binding={}",
+		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-signed={} sb-binding={} copyright={}",
 		arguments.output.display(),
 		output_size,
 		report.replaced_boot_stages,
 		report.rebuilt_se,
 		report.updated_sd_signature,
 		report.binding,
+		copyright,
 	);
 	Ok(())
+}
+
+/// The copyright text written into the output: the given text, otherwise the layer directory's
+/// name, or none to keep the base's own text.
+fn output_copyright(text: Option<Copyright>, keep_base: bool, layer: &Path) -> Result<Option<Copyright>> {
+	if keep_base {
+		return Ok(None);
+	}
+	if let Some(text) = text {
+		return Ok(Some(text));
+	}
+
+	// `--layer .` has no file name; its canonical path does.
+	let path = fs::canonicalize(layer).map_err(|source| io_error("resolve layer directory", layer, source))?;
+	let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+		return Err(CliError::LayerNameUnusable { path });
+	};
+	let copyright = name.parse().map_err(|source| CliError::LayerNameCopyright { name: name.to_owned(), source })?;
+
+	Ok(Some(copyright))
 }
 
 fn policy(strict: bool) -> IntegrityPolicy {
@@ -301,6 +343,7 @@ struct CompileArguments {
 	rebuild_se: bool,
 	bind: bool,
 	copyright: Option<Copyright>,
+	default_copyright: bool,
 	ignore_retail_checks: bool,
 }
 
@@ -489,5 +532,31 @@ mod tests {
 
 		let warning = diagnostic(Diagnostic::Warning, &"retail");
 		assert_eq!(warning, "shadowboot: \u{1b}[1m\u{1b}[33mwarning:\u{1b}[0m \u{1b}[1mretail\u{1b}[0m\n");
+	}
+
+	#[test]
+	fn copyright_defaults_to_the_layer_name() {
+		let root = tempfile::tempdir().unwrap();
+		let layer = root.path().join("rgloader-17489");
+		fs::create_dir(&layer).unwrap();
+
+		let named = output_copyright(None, false, &layer).unwrap().unwrap();
+		assert_eq!(named.to_string(), "rgloader-17489");
+
+		// A relative path without a final component still names the directory.
+		let dotted = output_copyright(None, false, &layer.join(".")).unwrap().unwrap();
+		assert_eq!(dotted, named);
+
+		let given: Copyright = "custom".parse().unwrap();
+		assert_eq!(output_copyright(Some(given.clone()), false, &layer).unwrap(), Some(given));
+		assert_eq!(output_copyright(None, true, &layer).unwrap(), None);
+
+		let long = root.path().join("x".repeat(0x50));
+		fs::create_dir(&long).unwrap();
+		let error = output_copyright(None, false, &long).unwrap_err();
+		assert!(matches!(
+			error,
+			CliError::LayerNameCopyright { source: shadowboot::CopyrightError::TooLong { length: 0x50 }, .. }
+		));
 	}
 }

@@ -2,6 +2,7 @@
 //! the text in 0x10..0x60 and a separate word at 0x60, which is left as it is. Nothing on the
 //! shadowboot path reads the text: `HvpShadowBootStart` checks only the magic and the entry point.
 
+use std::fmt;
 use std::ops::Range;
 use std::str::FromStr;
 
@@ -35,6 +36,13 @@ impl Copyright {
 		let field = &mut header[FIELD];
 		field.fill(0);
 		field[..self.0.len()].copy_from_slice(&self.0);
+	}
+}
+
+impl fmt::Display for Copyright {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		// Latin-1 bytes are the first 256 code points.
+		self.0.iter().try_for_each(|byte| fmt::Write::write_char(f, char::from(*byte)))
 	}
 }
 
