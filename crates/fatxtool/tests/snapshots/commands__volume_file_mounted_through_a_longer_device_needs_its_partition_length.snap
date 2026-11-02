@@ -1,0 +1,13 @@
+---
+source: crates/fatxtool/tests/commands.rs
+expression: "scratch.run_mounted(0x200_0000, &[\"info\"]).unwrap()"
+---
+range: 0x0..0x8000 (0x8000 bytes)
+serial number: 51ecf2c0
+cluster size: 0x1000 bytes (8 sectors)
+root directory cluster: 0x1
+partition length: 0x2000000
+FAT: FAT16 at 0x1000, 0x5000 bytes
+file area: 0x6000
+clusters: 8186 in the partition, 2 in the image
+free clusters: 8184

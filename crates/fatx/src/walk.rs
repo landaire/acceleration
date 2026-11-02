@@ -262,13 +262,11 @@ impl<'a> WalkVolume<'a> {
 		let deleted_origin = match pending.mode {
 			DirectoryMode::Chain => {
 				// The whole chain, past the end marker the reader stopped at, belongs to the
-				// directory.
-				match self.volume.chain(directory.first_cluster()) {
-					Ok(runs) => self.mark_all(&pending.path, runs.iter().flat_map(ClusterRun::clusters)),
-					Err(error) => {
-						self.mark_all(&pending.path, directory.clusters().iter().copied());
-						self.warnings.push(Warning::BrokenChain { path: pending.path.clone(), error });
-					}
+				// directory, up to where it breaks.
+				let (runs, broken) = self.volume.reached_chain(directory.first_cluster());
+				self.mark_all(&pending.path, runs.iter().flat_map(ClusterRun::clusters));
+				if let Some(error) = broken {
+					self.warnings.push(Warning::BrokenChain { path: pending.path.clone(), error });
 				}
 				for invalid in directory.invalid() {
 					self.warnings.push(Warning::InvalidEntry { location: invalid.location, reason: invalid.reason });
@@ -362,15 +360,14 @@ impl<'a> WalkVolume<'a> {
 			return;
 		};
 
-		// The whole chain is the file's allocation, even past the clusters its size needs.
-		let runs = match self.volume.chain(first) {
-			Ok(runs) => runs,
-			Err(error) => {
-				self.warnings.push(Warning::BrokenChain { path: path.to_owned(), error });
-				return;
-			}
-		};
+		// The whole chain is the file's allocation, even past the clusters its size needs, up to
+		// where it breaks.
+		let (runs, broken) = self.volume.reached_chain(first);
 		self.mark_all(path, runs.iter().flat_map(ClusterRun::clusters));
+		if let Some(error) = broken {
+			self.warnings.push(Warning::BrokenChain { path: path.to_owned(), error });
+			return;
+		}
 
 		let needed = size.div_ceil(u64::from(self.volume.geometry().bytes_per_cluster()));
 		let available = runs.iter().map(|run| u64::from(run.count())).sum::<u64>();
@@ -384,8 +381,38 @@ impl<'a> WalkVolume<'a> {
 		let mut listing = self.listing.take().expect("WalkVolume stepped after completion");
 		listing.recovered_clusters.sort_unstable();
 		listing.recovered_clusters.dedup();
+		if let Some(lost) = self.lost_clusters() {
+			self.warnings.push(lost);
+		}
 
 		Checked::new(listing, std::mem::take(&mut self.warnings))
+	}
+
+	/// Clusters the FAT allocates that no live chain marked, with the first few of them.
+	fn lost_clusters(&self) -> Option<Warning> {
+		const SHOWN_RUNS: usize = 8;
+
+		let mut count = 0u64;
+		let mut runs: Vec<ClusterRun> = Vec::new();
+		for cluster in (1..=self.volume.geometry().cluster_count()).filter_map(ClusterNumber::new) {
+			let index = cluster.get() as usize;
+			let marked = self.allocated[index / 64] & (1 << (index % 64)) != 0;
+			if marked || self.volume.fat().is_free(cluster) {
+				continue;
+			}
+
+			count += 1;
+			let extends = runs.last().is_some_and(|last| {
+				u64::from(last.first().get()) + u64::from(last.count()) == u64::from(cluster.get())
+			});
+			if extends {
+				runs.last_mut().expect("checked above").extend();
+			} else if runs.len() < SHOWN_RUNS {
+				runs.push(ClusterRun::new(cluster, 1).expect("one cluster always fits"));
+			}
+		}
+
+		(count > 0).then_some(Warning::LostClusters { count, runs })
 	}
 }
 

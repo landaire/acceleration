@@ -203,7 +203,7 @@ where
 
 	if let Some(partition_length) = location.extended_partition_length() {
 		session.note(format_args!(
-			"the {:#x}-byte volume file has a FAT for a {partition_length:#x}-byte partition; new clusters come only \
+			"the {:#x}-byte volume file is mounted as a {partition_length:#x}-byte partition; new clusters come only \
 			 from the file",
 			location.image_length(),
 		));

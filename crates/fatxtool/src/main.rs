@@ -2,7 +2,6 @@ use std::fs::File;
 use std::io;
 use std::io::BufWriter;
 use std::io::Write;
-use std::ops::Range;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -59,8 +58,8 @@ struct Arguments {
 	#[arg(long, value_name = "NAME", conflicts_with_all = ["offset", "length"])]
 	partition: Option<String>,
 
-	/// Partition length to mount the volume with, for a volume file shorter than its partition;
-	/// inferred from the FAT by default
+	/// Partition length to mount the volume with, for a volume file the console mounts through a
+	/// longer device; the length of the volume's byte range by default
 	#[arg(long, value_parser = parse_number)]
 	partition_length: Option<u64>,
 
@@ -92,15 +91,6 @@ enum Command {
 	PartitionTable(PartitionTableCommand),
 	#[command(flatten)]
 	Write(WriteCommand),
-}
-
-/// The range that `--partition`, or `--offset` and `--length`, select, and how to mount it.
-#[derive(Debug)]
-struct Selection {
-	range: Range<u64>,
-	options: VolumeOptions,
-	/// Whether the partition length comes from the volume's FAT.
-	infer: bool,
 }
 
 /// A command that reads the image.
@@ -200,7 +190,7 @@ where
 				.into_report()?;
 		}
 		SourceCommand::Volume(command) => {
-			let location = locate(arguments, source, image_length, &session)?;
+			let location = select(arguments, source, image_length, &session)?;
 			fatxtool::run(command, source, &location, &session, out).map_err(CliError::from).into_report()?;
 		}
 	}
@@ -217,31 +207,22 @@ where
 	let image = WritableImage::open(&arguments.image).map_err(CliError::from).into_report()?;
 	let policy = if arguments.strict { IntegrityPolicy::Deny } else { IntegrityPolicy::Ignore };
 	let session = Session::new(PROGRAM, policy, image.input());
-	let selection = select(arguments, image.source(), image.length(), &session)?;
+	let location = select(arguments, image.source(), image.length(), &session)?;
 
 	let result = match command {
-		WriteCommand::Format(format) => write::format(format, image.source(), selection.range, selection.options, out),
-		command => {
-			let location = locate_selection(image.source(), selection)?;
-			write::run(command, image.source(), &location, &session, out)
+		WriteCommand::Format(format) => {
+			write::format(format, image.source(), location.range(), location.options(), out)
 		}
+		command => write::run(command, image.source(), &location, &session, out),
 	};
 	result.map_err(CliError::from).into_report()?;
 
 	Ok(())
 }
 
-/// The volume that `--partition`, or `--offset` and `--length`, select.
-fn locate<S>(arguments: &Arguments, source: &S, image_length: u64, session: &Session<'_>) -> Result<VolumeLocation>
-where
-	S: VolumeSource,
-{
-	let selection = select(arguments, source, image_length, session)?;
-
-	locate_selection(source, selection)
-}
-
-fn select<S>(arguments: &Arguments, source: &S, image_length: u64, session: &Session<'_>) -> Result<Selection>
+/// The volume that `--partition`, or `--offset` and `--length`, select, and the partition length
+/// to mount it with: the partition table's, `--partition-length`, or the byte range's.
+fn select<S>(arguments: &Arguments, source: &S, image_length: u64, session: &Session<'_>) -> Result<VolumeLocation>
 where
 	S: VolumeSource,
 {
@@ -264,7 +245,7 @@ where
 			));
 		}
 
-		return Ok(Selection { range: selected.range, options, infer: false });
+		return Ok(VolumeLocation::new(selected.range, options));
 	}
 
 	let end = match arguments.length {
@@ -282,26 +263,12 @@ where
 		}
 	};
 
-	let options = VolumeOptions::new().with_kind(requested_kind.unwrap_or(PartitionKind::Standard));
-	let selection = match arguments.partition_length {
-		Some(partition_length) => {
-			Selection { range, options: options.with_partition_length(partition_length), infer: false }
-		}
-		None => Selection { range, options, infer: true },
-	};
-
-	Ok(selection)
-}
-
-fn locate_selection<S>(source: &S, selection: Selection) -> Result<VolumeLocation>
-where
-	S: VolumeSource,
-{
-	if !selection.infer {
-		return Ok(VolumeLocation::new(selection.range, selection.options));
+	let mut options = VolumeOptions::new().with_kind(requested_kind.unwrap_or(PartitionKind::Standard));
+	if let Some(partition_length) = arguments.partition_length {
+		options = options.with_partition_length(partition_length);
 	}
 
-	VolumeLocation::infer_with(source, selection.range, selection.options.kind()).map_err(CliError::from).into_report()
+	Ok(VolumeLocation::new(range, options))
 }
 
 fn detect_options(arguments: &Arguments) -> DetectOptions {

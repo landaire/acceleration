@@ -1,5 +1,4 @@
-//! The volume header, geometry and allocation, and the partition length inference of a volume
-//! file.
+//! The volume header, geometry and allocation.
 
 use std::io;
 use std::io::Write;
@@ -11,16 +10,15 @@ use fatx::volume::SECTOR_SIZE;
 
 use crate::describe;
 use crate::error::FatxToolError;
-use crate::location::VolumeLocation;
 
-pub fn run<W>(volume: &Volume, location: &VolumeLocation, out: &mut W) -> Result<(), FatxToolError>
+pub fn run<W>(volume: &Volume, out: &mut W) -> Result<(), FatxToolError>
 where
 	W: Write,
 {
-	print(volume, location, out).map_err(FatxToolError::WriteListing)
+	print(volume, out).map_err(FatxToolError::WriteListing)
 }
 
-fn print<W>(volume: &Volume, location: &VolumeLocation, out: &mut W) -> io::Result<()>
+fn print<W>(volume: &Volume, out: &mut W) -> io::Result<()>
 where
 	W: Write,
 {
@@ -55,37 +53,6 @@ where
 		volume.image_cluster_count()
 	)?;
 	writeln!(out, "free clusters: {free}")?;
-
-	let Some(inference) = location.inference() else {
-		return Ok(());
-	};
-
-	let lengths = inference.partition_lengths();
-	writeln!(
-		out,
-		"inferred partition lengths: {:#x}..{:#x} ({} with a {:#x}-byte FAT)",
-		lengths.start,
-		lengths.end,
-		describe::fat_width(inference.fat_width()),
-		inference.fat_length()
-	)?;
-	let evidence = inference.evidence();
-	writeln!(
-		out,
-		"inference evidence: root cluster FAT entry {}; {} live and {} deleted records in the root directory",
-		describe::fat_entry(evidence.fat_entry),
-		evidence.live_records,
-		evidence.deleted_records
-	)?;
-	for rejected in inference.rejected() {
-		writeln!(
-			out,
-			"rejected {} with a {:#x}-byte FAT: {}",
-			describe::fat_width(rejected.fat_width),
-			rejected.fat_length,
-			rejected.reason
-		)?;
-	}
 
 	Ok(())
 }

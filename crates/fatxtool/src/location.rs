@@ -1,63 +1,24 @@
 use std::ops::Range;
 
 use fatx::FatxError;
-use fatx::PartitionInference;
-use fatx::PartitionKind;
 use fatx::ReadAt;
 use fatx::Volume;
 use fatx::VolumeOptions;
 
-/// Where a volume is in its source, and the partition length to mount it with.
+/// Where a volume is in its source, and the partition length to mount it with. The console
+/// takes the length from the device it mounts (mountvol.c FatxProcessBootSector), never from the
+/// volume: a partition table's, or the file's length for a FATX file mounted as a partition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VolumeLocation {
 	range: Range<u64>,
 	options: VolumeOptions,
-	inference: Option<PartitionInference>,
 }
 
 impl VolumeLocation {
+	/// The volume at `range`, mounted as `options` say: the partition length they give, or the
+	/// range's length.
 	pub fn new(range: Range<u64>, options: VolumeOptions) -> Self {
-		Self { range, options, inference: None }
-	}
-
-	/// The volume at `range` of a standard partition. When the range's own length gives a
-	/// geometry whose root directory holds valid evidence, that geometry is used. Otherwise the
-	/// partition length comes from the FAT: a volume file shorter than its partition, such as a
-	/// flash `.fdf` file, opens with the inferred partition length. When the root directory gives
-	/// no evidence either way, the range is the partition, as a partition table gives it.
-	pub fn infer<R>(source: &R, range: Range<u64>) -> Result<Self, FatxError>
-	where
-		R: ReadAt,
-	{
-		Self::infer_with(source, range, PartitionKind::Standard)
-	}
-
-	/// [`Self::infer`] for a partition of `kind`.
-	pub fn infer_with<R>(source: &R, range: Range<u64>, kind: PartitionKind) -> Result<Self, FatxError>
-	where
-		R: ReadAt,
-	{
-		let unextended = VolumeOptions::new().with_kind(kind);
-		// The plain geometry needs a few small reads; the inference reads a prefix up to the
-		// root directory, which for a large FAT is the whole FAT.
-		if Volume::check_geometry(source, range.clone(), unextended)?.is_ok() {
-			return Ok(Self::new(range, unextended));
-		}
-
-		let image_length = range.end - range.start;
-		match Volume::infer_partition_length(source, range.clone(), kind) {
-			Ok(inference) => {
-				let options = if inference.partition_lengths().contains(&image_length) {
-					unextended
-				} else {
-					inference.volume_options()
-				};
-
-				Ok(Self { range, options, inference: Some(inference) })
-			}
-			Err(FatxError::PartitionLengthNotInferred { .. }) => Ok(Self::new(range, unextended)),
-			Err(error) => Err(error),
-		}
+		Self { range, options }
 	}
 
 	pub fn range(&self) -> Range<u64> {
@@ -66,10 +27,6 @@ impl VolumeLocation {
 
 	pub const fn options(&self) -> VolumeOptions {
 		self.options
-	}
-
-	pub fn inference(&self) -> Option<&PartitionInference> {
-		self.inference.as_ref()
 	}
 
 	pub fn image_length(&self) -> u64 {

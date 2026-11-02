@@ -9,9 +9,9 @@ use common::pattern;
 use common::riff;
 use fatx::ChainError;
 use fatx::ClusterNumber;
+use fatx::ClusterRun;
 use fatx::DeletedOrigin;
 use fatx::DirectoryError;
-use fatx::FatEntry;
 use fatx::FatWidth;
 use fatx::FatxError;
 use fatx::GeometryError;
@@ -31,10 +31,6 @@ use fatx::forensic::matching::MatchReason;
 use fatx::forensic::orphan::OrphanOrigin;
 use fatx::forensic::recover::RecoveryStrategy;
 use fatx::forensic::scan::ScanOptions;
-use fatx::volume::VolumeHeader;
-use fatx::volume_file::CandidateRejection;
-use fatx::volume_file::RootEvidence;
-use fatx::volume_file::infer_partition_length;
 use futures::executor::block_on;
 
 const SMALL: u64 = 0x10_0000;
@@ -492,8 +488,8 @@ fn async_operations_match_sync() {
 }
 
 #[test]
-fn volume_file_shorter_than_its_partition_infers_the_fat() {
-	// As in a flash .fdf file: a FAT for a 0x1000000-byte partition in a 0x8000-byte file.
+fn volume_file_opens_with_the_length_its_device_reports() {
+	// As a flash .fdf file: mounted through a 0x1000000-byte device, stored in a 0x8000-byte file.
 	let mut builder = Builder::new(0x0100_0000, 8);
 	let data = pattern(5, 2 * CLUSTER + 0x40);
 	builder.record(1, 0, Record::file("launch.xex", 2, data.len() as u32));
@@ -502,95 +498,43 @@ fn volume_file_shorter_than_its_partition_infers_the_fat() {
 	let length = builder.cluster_offset(5);
 	let image = file_prefix(&builder, length);
 
-	let inference = Volume::infer_partition_length(&image, 0..length, PartitionKind::Standard).unwrap();
-	assert_eq!(inference.fat_width(), FatWidth::Fat16);
-	assert_eq!(inference.fat_length(), 0x3000);
-	assert_eq!(inference.partition_lengths(), 0x0100_0000..0x0180_0000);
-	assert_eq!(inference.evidence(), &RootEvidence { fat_entry: FatEntry::Last, live_records: 1, deleted_records: 1 });
-	let rejected: Vec<_> =
-		inference.rejected().iter().map(|candidate| (candidate.fat_length, candidate.reason)).collect();
-	assert_eq!(rejected, [(0x1000, CandidateRejection::EmptyRoot), (0x2000, CandidateRejection::EmptyRoot)]);
-
-	let volume = Volume::open_with(&image, 0..length, inference.volume_options()).unwrap();
+	let mounted = VolumeOptions::new().with_partition_length(0x0100_0000);
+	let volume = Volume::open_with(&image, 0..length, mounted).unwrap();
 	assert_eq!(volume.geometry().file_area_offset(), 0x4000);
 	let listing = volume.walk(&image).unwrap().deny_warnings().unwrap();
 	assert_eq!(paths(&listing), ["/launch.xex"]);
 	assert_eq!(volume.read_file(&image, listing.find("/launch.xex").unwrap().record()).unwrap(), data);
 
-	// Every length in the range places the image's clusters the same way.
-	let longest = VolumeOptions::new().with_partition_length(0x017f_f000);
-	let longest = Volume::open_with(&image, 0..length, longest).unwrap();
-	assert_eq!(longest.geometry().file_area_offset(), 0x4000);
-	assert_eq!(longest.walk(&image).unwrap().deny_warnings().unwrap(), listing);
-
-	// The file's own length gives a one-page FAT, which puts the root inside the real FAT.
+	// The file's own length gives a one-page FAT, which puts the root inside the real FAT: the
+	// tree is empty and clusters 2 to 4 are allocated, but no record reaches them.
 	let unaware = Volume::open(&image, 0..length).unwrap();
-	assert!(unaware.walk(&image).unwrap().ignore_warnings().entries().is_empty());
-
-	let bytes = image.read(0..length);
-	let header = VolumeHeader::parse(bytes[..0x10].try_into().unwrap()).unwrap();
-	assert_eq!(infer_partition_length(&header, PartitionKind::Standard, &bytes).unwrap(), inference);
-	assert_eq!(
-		block_on(Volume::infer_partition_length_async(&image, 0..length, PartitionKind::Standard)).unwrap(),
-		inference
-	);
+	let (listing, warnings) = unaware.walk(&image).unwrap().into_parts();
+	assert!(listing.entries().is_empty());
+	assert_eq!(warnings, [Warning::LostClusters { count: 3, runs: vec![ClusterRun::new(cluster(2), 3).unwrap()] }]);
 }
 
 #[test]
-fn volume_file_with_a_32_bit_fat_infers_the_width() {
-	let mut builder = Builder::new(0x1000_0000, 8);
-	builder.record(1, 0, Record::file("note.txt", 2, 5));
-	builder.file(&[2], b"hello");
-	let length = builder.cluster_offset(3);
-	let image = file_prefix(&builder, length);
+fn lost_clusters_are_counted_with_their_first_runs() {
+	let mut builder = Builder::new(SMALL, 8);
+	builder.record(1, 0, Record::file("kept.bin", 10, 5));
+	builder.file(&[10], b"kept!");
+	// Chains no record reaches, as an interrupted update leaves them; a deleted record does not
+	// reach clusters the FAT still allocates either.
+	builder.chain(&[20, 21]);
+	builder.record(1, 1, Record::file("gone.bin", 30, 5).deleted());
+	builder.chain(&[30]);
+	for single in (40..=52).step_by(2) {
+		builder.chain(&[single]);
+	}
+	let volume = open(&builder.image);
 
-	let inference = Volume::infer_partition_length(&image, 0..length, PartitionKind::Standard).unwrap();
-	assert_eq!(inference.fat_width(), FatWidth::Fat32);
-	assert_eq!(inference.fat_length(), 0x41000);
-	assert_eq!(inference.partition_lengths(), 0x1000_0000..0x1040_0000);
-	assert!(inference.rejected().iter().all(|candidate| candidate.fat_length < 0x41000));
+	let (listing, warnings) = volume.walk(&builder.image).unwrap().into_parts();
 
-	let volume = Volume::open_with(&image, 0..length, inference.volume_options()).unwrap();
-	let listing = volume.walk(&image).unwrap().deny_warnings().unwrap();
-	assert_eq!(volume.read_file(&image, listing.find("/note.txt").unwrap().record()).unwrap(), b"hello");
-}
-
-#[test]
-fn volume_file_with_an_empty_root_is_not_inferred() {
-	let builder = Builder::new(0x0100_0000, 8);
-	let length = builder.cluster_offset(2);
-	let image = file_prefix(&builder, length);
-
-	let error = Volume::infer_partition_length(&image, 0..length, PartitionKind::Standard).unwrap_err();
-	let FatxError::PartitionLengthNotInferred { rejected } = error else {
-		panic!("unexpected error: {error}");
-	};
-	let lengths: Vec<_> = rejected.iter().map(|candidate| candidate.fat_length).collect();
-	assert_eq!(lengths, [0x1000, 0x2000, 0x3000]);
-	assert!(rejected.iter().all(|candidate| candidate.reason == CandidateRejection::EmptyRoot));
-}
-
-#[test]
-fn inference_rejects_cluster_0_for_directories_and_files_with_data() {
-	let mut builder = Builder::new(0x0100_0000, 8);
-	builder.record(1, 0, Record::directory("saves", 0));
-	builder.record(1, 1, Record::file("empty.txt", 0, 0));
-	let length = builder.cluster_offset(2);
-	let image = file_prefix(&builder, length);
-
-	let error = Volume::infer_partition_length(&image, 0..length, PartitionKind::Standard).unwrap_err();
-	let FatxError::PartitionLengthNotInferred { rejected } = error else {
-		panic!("unexpected error: {error}");
-	};
-	let location = fatx::EntryLocation { cluster: cluster(1), offset: 0 };
-	assert!(rejected.iter().any(|candidate| candidate.fat_length == 0x3000
-		&& candidate.reason == CandidateRejection::MissingFirstCluster { location }));
-
-	// An empty file alone is evidence.
-	builder.record(1, 0, Record::file("other.txt", 0, 0));
-	let image = file_prefix(&builder, length);
-	let inference = Volume::infer_partition_length(&image, 0..length, PartitionKind::Standard).unwrap();
-	assert_eq!(inference.fat_length(), 0x3000);
+	assert_eq!(paths(&listing), ["/kept.bin"]);
+	let mut runs = vec![ClusterRun::new(cluster(20), 2).unwrap(), ClusterRun::new(cluster(30), 1).unwrap()];
+	runs.extend((40..=50).step_by(2).map(|single| ClusterRun::new(cluster(single), 1).unwrap()));
+	assert_eq!(warnings, [Warning::LostClusters { count: 10, runs }]);
+	assert!(volume.walk(&builder.image).unwrap().deny_warnings().is_err());
 }
 
 #[test]
@@ -612,15 +556,6 @@ fn alternate_partition_has_a_32_bit_fat_and_16_kib_clusters() {
 	let standard = Volume::open(&builder.image, 0..PARTITION).unwrap();
 	assert_eq!(standard.geometry().fat_width(), FatWidth::Fat16);
 	assert_ne!(standard.geometry().file_area_offset(), 0x3000);
-
-	let length = builder.cluster_offset(3);
-	let image = file_prefix(&builder, length);
-	let inference = Volume::infer_partition_length(&image, 0..length, PartitionKind::Alternate).unwrap();
-	assert_eq!(
-		(inference.kind(), inference.fat_width(), inference.fat_length()),
-		(PartitionKind::Alternate, FatWidth::Fat32, 0x2000)
-	);
-	assert_eq!(inference.volume_options().kind(), PartitionKind::Alternate);
 
 	let small_clusters = Builder::new(PARTITION, 8);
 	assert!(matches!(
@@ -733,33 +668,6 @@ fn every_read_fits_the_maximum_read_size() {
 	let recovery = volume.recover(&source, listing.deleted()[0].record(), RecoveryStrategy::Contiguous).unwrap();
 	assert_eq!(recovery.segments.len(), 1);
 	assert_eq!(recovery.segments[0].bytes, large);
-
-	// A volume file holding the FAT, with the partition length inferred from it. The prefix the
-	// inference reads is longer than one read.
-	let length = builder.cluster_offset(2);
-	let image = file_prefix(&builder, length);
-	let source = BoundedReads::new(&image, MAXIMUM_READ_SIZE);
-	let inference = Volume::infer_partition_length(&source, 0..length, PartitionKind::Standard).unwrap();
-	assert_eq!(inference.fat_length(), volume.geometry().fat_length());
-}
-
-#[test]
-fn plain_geometry_check_reads_no_whole_fat() {
-	let (builder, partition, _, _) = large_fat_volume();
-	let source = BoundedReads::new(&builder.image, 0x1000);
-
-	let evidence = Volume::check_geometry(&source, 0..partition, VolumeOptions::new()).unwrap().unwrap();
-	assert_eq!(evidence, RootEvidence { fat_entry: FatEntry::Last, live_records: 2, deleted_records: 1 });
-
-	// The volume file's own length gives a 16-bit FAT that places the root directory inside the
-	// real 32-bit FAT, whose first entry reads as a reserved link.
-	let length = builder.cluster_offset(2);
-	let image = file_prefix(&builder, length);
-	let source = BoundedReads::new(&image, 0x1000);
-	assert_eq!(
-		Volume::check_geometry(&source, 0..length, VolumeOptions::new()).unwrap(),
-		Err(CandidateRejection::RootLinkInvalid { next: 0xffff_fff8 })
-	);
 }
 
 #[cfg(feature = "vfs")]

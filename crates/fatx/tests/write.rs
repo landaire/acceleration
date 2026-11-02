@@ -36,6 +36,7 @@ use fatx::Timestamp;
 use fatx::UpdateError;
 use fatx::Volume;
 use fatx::VolumeOptions;
+use fatx::Warning;
 use fatx::WriteAt;
 use fatx::WriteMode;
 use fatx::forensic::Confidence;
@@ -499,9 +500,10 @@ impl WriteAt for Failing {
 }
 
 /// Runs a change on copies of `image` that fail at each of its writes in turn, and checks that
-/// every interrupted volume still lists without warnings. Each write is cut at every sector
-/// boundary inside it, the failures `WriteAt` allows; a directory record write is also cut at
-/// every byte, a stricter model than the sectors give.
+/// every interrupted volume still lists with no warning but lost clusters: the FAT is written
+/// before the records that reach its new chains. Each write is cut at every sector boundary
+/// inside it, the failures `WriteAt` allows; a directory record write is also cut at every byte,
+/// a stricter model than the sectors give.
 fn check_interrupted(image: &MemorySource, request: impl Fn() -> Request<'static>) {
 	const SECTOR: u64 = 0x200;
 
@@ -530,7 +532,14 @@ fn check_interrupted(image: &MemorySource, request: impl Fn() -> Request<'static
 
 			let reopened = reopen(&failing.inner, PartitionKind::Standard);
 			let listing = reopened.walk(&failing.inner).unwrap();
-			assert_eq!(listing.warnings(), [], "write {limit} of {} cut after {prefix:#x} bytes", writes.len());
+			let unexpected: Vec<_> =
+				listing.warnings().iter().filter(|warning| !matches!(warning, Warning::LostClusters { .. })).collect();
+			assert_eq!(
+				unexpected,
+				[] as [&Warning; 0],
+				"write {limit} of {} cut after {prefix:#x} bytes",
+				writes.len()
+			);
 		}
 	}
 }

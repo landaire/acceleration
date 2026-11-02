@@ -7,8 +7,9 @@
 //! against any [`ReadAt`] or [`AsyncReadAt`] source. [`Volume`] has synchronous and asynchronous
 //! methods for the common operations.
 //!
-//! A volume file whose FAT is sized for a longer partition than the file, such as a flash
-//! `.fdf` file, opens with the partition length that [`Volume::infer_partition_length`] finds.
+//! The partition length a volume is opened with is the one the console mounts it with: the
+//! partition table's, or the file's length for a FATX file mounted as a partition. The console
+//! does not check it against the volume; a walk reports clusters that no live chain reaches.
 //!
 //! A failed integrity check, such as a record the driver would skip or a broken file chain,
 //! never stops a listing. Results come wrapped in [`Checked`], and the caller decides whether
@@ -80,7 +81,6 @@ pub mod name;
 pub mod time;
 pub mod update;
 pub mod volume;
-pub mod volume_file;
 pub mod walk;
 
 pub use xenon_io::FileSource;
@@ -138,9 +138,6 @@ pub use volume::PartitionKind;
 pub use volume::SerialNumber;
 pub use volume::Volume;
 pub use volume::VolumeOptions;
-pub use volume_file::CheckGeometry;
-pub use volume_file::InferPartitionLength;
-pub use volume_file::PartitionInference;
 pub use walk::DeletedEntry;
 pub use walk::DeletedOrigin;
 pub use walk::ListedEntry;

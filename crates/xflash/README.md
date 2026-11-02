@@ -33,6 +33,12 @@ xflash /path/to/nand.bin fatx mu-system scan
 xflash /path/to/nand.bin fatx xlaunch.fdf list
 ```
 
+A memory unit partition is mounted with its partition's length. A flash root file is mounted with the length its console device reports when `xflash` knows it, which for `xlaunch.fdf` is 16 MiB. Any other root file is mounted with its file length. Pass `--partition-length` after the volume name to give the length yourself:
+
+```text
+xflash /path/to/nand.bin fatx other.fdf --partition-length 0x1000000 list
+```
+
 See the [`fatxtool` README](../fatxtool/README.md) for the commands.
 
 ## Image formats

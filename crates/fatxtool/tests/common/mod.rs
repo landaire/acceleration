@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use fatx::IntegrityPolicy;
+use fatx::VolumeOptions;
 use fatx::io::SliceSource;
 use fatxtool::FatxCommand;
 use fatxtool::FatxToolError;
@@ -188,9 +189,30 @@ impl Scratch {
 		self.input.path()
 	}
 
-	/// Runs a command line on the whole image, with the partition length inferred, and returns
-	/// what it printed to standard output.
+	/// Runs a command line on the whole image, mounted as a partition of the image's length, and
+	/// returns what it printed to standard output.
 	pub fn run(&self, arguments: &[&str]) -> Result<String, FatxToolError> {
+		self.run_at(VolumeOptions::new(), IntegrityPolicy::Ignore, arguments)
+	}
+
+	/// [`Self::run`] with failed integrity checks as errors, as `--strict` makes them.
+	pub fn run_strict(&self, arguments: &[&str]) -> Result<String, FatxToolError> {
+		self.run_at(VolumeOptions::new(), IntegrityPolicy::Deny, arguments)
+	}
+
+	/// Runs a command line on the whole image, mounted as a `partition_length`-byte partition.
+	pub fn run_mounted(&self, partition_length: u64, arguments: &[&str]) -> Result<String, FatxToolError> {
+		let options = VolumeOptions::new().with_partition_length(partition_length);
+
+		self.run_at(options, IntegrityPolicy::Ignore, arguments)
+	}
+
+	fn run_at(
+		&self,
+		options: VolumeOptions,
+		policy: IntegrityPolicy,
+		arguments: &[&str],
+	) -> Result<String, FatxToolError> {
 		#[derive(Parser)]
 		struct Cli {
 			#[command(subcommand)]
@@ -200,8 +222,8 @@ impl Scratch {
 		let command =
 			Cli::try_parse_from(std::iter::once("fatxtool").chain(arguments.iter().copied())).unwrap().command;
 		let source = SliceSource(self.image.as_slice());
-		let location = VolumeLocation::infer(&source, 0..self.image.len() as u64)?;
-		let session = Session::new("fatxtool", IntegrityPolicy::Ignore, &self.input);
+		let location = VolumeLocation::new(0..self.image.len() as u64, options);
+		let session = Session::new("fatxtool", policy, &self.input);
 		let mut out = Vec::new();
 		fatxtool::run(&command, &source, &location, &session, &mut out)?;
 

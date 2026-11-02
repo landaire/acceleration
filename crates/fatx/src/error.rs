@@ -3,7 +3,6 @@ use thiserror::Error;
 use crate::entry::InvalidEntryReason;
 use crate::fat::ClusterNumber;
 use crate::name::PathError;
-use crate::volume_file::RejectedCandidate;
 
 pub use xenon_io::ReadError;
 pub use xenon_io::ReadErrorKind;
@@ -76,8 +75,6 @@ pub enum FatxError {
 	NotADirectory { name: String },
 	#[error("the requested data holds more bytes than this host can buffer")]
 	ReadTooLarge,
-	#[error("no FAT length fits the volume file; {} candidates were rejected", .rejected.len())]
-	PartitionLengthNotInferred { rejected: Vec<RejectedCandidate> },
 	#[error(transparent)]
 	Read(#[from] ReadError),
 	#[error(transparent)]

@@ -102,8 +102,7 @@ where
 {
 	if let Some(partition_length) = location.extended_partition_length() {
 		session.note(format_args!(
-			"the {:#x}-byte volume file has a FAT for a {partition_length:#x}-byte partition; opening it with that \
-			 partition length",
+			"the {:#x}-byte volume file is mounted as a {partition_length:#x}-byte partition",
 			location.image_length(),
 		));
 	}
@@ -126,7 +125,7 @@ where
 			};
 			recover::run(&volume, source, session, target, strategy.strategy(), output, out)
 		}
-		FatxCommand::Info => info::run(&volume, location, out),
+		FatxCommand::Info => info::run(&volume, out),
 	}
 }
 

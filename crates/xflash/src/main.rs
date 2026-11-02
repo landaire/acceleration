@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use clap::Subcommand;
 use clap::ValueEnum;
+use fatx::VolumeOptions;
 use fatxtool::FatxCommand;
 use fatxtool::FatxToolError;
 use fatxtool::InputFile;
@@ -19,6 +20,7 @@ use fatxtool::Session;
 use fatxtool::VolumeLocation;
 use fatxtool::VolumeSource;
 use fatxtool::create_output;
+use fatxtool::parse_number;
 use fatxtool::session::SHOWN_WARNINGS;
 use memmap2::Mmap;
 use rootcause::prelude::ResultExt;
@@ -89,6 +91,11 @@ enum Command {
 		/// `mu-data`, `mu-system`, or the name of a flash root file such as `xlaunch.fdf`
 		#[arg(value_parser = parse_volume)]
 		volume: FatxVolume,
+		/// Partition length to mount the volume with. A memory unit partition has its device's
+		/// length; a flash root file has the length the console mounts it with, when xflash knows
+		/// it, and otherwise its file length.
+		#[arg(long, value_parser = parse_number)]
+		partition_length: Option<u64>,
 		#[command(subcommand)]
 		command: FatxCommand,
 	},
@@ -120,6 +127,25 @@ enum FatxVolume {
 	/// A root file of the flash file system.
 	FlashFile(String),
 }
+
+/// A flash root file that the console mounts as a FATX partition through a device whose length
+/// is not the file's.
+#[derive(Debug, Clone, Copy)]
+struct KnownMount {
+	name: &'static str,
+	partition_length: u64,
+}
+
+/// The partition lengths of known flash volume mounts. FatxProcessBootSector (mountvol.c:8-140)
+/// sizes the FAT from the length IOCTL_DISK_GET_PARTITION_INFO reports for the mounted device.
+///
+/// xlaunch.fdf, flash xshell.xex and XBDM 2.0.21256: xshell sub_92058190 calls xbdm.xex ordinal
+/// 130 (0x91f549f8) with "\SystemRoot\xlaunch.fdf", "\Device\LauncherData" and 0x1000000. The
+/// ordinal's worker (sub_91f548b0, then sub_91f54718) creates a device of type 0x3d whose
+/// extension holds start offset 0 at +0x10 and length 0x1000000 at +0x18, and its device control
+/// routine (0x91f544f0) answers IOCTL_DISK_GET_PARTITION_INFO (0x74004) with those two values.
+/// Another build may pass another length to the same ordinal.
+const KNOWN_MOUNTS: [KnownMount; 1] = [KnownMount { name: "xlaunch.fdf", partition_length: 0x0100_0000 }];
 
 /// The memory unit as a FATX volume source; its ECC failures are integrity warnings.
 struct MemoryUnitVolume<'a, S>(MemoryUnitSource<'a, S>);
@@ -198,7 +224,9 @@ fn run() -> Result<()> {
 		Command::ExtractStage { name, output } => extract_stage(&image, &session, &name, output)?,
 		Command::MuInfo => print_memory_unit(&image, &source, &session)?,
 		Command::ExtractMu { output, partition } => extract_memory_unit(&image, &source, &session, partition, &output)?,
-		Command::Fatx { volume, command } => run_fatx(&image, &source, &session, &volume, &command)?,
+		Command::Fatx { volume, partition_length, command } => {
+			run_fatx(&image, &source, &session, &volume, partition_length, &command)?
+		}
 	}
 	Ok(())
 }
@@ -365,6 +393,7 @@ fn run_fatx(
 	source: &SliceSource<&[u8]>,
 	session: &Session<'_>,
 	volume: &FatxVolume,
+	partition_length: Option<u64>,
 	command: &FatxCommand,
 ) -> Result<()> {
 	let mut out = BufWriter::new(io::stdout().lock());
@@ -372,17 +401,27 @@ fn run_fatx(
 		FatxVolume::MemoryUnit(partition) => {
 			let unit = memory_unit(image, source, session)?;
 			let volume_source = MemoryUnitVolume(MemoryUnitSource::new(&unit, source));
-			let location =
-				VolumeLocation::infer(&volume_source, partition.range(&unit)).map_err(CliError::from).into_report()?;
+			// mu.c reports each partition device's own length to the FATX driver.
+			let options = match partition_length {
+				Some(partition_length) => VolumeOptions::new().with_partition_length(partition_length),
+				None => VolumeOptions::new(),
+			};
+			let location = VolumeLocation::new(partition.range(&unit), options);
 			fatxtool::run(command, &volume_source, &location, session, &mut out)
 				.map_err(CliError::from)
 				.into_report()?;
 		}
 		FatxVolume::FlashFile(name) => {
 			let data = read_root_file(image, source, session, name)?;
-			let length = data.len() as u64;
+			let file_length = data.len() as u64;
 			let volume_source = SliceSource(data);
-			let location = VolumeLocation::infer(&volume_source, 0..length).map_err(CliError::from).into_report()?;
+			let known = KNOWN_MOUNTS.iter().find(|mount| mount.name.eq_ignore_ascii_case(name));
+			// Other root files mount as FATX files do: with their own length.
+			let options = match partition_length.or(known.map(|mount| mount.partition_length)) {
+				Some(partition_length) => VolumeOptions::new().with_partition_length(partition_length),
+				None => VolumeOptions::new(),
+			};
+			let location = VolumeLocation::new(0..file_length, options);
 			fatxtool::run(command, &volume_source, &location, session, &mut out)
 				.map_err(CliError::from)
 				.into_report()?;

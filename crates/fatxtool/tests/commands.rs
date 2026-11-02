@@ -1,20 +1,15 @@
 mod common;
 
-use std::io;
-use std::ops::Range;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering;
-
 use common::Builder;
 use common::Record;
 use common::Scratch;
 use common::bink;
-use fatx::ReadAt;
-use fatx::VolumeOptions;
-use fatx::io::SliceSource;
+use fatx::ClusterNumber;
+use fatx::ClusterRun;
+use fatx::IntegrityError;
+use fatx::Warning;
 use fatxtool::FatxToolError;
 use fatxtool::OutputError;
-use fatxtool::VolumeLocation;
 use fatxtool::create_output;
 
 const PARTITION: u64 = 0x10_0000;
@@ -104,57 +99,22 @@ fn recover_by_cluster_names_the_live_owner() {
 }
 
 #[test]
-fn info_reports_the_inferred_partition_length_of_a_volume_file() {
+fn volume_file_mounted_through_a_longer_device_needs_its_partition_length() {
+	// A FAT for a 0x2000000-byte partition in a 0x8000-byte file.
 	let mut builder = Builder::new(0x200_0000, 0x8000);
 	builder.record(1, 0, Record::file("a.txt", 2, 5));
 	builder.file(&[2], b"hello");
 	let scratch = Scratch::new("info", builder.finish());
 
-	insta::assert_snapshot!(scratch.run(&["info"]).unwrap());
-	assert_eq!(scratch.run(&["list"]).unwrap(), "/a.txt\n");
-}
+	// The file's own length puts the root inside the FAT: an empty tree, and a.txt's cluster lost.
+	assert_eq!(scratch.run(&["list"]).unwrap(), "");
+	let error = scratch.run_strict(&["list"]).unwrap_err();
+	let lost =
+		Warning::LostClusters { count: 1, runs: vec![ClusterRun::new(ClusterNumber::new(2).unwrap(), 1).unwrap()] };
+	assert!(matches!(error, FatxToolError::Integrity(IntegrityError { warnings }) if warnings == [lost]));
 
-/// An in-memory image that counts the bytes read from it.
-#[derive(Debug)]
-struct CountedReads<'a> {
-	image: &'a [u8],
-	total: AtomicU64,
-}
-
-impl ReadAt for CountedReads<'_> {
-	fn read_at(&self, _context: &(), range: Range<u64>) -> io::Result<impl AsRef<[u8]>> {
-		self.total.fetch_add(range.end - range.start, Ordering::Relaxed);
-
-		self.image
-			.get(range.start as usize..range.end as usize)
-			.ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "read past the image"))
-	}
-}
-
-#[test]
-fn location_uses_a_plain_geometry_that_validates() {
-	let image = sample_volume();
-	let source = CountedReads { image: &image, total: AtomicU64::new(0) };
-
-	let location = VolumeLocation::infer(&source, 0..image.len() as u64).unwrap();
-
-	assert_eq!(location.options(), VolumeOptions::new());
-	assert!(location.inference().is_none());
-	// The header, the root directory's first cluster and one FAT page: no inference prefix.
-	assert_eq!(source.total.load(Ordering::Relaxed), 0x10 + 2 * CLUSTER as u64);
-}
-
-#[test]
-fn location_infers_when_the_plain_geometry_does_not_validate() {
-	let mut builder = Builder::new(0x200_0000, 0x8000);
-	builder.record(1, 0, Record::file("a.txt", 2, 5));
-	builder.file(&[2], b"hello");
-	let image = builder.finish();
-
-	let location = VolumeLocation::infer(&SliceSource(image.as_slice()), 0..image.len() as u64).unwrap();
-
-	assert_eq!(location.options().partition_length(), Some(0x200_0000));
-	assert!(location.inference().is_some());
+	insta::assert_snapshot!(scratch.run_mounted(0x200_0000, &["info"]).unwrap());
+	assert_eq!(scratch.run_mounted(0x200_0000, &["list"]).unwrap(), "/a.txt\n");
 }
 
 #[test]

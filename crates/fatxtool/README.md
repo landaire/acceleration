@@ -45,7 +45,13 @@ Use `--offset` and `--length` for a volume at any other place in an image:
 fatxtool /path/to/mu.bin --offset 0 --length 0x1a4a1000 list
 ```
 
-A volume file such as a flash `.fdf` file is often shorter than the partition its FAT was sized for. `fatxtool` finds that partition length from the FAT and the root directory, and says so when it uses it. Pass `--partition-length` to give it yourself.
+The console sizes a volume's FAT from the length of the partition it mounts, and `fatxtool` does the same. A volume chosen with `--partition` has its partition's length, and any other volume has the length of its byte range, as when the console mounts a FATX file or a whole device. Some volume files are mounted through a longer device, such as the flash `xlaunch.fdf`, which the console mounts as a 16 MiB partition. Pass `--partition-length` for those:
+
+```text
+fatxtool xlaunch.fdf --partition-length 0x1000000 list
+```
+
+Without it, the listing comes out empty with a warning that the FAT allocates clusters no file reaches. Lost clusters also follow an interrupted change, so the warning does not stop the command unless you pass `--strict`.
 
 A partition kept in a file that the console can grow always has a 32-bit FAT and 16 KiB clusters. A partition chosen with `--partition` is mounted that way when its layout says so. Otherwise pass `--alternate-partition`.
 

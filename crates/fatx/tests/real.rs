@@ -3,7 +3,8 @@
 //!
 //! - `FATX_IMAGE`: an image holding FATX volumes, with `FATX_RANGES` naming their byte ranges
 //!   as comma-separated `start..end` hex pairs (the whole image when unset).
-//! - `FATX_FDF_IMAGE`: a flash `.fdf` volume file.
+//! - `FATX_FDF_IMAGE`: the flash `xlaunch.fdf` volume file, which the console mounts as a
+//!   0x1000000-byte partition.
 //!
 //! Run with `cargo test -p fatx --test real -- --ignored --nocapture`.
 
@@ -11,7 +12,6 @@ use std::fs::File;
 use std::ops::Range;
 
 use fatx::FileSource;
-use fatx::PartitionKind;
 use fatx::Volume;
 use fatx::VolumeOptions;
 use fatx::forensic::scan::ScanOptions;
@@ -158,23 +158,13 @@ fn real_image_volumes() {
 #[test]
 #[ignore = "needs FATX_FDF_IMAGE"]
 fn real_fdf_volume() {
+	// The length xbdm's \Device\LauncherData reports for xlaunch.fdf; see xflash's mount table.
+	const PARTITION_LENGTH: u64 = 0x0100_0000;
+
 	let path = std::env::var("FATX_FDF_IMAGE").expect("FATX_FDF_IMAGE names a volume file");
 	let file = File::open(path).expect("the volume file opens");
 	let length = file.metadata().expect("the volume file has metadata").len();
 	let source = FileSource::new(file);
 
-	let inference = Volume::infer_partition_length(&source, 0..length, PartitionKind::Standard)
-		.expect("the partition length is inferred");
-	println!(
-		"inferred {:?} FAT of {:#x} bytes; partition lengths {:#x?}; {:?}",
-		inference.fat_width(),
-		inference.fat_length(),
-		inference.partition_lengths(),
-		inference.evidence()
-	);
-	for rejected in inference.rejected() {
-		println!("  rejected {:?} FAT of {:#x} bytes: {}", rejected.fat_width, rejected.fat_length, rejected.reason);
-	}
-
-	report(&source, 0..length, inference.volume_options());
+	report(&source, 0..length, VolumeOptions::new().with_partition_length(PARTITION_LENGTH));
 }

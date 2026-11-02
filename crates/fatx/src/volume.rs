@@ -249,9 +249,9 @@ impl VolumeOptions {
 	}
 
 	/// The partition length the console mounts the volume with, when it differs from the length
-	/// of the image range. A volume in a file that can grow, such as a flash `.fdf` file, has a
-	/// FAT sized for a partition longer than the file; [`Volume::infer_partition_length`] finds
-	/// that length from the image.
+	/// of the image range: the length its device reports to FatxProcessBootSector, which sizes
+	/// the FAT from it. A flash `.fdf` file, for one, is mounted through a device longer than the
+	/// file.
 	pub const fn with_partition_length(self, partition_length: u64) -> Self {
 		Self { partition_length: Some(partition_length), ..self }
 	}
@@ -392,7 +392,16 @@ impl Volume {
 
 	/// The whole chain from `first`, as runs of consecutive clusters.
 	pub fn chain(&self, first: ClusterNumber) -> Result<Vec<ClusterRun>, ChainError> {
-		self.walk_chain(first, u64::MAX).map(|(runs, _)| runs)
+		let walk = self.walk_chain(first, u64::MAX);
+
+		walk.error.map_or(Ok(walk.runs), Err)
+	}
+
+	/// The clusters the chain from `first` reaches before it ends or breaks, and how it broke.
+	pub fn reached_chain(&self, first: ClusterNumber) -> (Vec<ClusterRun>, Option<ChainError>) {
+		let walk = self.walk_chain(first, u64::MAX);
+
+		(walk.runs, walk.error)
 	}
 
 	/// The clusters that hold `size` bytes of a file that starts at `first`. The chain may hold
@@ -406,38 +415,48 @@ impl Volume {
 		let Some(first) = first else {
 			return Err(ChainError::MissingFirstCluster);
 		};
-		let (runs, available) = self.walk_chain(first, needed)?;
-		if available < needed {
-			return Err(ChainError::TooShort { first, needed, available });
+		let walk = self.walk_chain(first, needed);
+		if let Some(error) = walk.error {
+			return Err(error);
+		}
+		if walk.taken < needed {
+			return Err(ChainError::TooShort { first, needed, available: walk.taken });
 		}
 
-		Ok(runs)
+		Ok(walk.runs)
 	}
 
-	/// Up to `limit` clusters of the chain from `first`, and how many there were.
-	fn walk_chain(&self, first: ClusterNumber, limit: u64) -> Result<(Vec<ClusterRun>, u64), ChainError> {
+	/// Up to `limit` clusters of the chain from `first`, stopping at the first error.
+	fn walk_chain(&self, first: ClusterNumber, limit: u64) -> ChainWalk {
+		let mut walk = ChainWalk { runs: Vec::new(), taken: 0, error: None };
 		if !self.geometry.is_data_cluster(first) {
-			return Err(ChainError::InvalidCluster { cluster: first });
+			walk.error = Some(ChainError::InvalidCluster { cluster: first });
+			return walk;
 		}
 
-		let mut runs = Vec::new();
 		let mut seen = HashSet::new();
-		let mut taken = 0;
 		let mut cluster = Some(first);
 		while let Some(current) = cluster {
 			if !seen.insert(current) {
-				return Err(ChainError::Cycle { first });
-			}
-
-			push_cluster(&mut runs, current);
-			taken += 1;
-			if taken == limit {
+				walk.error = Some(ChainError::Cycle { first });
 				break;
 			}
-			cluster = self.next_cluster(current)?;
+
+			push_cluster(&mut walk.runs, current);
+			walk.taken += 1;
+			if walk.taken == limit {
+				break;
+			}
+			cluster = match self.next_cluster(current) {
+				Ok(next) => next,
+				Err(error) => {
+					walk.error = Some(error);
+					break;
+				}
+			};
 		}
 
-		Ok((runs, taken))
+		walk
 	}
 
 	/// The source ranges that hold the first `size` bytes of `runs`, adjacent clusters merged.
@@ -461,6 +480,14 @@ impl Volume {
 
 		Ok(ranges)
 	}
+}
+
+/// The clusters a chain walk reached, and the error that stopped it.
+#[derive(Debug)]
+struct ChainWalk {
+	runs: Vec<ClusterRun>,
+	taken: u64,
+	error: Option<ChainError>,
 }
 
 pub(crate) fn push_cluster(runs: &mut Vec<ClusterRun>, cluster: ClusterNumber) {
