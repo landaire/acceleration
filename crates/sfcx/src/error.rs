@@ -2,6 +2,8 @@ use std::ops::Range;
 
 use thiserror::Error;
 
+use crate::boot::ChainKind;
+use crate::boot::StageName;
 use crate::raw::BlockIndex;
 use crate::raw::RawKind;
 
@@ -19,14 +21,25 @@ pub enum ParseError {
 	UnsupportedImageSize { actual: u64 },
 	#[error("unsupported observed-profile value for {field}: expected {expected:#x}, got {actual:#x}")]
 	UnsupportedProfileValue { field: &'static str, expected: u64, actual: u64 },
+	#[error(
+		"the root directory of a {kind} flash cannot be located without the block metadata in the spare areas; \
+		 read a raw NAND image instead of a logical one"
+	)]
+	RootDirectoryNeedsRawImage { kind: ChainKind },
+	#[error("the {kind} flash holds no complete root directory copy")]
+	RootDirectoryNotFound { kind: RawKind },
 	#[error("boot stage header at {offset:#x} is truncated")]
 	BootStageHeaderTruncated { offset: usize },
-	#[error("expected boot stage {expected:02x?} at {offset:#x}, got {actual:02x?}")]
-	UnexpectedBootStage { offset: usize, expected: [u8; 2], actual: [u8; 2] },
-	#[error("boot stage {name:02x?} has an invalid size {size:#x}")]
-	InvalidBootStageSize { name: [u8; 2], size: usize },
-	#[error("boot stage {name:02x?} extends past the boot region")]
-	BootStageOutOfBounds { name: [u8; 2] },
+	#[error("expected boot stage {expected} at {offset:#x}, got {actual}")]
+	UnexpectedBootStage { offset: usize, expected: StageName, actual: StageName },
+	#[error("boot stage {name} at {offset:#x} starts neither a devkit chain (\"SB\") nor a retail chain (\"CB\")")]
+	UnknownBootChain { offset: usize, name: StageName },
+	#[error("boot stage {name} has an invalid size {size:#x}")]
+	InvalidBootStageSize { name: StageName, size: usize },
+	#[error("boot stage {name} extends past the boot region")]
+	BootStageOutOfBounds { name: StageName },
+	#[error("patch slots of {size:#x} bytes at {offset:#x} are not a valid flash layout")]
+	InvalidPatchSlots { offset: usize, size: usize },
 	#[error("image of {actual:#x} bytes is shorter than its declared {declared:#x}-byte boot region")]
 	BootRegionTruncated { declared: u64, actual: u64 },
 	#[error(
@@ -41,7 +54,7 @@ pub enum ParseError {
 	InvalidDirectoryName { offset: usize },
 	#[error("directory entry at {offset:#x} has zero length")]
 	EmptyFile { offset: usize },
-	#[error("file cluster {cluster:#x} is outside the observed data region")]
+	#[error("file cluster {cluster:#x} is outside the data blocks of the file system")]
 	FileClusterOutOfRange { cluster: u16 },
 	#[error("cluster {cluster:#x} has no allocation entry")]
 	AllocationEntryOutOfBounds { cluster: u16 },

@@ -5,7 +5,7 @@ load("//build_defs:rust_test.bzl", "rust_test")
 ENV = {
     "CARGO_MANIFEST_DIR": ".",
     "CARGO_PKG_AUTHORS": "Lander Brandt",
-    "CARGO_PKG_DESCRIPTION": "Command-line inspector for Xbox 360 devkit flash images",
+    "CARGO_PKG_DESCRIPTION": "Command-line inspector for Xbox 360 devkit and retail flash images",
     "CARGO_PKG_HOMEPAGE": "",
     "CARGO_PKG_NAME": "xflash",
     "CARGO_PKG_README": "README.md",
@@ -61,6 +61,7 @@ rust_test(
         "//crates/fatxtool:fatxtool",
         "//crates/sfcx:sfcx",
         "//third-party/rust:clap",
+        "//third-party/rust:insta",
         "//third-party/rust:memmap2",
         "//third-party/rust:rootcause",
         "//third-party/rust:thiserror",

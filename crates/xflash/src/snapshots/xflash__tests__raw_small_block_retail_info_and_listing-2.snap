@@ -1,0 +1,6 @@
+---
+source: crates/xflash/src/tests.rs
+expression: "String::from_utf8(listing).unwrap()"
+---
+crl.bin	0x0050	291	0x3a216000
+extended.bin	0x0051	20480	0x3a216000

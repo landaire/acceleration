@@ -1,0 +1,7 @@
+---
+source: crates/shadowboot/src/lib.rs
+expression: "errors.map(|error| error.to_string()).join(\"\\n\")"
+---
+the flash header entry point 0x1000 is not inside the 0x1000-byte image
+boot stage "SB" enters at 0x1000, not before the end of the 0x1000-byte image
+boot stage "SB" ends at 0x1000, not before the end of the 0x1000-byte image

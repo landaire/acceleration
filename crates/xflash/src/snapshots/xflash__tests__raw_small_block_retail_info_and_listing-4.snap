@@ -1,0 +1,5 @@
+---
+source: crates/xflash/src/tests.rs
+expression: "parse_stage_role(\"XX\").unwrap_err()"
+---
+unknown boot stage "XX"; expected SB, SC, SD, SE, CB, CB_A, CB_B, CC, CD or CE

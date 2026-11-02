@@ -15,6 +15,7 @@ use crate::format::FormatSelection;
 use crate::format::ImageFormat;
 use crate::fs::DirectoryEntry;
 use crate::fs::Filesystem;
+use crate::fs::OpenFilesystem;
 use crate::io;
 use crate::io::AsyncReadAt;
 use crate::io::ReadAt;
@@ -109,21 +110,26 @@ impl FlashImage {
 		io::drive_async(self.reader(iter::once(range))?, source).await
 	}
 
-	/// Reads the file system of the observed devkit profile.
+	/// A machine that opens the flash file system. See [`FlashImage::filesystem`].
+	pub fn filesystem_opener(&self) -> Result<OpenFilesystem<'_>, SfcxError> {
+		OpenFilesystem::new(self)
+	}
+
+	/// Reads the root directory of the flash file system. The root directory of a raw image is
+	/// located from the block metadata as the kernel mount locates it; a logical image must
+	/// match the observed 60 MiB devkit profile.
 	pub fn filesystem<R>(&self, source: &R) -> Result<Checked<Filesystem>, SfcxError>
 	where
 		R: ReadAt,
 	{
-		let root = self.read(source, Filesystem::root_range())?;
-		self.parse_filesystem(root)
+		io::drive(self.filesystem_opener()?, source)
 	}
 
 	pub async fn filesystem_async<R>(&self, source: &R) -> Result<Checked<Filesystem>, SfcxError>
 	where
 		R: AsyncReadAt,
 	{
-		let root = self.read_async(source, Filesystem::root_range()).await?;
-		self.parse_filesystem(root)
+		io::drive_async(self.filesystem_opener()?, source).await
 	}
 
 	pub fn read_file<R>(
@@ -148,13 +154,6 @@ impl FlashImage {
 		R: AsyncReadAt,
 	{
 		io::drive_async(self.reader(filesystem.file_ranges(entry)?)?, source).await
-	}
-
-	fn parse_filesystem(&self, root: Checked<Vec<u8>>) -> Result<Checked<Filesystem>, SfcxError> {
-		let (root, warnings) = root.into_parts();
-		let filesystem = Filesystem::parse(&self.boot_region(), self.logical_size(), root)?;
-
-		Ok(Checked::new(filesystem, warnings))
 	}
 }
 
@@ -323,7 +322,9 @@ impl OpenImage {
 			}
 			OpenState::RawHeader { layout, plan } => {
 				let header = ImageHeader::parse(&plan.bytes)?;
-				let boot = 0..header.boot_image_size.get() as u64;
+				let size =
+					header.declared_boot_size().map_or(layout.geometry().logical_size(), |size| size.get() as u64);
+				let boot = 0..size;
 				let plan = LogicalPlan::new(PlanLayout::Raw(&layout), iter::once(boot))?;
 				self.state = OpenState::RawBoot { layout, plan };
 				Ok(())
@@ -377,7 +378,7 @@ impl Machine for OpenImage {
 				expect_len(&range, bytes)?;
 				match ImageHeader::parse(bytes) {
 					Ok(header) => {
-						let declared = header.boot_image_size.get() as u64;
+						let declared = header.declared_boot_size().map_or(self.size, |size| size.get() as u64);
 						if declared > self.size {
 							return self
 								.logical_failed(ParseError::BootRegionTruncated { declared, actual: self.size });

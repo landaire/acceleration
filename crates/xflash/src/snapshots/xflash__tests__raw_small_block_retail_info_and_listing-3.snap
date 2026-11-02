@@ -1,0 +1,6 @@
+---
+source: crates/xflash/src/tests.rs
+expression: "errors.map(|error| error.to_string()).join(\"\\n\")"
+---
+the CB of this image is split; name "CB_A" or "CB_B"
+the retail boot chain has no boot stage "SD"

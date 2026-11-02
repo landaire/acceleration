@@ -16,8 +16,10 @@ use sfcx::Checked;
 use sfcx::FlashImage;
 use sfcx::FormatSelection;
 use sfcx::IntegrityPolicy;
+use sfcx::StageRole;
 use sfcx::io::SliceSource;
 use shadowboot::BootLayer;
+use shadowboot::Copyright;
 use tempfile::NamedTempFile;
 use thiserror::Error;
 
@@ -52,6 +54,23 @@ struct Arguments {
 	/// Recompress SE and update its SD digest even when the payload is unchanged
 	#[arg(long, conflicts_with = "extract")]
 	rebuild_se: bool,
+
+	/// Keep the console binding of the SB, so the image boots only on the console that bound
+	/// it. By default the binding is cleared and the image boots on any devkit.
+	#[arg(long, conflicts_with = "extract")]
+	bind: bool,
+
+	/// Replace the copyright text of the flash header, in Latin-1, at most 0x4f bytes. Nothing on
+	/// the shadowboot path reads it.
+	#[arg(long, value_name = "TEXT", conflicts_with = "extract")]
+	copyright: Option<Copyright>,
+
+	/// Accept a retail base with a warning. Only whole-stage replacements of its own stages
+	/// (boot/cb.bin, cb_a.bin, cb_b.bin, cc.bin, cd.bin, ce.bin) and --copyright apply; the
+	/// result cannot shadowboot on a stock console.
+	#[arg(long)]
+	ignore_retail_checks: bool,
+
 	/// Instead of compiling, write the hypervisor and kernel of the base SE as
 	/// DIRECTORY/boot/hypervisor.bin and DIRECTORY/boot/xboxkrnl.exe, a layer
 	#[arg(long, value_name = "DIRECTORY", conflicts_with_all = ["layer", "output"])]
@@ -100,10 +119,8 @@ struct InputIdentity {
 
 #[derive(Default)]
 struct MappedBoot {
-	sb: Option<Mmap>,
-	sc: Option<Mmap>,
-	sd: Option<Mmap>,
-	se: Option<Mmap>,
+	/// Complete encrypted stages, named by role.
+	stages: Vec<(StageRole, Mmap)>,
 	hypervisor: Option<Mmap>,
 	kernel: Option<Mmap>,
 }
@@ -120,12 +137,7 @@ fn main() -> ExitCode {
 	match run(Arguments::parse()) {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
-			eprintln!("shadowboot: {error}");
-			let mut source = std::error::Error::source(&error);
-			while let Some(error) = source {
-				eprintln!("  caused by: {error}");
-				source = error.source();
-			}
+			print_error(&error);
 			ExitCode::FAILURE
 		}
 	}
@@ -135,7 +147,10 @@ fn run(arguments: Arguments) -> Result<()> {
 	let base_file = open_file(&arguments.base, "open base image")?;
 	let base = map_file(&base_file, &arguments.base)?;
 	let (layer_path, output_path) = match (arguments.layer, arguments.output, arguments.extract) {
-		(_, _, Some(directory)) => return extract(&base, arguments.format, policy(arguments.strict), &directory),
+		(_, _, Some(directory)) => {
+			let policy = policy(arguments.strict);
+			return extract(&base, arguments.format, policy, arguments.ignore_retail_checks, &directory);
+		}
 		(Some(layer), Some(output), None) => (layer, output),
 		_ => unreachable!("clap requires --layer and --output without --extract"),
 	};
@@ -146,6 +161,9 @@ fn run(arguments: Arguments) -> Result<()> {
 		layer: layer_path,
 		output: output_path,
 		rebuild_se: arguments.rebuild_se,
+		bind: arguments.bind,
+		copyright: arguments.copyright,
+		ignore_retail_checks: arguments.ignore_retail_checks,
 	};
 	let mapped_layer = load_layer(&arguments.layer)?;
 	check_output_aliases(&base_file, &arguments.base, &arguments.output, &mapped_layer.inputs)?;
@@ -153,14 +171,16 @@ fn run(arguments: Arguments) -> Result<()> {
 	let base = load_base(&base, arguments.format, policy(arguments.strict))?;
 	let region = base.boot_region();
 	let output_size = shadowboot::output_size(&region)?;
+	let stages: Vec<(StageRole, &[u8])> =
+		mapped_layer.boot.stages.iter().map(|(role, map)| (*role, &map[..])).collect();
 	let layer = BootLayer {
-		sb: mapped_layer.boot.sb.as_deref(),
-		sc: mapped_layer.boot.sc.as_deref(),
-		sd: mapped_layer.boot.sd.as_deref(),
-		se: mapped_layer.boot.se.as_deref(),
+		stages: &stages,
 		hypervisor: mapped_layer.boot.hypervisor.as_deref(),
 		kernel: mapped_layer.boot.kernel.as_deref(),
 		rebuild_se: arguments.rebuild_se,
+		bind: arguments.bind,
+		copyright: arguments.copyright.as_ref(),
+		ignore_retail_checks: arguments.ignore_retail_checks,
 	};
 
 	// A bare file name has an empty parent: the current directory.
@@ -185,12 +205,13 @@ fn run(arguments: Arguments) -> Result<()> {
 	temporary.persist(&arguments.output).map_err(|error| io_error("replace output", &arguments.output, error.error))?;
 
 	println!(
-		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-signed={}",
+		"wrote {} ({:#x} bytes): boot replaced={} se-rebuilt={} sd-signed={} sb-binding={}",
 		arguments.output.display(),
 		output_size,
 		report.replaced_boot_stages,
 		report.rebuilt_se,
 		report.updated_sd_signature,
+		report.binding,
 	);
 	Ok(())
 }
@@ -220,13 +241,55 @@ where
 {
 	const SHOWN: usize = 16;
 
-	let style = Style::new().bold().fg_color(Some(AnsiColor::Yellow.into()));
 	for warning in warnings.iter().take(SHOWN) {
-		anstream::eprintln!("shadowboot: {style}warning{style:#}: {warning}");
+		print_diagnostic(Diagnostic::Warning, warning);
 	}
 	if warnings.len() > SHOWN {
-		anstream::eprintln!("shadowboot: {style}warning{style:#}: {} more warnings", warnings.len() - SHOWN);
+		print_diagnostic(Diagnostic::Warning, format_args!("{} more warnings", warnings.len() - SHOWN));
 	}
+}
+
+/// Prints `error` and the chain of errors that caused it.
+fn print_error(error: &CliError) {
+	print_diagnostic(Diagnostic::Error, error);
+	let mut source = std::error::Error::source(error);
+	while let Some(error) = source {
+		anstream::eprintln!("  caused by: {error}");
+		source = error.source();
+	}
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Diagnostic {
+	Warning,
+	Error,
+}
+
+/// Prints a labeled diagnostic to stderr, with the label colored and the message in bold. A
+/// message of several lines keeps its layout. Color is dropped when stderr is not a terminal or
+/// `NO_COLOR` is set.
+fn print_diagnostic<M>(kind: Diagnostic, message: M)
+where
+	M: fmt::Display,
+{
+	anstream::eprint!("{}", diagnostic(kind, &message));
+}
+
+fn diagnostic(kind: Diagnostic, message: &dyn fmt::Display) -> String {
+	let (label, color) = match kind {
+		Diagnostic::Warning => ("warning:", AnsiColor::Yellow),
+		Diagnostic::Error => ("error:", AnsiColor::Red),
+	};
+	let label_style = Style::new().bold().fg_color(Some(color.into()));
+	let bold = Style::new().bold();
+	let message = message.to_string();
+	let mut lines = message.lines();
+	let mut text =
+		format!("shadowboot: {label_style}{label}{label_style:#} {bold}{}{bold:#}\n", lines.next().unwrap_or(""));
+	for line in lines {
+		text.push_str(&format!("{bold}{line}{bold:#}\n"));
+	}
+	text
 }
 
 struct CompileArguments {
@@ -236,12 +299,21 @@ struct CompileArguments {
 	layer: PathBuf,
 	output: PathBuf,
 	rebuild_se: bool,
+	bind: bool,
+	copyright: Option<Copyright>,
+	ignore_retail_checks: bool,
 }
 
 /// Writes the hypervisor and kernel of the base SE as a layer's boot inputs.
-fn extract(base: &[u8], format: FormatSelection, policy: IntegrityPolicy, directory: &Path) -> Result<()> {
+fn extract(
+	base: &[u8],
+	format: FormatSelection,
+	policy: IntegrityPolicy,
+	ignore_retail_checks: bool,
+	directory: &Path,
+) -> Result<()> {
 	let base = load_base(base, format, policy)?;
-	let extracted = shadowboot::payload(&base.boot_region())?;
+	let extracted = shadowboot::payload(&base.boot_region(), ignore_retail_checks)?;
 	print_warnings(&extracted.warnings);
 	reject_warnings(&extracted.warnings, policy)?;
 	let boot = directory.join("boot");
@@ -285,17 +357,28 @@ fn load_boot_directory(path: &Path) -> Result<(MappedBoot, Vec<InputIdentity>)> 
 	for entry in read_directory(path)? {
 		let entry_path = entry.path();
 		let name = utf8_file_name(&entry_path)?;
-		let target = match name.as_str() {
-			"sb.bin" => &mut boot.sb,
-			"sc.bin" => &mut boot.sc,
-			"sd.bin" => &mut boot.sd,
-			"se.bin" => &mut boot.se,
-			"hypervisor.bin" => &mut boot.hypervisor,
-			"xboxkrnl.exe" => &mut boot.kernel,
-			_ => return Err(CliError::UnknownBootInput { path: entry_path }),
+		let (map, input) = match name.as_str() {
+			"hypervisor.bin" => {
+				let (map, input) = map_input(&entry_path)?;
+				boot.hypervisor = Some(map);
+				(None, input)
+			}
+			"xboxkrnl.exe" => {
+				let (map, input) = map_input(&entry_path)?;
+				boot.kernel = Some(map);
+				(None, input)
+			}
+			_ => {
+				// A stage file is named by its role in lower case, such as sb.bin or cb_a.bin.
+				let role = name
+					.strip_suffix(".bin")
+					.and_then(|stem| StageRole::ALL.into_iter().find(|role| role.label().to_ascii_lowercase() == stem))
+					.ok_or_else(|| CliError::UnknownBootInput { path: entry_path.clone() })?;
+				let (map, input) = map_input(&entry_path)?;
+				(Some((role, map)), input)
+			}
 		};
-		let (map, input) = map_input(&entry_path)?;
-		*target = Some(map);
+		boot.stages.extend(map);
 		inputs.push(input);
 	}
 	Ok((boot, inputs))
@@ -388,4 +471,23 @@ fn check_output_aliases(
 
 fn io_error(operation: &'static str, path: &Path, source: io::Error) -> CliError {
 	CliError::Io { operation, path: path.to_owned(), source }
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The label is colored, the message is bold, and a message of several lines keeps them.
+	#[test]
+	fn diagnostics_keep_the_message_layout() {
+		let error = diagnostic(Diagnostic::Error, &"first line\n\nlast line");
+		assert_eq!(anstream::adapter::strip_str(&error).to_string(), "shadowboot: error: first line\n\nlast line\n");
+		assert_eq!(
+			error.lines().next(),
+			Some("shadowboot: \u{1b}[1m\u{1b}[31merror:\u{1b}[0m \u{1b}[1mfirst line\u{1b}[0m")
+		);
+
+		let warning = diagnostic(Diagnostic::Warning, &"retail");
+		assert_eq!(warning, "shadowboot: \u{1b}[1m\u{1b}[33mwarning:\u{1b}[0m \u{1b}[1mretail\u{1b}[0m\n");
+	}
 }

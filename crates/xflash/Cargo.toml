@@ -5,7 +5,7 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 license-file = "../LICENSE"
 authors = ["Lander Brandt"]
-description = "Command-line inspector for Xbox 360 devkit flash images"
+description = "Command-line inspector for Xbox 360 devkit and retail flash images"
 repository = "https://github.com/landaire/acceleration"
 readme = "README.md"
 keywords = ["xbox360", "flash", "xbox", "cli"]
@@ -30,3 +30,6 @@ dhat = { version = "0.3.3", optional = true }
 [[bin]]
 name = "xflash"
 path = "src/main.rs"
+
+[dev-dependencies]
+insta = { workspace = true }

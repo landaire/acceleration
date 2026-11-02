@@ -116,7 +116,7 @@ fn partition_selects_a_volume_by_name() {
 
 	let unknown = fatxtool(&[path(&image), "--partition", "Partition1", "list"]);
 	assert!(!unknown.status.success());
-	assert!(String::from_utf8_lossy(&unknown.stderr).contains("UnknownPartition"));
+	assert!(String::from_utf8_lossy(&unknown.stderr).contains("has no partition Partition1"));
 }
 
 #[test]
@@ -313,11 +313,11 @@ fn partition_table_write_refuses_other_files() {
 	for target in [Path::new("/dev/null"), link.as_path()] {
 		let output = fatxtool(&[path(target), "partition-table", "write", "Partition1=rest"]);
 		assert!(!output.status.success());
-		assert!(String::from_utf8_lossy(&output.stderr).contains("NotARegularFile"), "{target:?}");
+		assert!(String::from_utf8_lossy(&output.stderr).contains("is not a regular file"), "{target:?}");
 	}
 
 	let invalid = fatxtool(&[path(&image), "partition-table", "write", "DumpPartition=0x1000"]);
-	assert!(String::from_utf8_lossy(&invalid.stderr).contains("DumpPartitionTooSmall"));
+	assert!(String::from_utf8_lossy(&invalid.stderr).contains("DumpPartition of 0x1000 bytes cannot hold"));
 	let mut head = [0xffu8; 0x200];
 	File::open(&image).unwrap().read_exact(&mut head).unwrap();
 	assert_eq!(head, [0; 0x200]);

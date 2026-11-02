@@ -1,0 +1,15 @@
+---
+source: crates/xflash/src/tests.rs
+expression: "info(&image, &source)"
+---
+format=raw small block, 1024 blocks of 0x4000 bytes
+kind=retail
+image build=1888 qfe=0x0000 flags=0x0000 entry=0x00008000 boot-size=0x70000
+CB_A build=9188 qfe=0x0000 flags=0x0800 entry=0x00000000 offset=0x8000 size=0x400
+CB_B build=9188 qfe=0x0000 flags=0x0000 entry=0x00000000 offset=0x8400 size=0x2000
+CD build=9188 qfe=0x0000 flags=0x0000 entry=0x00000000 offset=0xa400 size=0x1000
+CE build=1888 qfe=0x0000 flags=0x0000 entry=0x00000000 offset=0xb400 size=0x5004
+SMC offset=0x1000 size=0x3000
+key-vault offset=0x4000 size=0x4000
+patch-slot 0 offset=0x70000 size=0x10000 "CF" build=17559 offset=0x0 size=0x230 "CG" build=17559 offset=0x230 size=0x4000
+patch-slot 1 offset=0x80000 size=0x10000 empty

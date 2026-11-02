@@ -1,0 +1,5 @@
+---
+source: crates/xflash/src/tests.rs
+expression: image.filesystem(&source).unwrap_err()
+---
+the root directory of a retail flash cannot be located without the block metadata in the spare areas; read a raw NAND image instead of a logical one

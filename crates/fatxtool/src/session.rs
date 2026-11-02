@@ -2,12 +2,12 @@
 
 use std::fmt;
 
-use anstyle::AnsiColor;
 use anstyle::Style;
 use xenon_io::Checked;
 use xenon_io::IntegrityError;
 use xenon_io::IntegrityPolicy;
 
+use crate::diagnostics::print_warning;
 use crate::error::FatxToolError;
 use crate::output::InputFile;
 use crate::source::VolumeSource;
@@ -51,14 +51,13 @@ impl<'a> Session<'a> {
 	where
 		W: fmt::Display,
 	{
-		let program = self.program;
-		let style = Style::new().bold().fg_color(Some(AnsiColor::Yellow.into()));
 		let shown = &first[..first.len().min(SHOWN_WARNINGS)];
 		for warning in shown {
-			anstream::eprintln!("{program}: {style}warning{style:#}: {warning}");
+			print_warning(self.program, warning);
 		}
+
 		if total > shown.len() {
-			anstream::eprintln!("{program}: {style}warning{style:#}: {} more warnings", total - shown.len());
+			print_warning(self.program, format_args!("{} more warnings", total - shown.len()));
 		}
 	}
 

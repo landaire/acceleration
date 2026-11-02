@@ -67,6 +67,56 @@ rust_test(
 )
 
 rust_test(
+    name = "boot_chain-test",
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
+    crate = "boot_chain",
+    crate_root = "tests/boot_chain.rs",
+    edition = "2024",
+    env = ENV | {"INSTA_WORKSPACE_ROOT": "."},
+    features = [
+        "clap",
+        "default",
+    ],
+    run_env = {
+        "CARGO_MANIFEST_DIR": "crates/sfcx",
+    },
+    deps = [
+        "//crates/xenon_io:xenon_io",
+        "//third-party/rust:clap",
+        "//third-party/rust:fskit",
+        "//third-party/rust:futures",
+        "//third-party/rust:thiserror",
+        "//third-party/rust:winnow",
+        ":sfcx",
+    ],
+)
+
+rust_test(
+    name = "filesystem-test",
+    srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
+    crate = "filesystem",
+    crate_root = "tests/filesystem.rs",
+    edition = "2024",
+    env = ENV | {"INSTA_WORKSPACE_ROOT": "."},
+    features = [
+        "clap",
+        "default",
+    ],
+    run_env = {
+        "CARGO_MANIFEST_DIR": "crates/sfcx",
+    },
+    deps = [
+        "//crates/xenon_io:xenon_io",
+        "//third-party/rust:clap",
+        "//third-party/rust:fskit",
+        "//third-party/rust:futures",
+        "//third-party/rust:thiserror",
+        "//third-party/rust:winnow",
+        ":sfcx",
+    ],
+)
+
+rust_test(
     name = "images-test",
     srcs = glob(["Cargo.toml", "src/**", "tests/**"]),
     crate = "images",

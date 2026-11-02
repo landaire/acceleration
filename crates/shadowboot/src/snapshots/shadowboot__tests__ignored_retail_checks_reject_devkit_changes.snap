@@ -1,0 +1,7 @@
+---
+source: crates/shadowboot/src/lib.rs
+expression: "messages.join(\"\\n\")"
+---
+replacing the hypervisor requires a devkit boot chain, and the base has a retail one
+replacing the kernel requires a devkit boot chain, and the base has a retail one
+rebuilding "SE" requires a devkit boot chain, and the base has a retail one

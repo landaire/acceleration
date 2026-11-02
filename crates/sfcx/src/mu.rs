@@ -39,6 +39,8 @@ use crate::raw::SPARE_SIZE;
 use crate::raw::SectorIndex;
 use crate::raw::SectorRecord;
 use crate::raw::SpareLayout;
+use crate::root::FlashRegions;
+use crate::root::LocateRoot;
 
 pub const MU_PAGE_SIZE: usize = 0x1000;
 /// The system partition is the last 8 MiB less a page of the memory unit (`SFCX_MU_SYSTEM_PARTITION_SIZE`).
@@ -49,9 +51,6 @@ const PAGE_TYPE_MASK: u8 = 0x3f;
 const PAGE_TYPE_DATA: u8 = 40;
 const PAGE_TYPE_COMMIT: u8 = 41;
 const BLOCK_NUMBER_MASK: usize = 0x0fff;
-/// `SFCX_ROOT_DIRECTORY_SIZE`: a root directory and its file allocation table.
-const ROOT_SLOT_SIZE: usize = 0x4000;
-const ROOT_SLOT_SECTORS: usize = ROOT_SLOT_SIZE / SECTOR_DATA_SIZE;
 
 /// A block of the memory unit's logical address space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -313,18 +312,15 @@ impl Machine for ReadMemoryUnit {
 	}
 }
 
-/// Scans a raw image for the memory unit as `SfcxMuMountStorage` does. The scan first finds the
-/// newest root directory of the system file system, whose block metadata records the blocks the
-/// kernel reserves and where the file system starts, then inspects every block that may hold
-/// memory unit data.
+/// Scans a raw image for the memory unit as `SfcxMuMountStorage` does. The scan first runs
+/// [`LocateRoot`] for the newest root directory of the system file system, whose block metadata
+/// records the blocks the kernel reserves and where the file system starts, then inspects every
+/// block that may hold memory unit data.
 #[derive(Debug)]
 pub struct OpenMemoryUnit<'a> {
 	layout: &'a RawLayout,
 	shape: BlockShape,
-	state: ScanState,
-	flash: FlashRegions,
-	/// Sequence number of the adopted root directory. The kernel starts from zero.
-	root_sequence: u32,
+	state: ScanState<'a>,
 	size: u64,
 	targets: Vec<ScanTarget>,
 	/// Inspected blocks with a committed page, by physical block.
@@ -336,23 +332,9 @@ pub struct OpenMemoryUnit<'a> {
 }
 
 #[derive(Debug)]
-enum ScanState {
-	/// Reading the first sector of a logical block of the system flash.
-	RootBlock {
-		block: usize,
-		physical: BlockIndex,
-	},
-	/// Reading the first sector of a root directory slot.
-	RootSlot {
-		root: RootBlock,
-		slot: usize,
-	},
-	/// Reading the remaining sectors of a root directory slot whose first sector qualifies.
-	RootVerify {
-		root: RootBlock,
-		slot: usize,
-		sequence: u32,
-	},
+enum ScanState<'a> {
+	/// Locating the root directory of the system flash.
+	Root(LocateRoot<'a>),
 	/// Reading the first sector of a scan target.
 	BlockHeader {
 		target: usize,
@@ -374,20 +356,6 @@ enum ScanState {
 	/// Every block is scanned; the next step returns the memory unit.
 	Done,
 	Finished,
-}
-
-/// A logical system flash block whose first-sector metadata names a valid flash layout.
-#[derive(Debug, Clone, Copy)]
-struct RootBlock {
-	block: usize,
-	physical: BlockIndex,
-	regions: FlashRegions,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FlashRegions {
-	kernel_reserved_block_count: usize,
-	file_system_first_block: usize,
 }
 
 /// Memory unit geometry for a block size (`SfcxInitializeHardware`).
@@ -430,16 +398,6 @@ enum BlockLink {
 	Secondary { primary: BlockIndex },
 }
 
-/// Big-block metadata of the first sector of a system flash block (`BigBlockRootDirectory`).
-#[derive(Debug, Clone, Copy)]
-struct RootMetadata {
-	sequence: u32,
-	block_type: u8,
-	kernel_reserved_block_count: usize,
-	file_system_block_count: usize,
-	trailing_reserved_block_count: usize,
-}
-
 impl<'a> OpenMemoryUnit<'a> {
 	pub fn new(layout: &'a RawLayout) -> Result<Self, SfcxError> {
 		let geometry = layout.geometry();
@@ -455,35 +413,23 @@ impl<'a> OpenMemoryUnit<'a> {
 			bits_per_index,
 			page_map_size: pages_per_block * bits_per_index as usize / 8,
 		};
-		let mut scan = Self {
+		Ok(Self {
 			layout,
 			shape,
-			state: ScanState::Done,
-			// The kernel starts the mount with no reserved blocks and the file system at block 0
-			// (`SfcxMountVolume`); a flash without a root directory keeps them.
-			flash: FlashRegions { kernel_reserved_block_count: 0, file_system_first_block: 0 },
-			root_sequence: 0,
+			state: ScanState::Root(LocateRoot::new(layout)),
 			size: 0,
 			targets: Vec::new(),
 			blocks: vec![None; geometry.physical_block_count()],
 			mapping: vec![None; BLOCK_NUMBER_MASK + 1],
 			warnings: Vec::new(),
 			requested: false,
-		};
-		scan.next_root_block(geometry.logical_block_count())?;
-
-		Ok(scan)
+		})
 	}
 
 	fn pending_range(&self) -> Option<Range<u64>> {
 		let geometry = self.shape.geometry;
 		match &self.state {
-			ScanState::RootBlock { physical, .. } => Some(geometry.metadata_range(*physical)),
-			ScanState::RootSlot { root, slot } => Some(root_slot_sector(geometry, root.physical, *slot).records(1)),
-			ScanState::RootVerify { root, slot, .. } => {
-				let first = root_slot_sector(geometry, root.physical, *slot);
-				Some(SectorIndex::new(first.get() + 1).records(ROOT_SLOT_SECTORS - 1))
-			}
+			ScanState::Root(_) => None,
 			ScanState::BlockHeader { target } => Some(geometry.metadata_range(self.targets[*target].block)),
 			ScanState::Search { target, probe, .. } => Some(self.page_sector(*target, *probe).records(1)),
 			ScanState::Walk { target, low, .. } => Some(self.page_sector(*target, low - 1).records(SECTORS_PER_PAGE)),
@@ -496,47 +442,12 @@ impl<'a> OpenMemoryUnit<'a> {
 		SectorIndex::new(block.get() + page * SECTORS_PER_PAGE)
 	}
 
-	/// Moves to the next translatable logical block below `before`, scanning downward as the
-	/// kernel mount does, or to the memory unit scan once none remains.
-	fn next_root_block(&mut self, before: usize) -> Result<(), SfcxError> {
-		for block in (0..before).rev() {
-			if let Some(physical) = self.layout.translate(BlockIndex::new(block)) {
-				self.state = ScanState::RootBlock { block, physical };
-				return Ok(());
-			}
-		}
-
-		self.start_memory_unit_scan()
-	}
-
-	/// Moves past root directory slot `slot` of `root`.
-	fn next_root_slot(&mut self, root: RootBlock, slot: usize) -> Result<(), SfcxError> {
-		let slots = self.shape.geometry.block_size() / ROOT_SLOT_SIZE;
-		if slot + 1 < slots {
-			self.state = ScanState::RootSlot { root, slot: slot + 1 };
-			return Ok(());
-		}
-
-		self.next_root_block(root.block)
-	}
-
-	/// Checks the first sector of a root directory slot (`SfcxInspectLargeDataBlock`).
-	fn inspect_root_slot(&mut self, root: RootBlock, slot: usize, record: &SectorRecord<'_>) -> Result<(), SfcxError> {
-		let metadata = RootMetadata::parse(record.spare);
-		if metadata.block_type == RootMetadata::BLOCK_TYPE_ROOT_DIRECTORY && metadata.sequence >= self.root_sequence {
-			self.state = ScanState::RootVerify { root, slot, sequence: metadata.sequence };
-			return Ok(());
-		}
-
-		self.next_root_slot(root, slot)
-	}
-
 	/// Sizes the memory unit (`SfcxMuMountStorage`) and lists the blocks to scan: the blocks
 	/// past the configured flash size, then the system flash blocks between the kernel
 	/// reserved blocks and the file system (`SfcxMuScanMemoryUnitBlocks`).
-	fn start_memory_unit_scan(&mut self) -> Result<(), SfcxError> {
+	fn start_memory_unit_scan(&mut self, regions: FlashRegions) -> Result<(), SfcxError> {
 		let geometry = self.shape.geometry;
-		self.size = memory_unit_size(geometry, self.flash)?;
+		self.size = memory_unit_size(geometry, regions)?;
 
 		let beyond = (geometry.block_count()..geometry.physical_block_count())
 			.map(|block| ScanTarget { block: BlockIndex::new(block), check_bad_marker: true });
@@ -545,7 +456,7 @@ impl<'a> OpenMemoryUnit<'a> {
 		// A bad block with no replacement gets the next unassigned spare, as
 		// `SfcxAllocateSpareBlockReplacement` assigns one during the scan.
 		let mut spares = self.layout.unassigned_spares();
-		for block in self.flash.kernel_reserved_block_count..self.flash.file_system_first_block {
+		for block in regions.kernel_reserved_block_count()..regions.file_system_first_block().get() {
 			let physical = self.layout.translate(BlockIndex::new(block)).or_else(|| spares.next());
 			if let Some(block) = physical {
 				self.targets.push(ScanTarget { block, check_bad_marker: false });
@@ -667,6 +578,20 @@ impl Machine for OpenMemoryUnit<'_> {
 
 	fn step(&mut self) -> Result<Step<Self::Output>, SfcxError> {
 		assert!(!self.requested, "OpenMemoryUnit stepped before the requested read was fed");
+		if let ScanState::Root(locate) = &mut self.state {
+			match locate.step()? {
+				Step::Read(range) => {
+					self.requested = true;
+					return Ok(Step::Read(range));
+				}
+				Step::Done(scan) => {
+					let (scan, warnings) = scan.into_parts();
+					self.warnings.extend(warnings);
+					self.start_memory_unit_scan(scan.regions())?;
+				}
+			}
+		}
+
 		if let Some(range) = self.pending_range() {
 			self.requested = true;
 			return Ok(Step::Read(range));
@@ -685,6 +610,9 @@ impl Machine for OpenMemoryUnit<'_> {
 	fn feed(&mut self, bytes: &[u8]) -> Result<(), SfcxError> {
 		assert!(self.requested, "OpenMemoryUnit fed without a requested read");
 		self.requested = false;
+		if let ScanState::Root(locate) = &mut self.state {
+			return locate.feed(bytes);
+		}
 
 		let range = self.pending_range().expect("a requested read is pending");
 		expect_len(&range, bytes)?;
@@ -702,33 +630,6 @@ impl Machine for OpenMemoryUnit<'_> {
 		}
 
 		match std::mem::replace(&mut self.state, ScanState::Done) {
-			ScanState::RootBlock { block, physical } => {
-				let metadata = RootMetadata::parse(first.spare);
-				if !matches!(
-					metadata.block_type,
-					RootMetadata::BLOCK_TYPE_DATA | RootMetadata::BLOCK_TYPE_ROOT_DIRECTORY
-				) {
-					return self.next_root_block(block);
-				}
-				let Some(regions) = metadata.regions(self.shape.geometry, block, self.flash) else {
-					return self.next_root_block(block);
-				};
-
-				self.inspect_root_slot(RootBlock { block, physical, regions }, 0, &first)
-			}
-			ScanState::RootSlot { root, slot } => self.inspect_root_slot(root, slot, &first),
-			ScanState::RootVerify { root, slot, sequence } => {
-				let intact = records.iter().all(|record| {
-					let metadata = RootMetadata::parse(SectorRecord::new(record).spare);
-					metadata.sequence == sequence && metadata.block_type == RootMetadata::BLOCK_TYPE_ROOT_DIRECTORY
-				});
-				if intact {
-					self.root_sequence = sequence;
-					self.flash = root.regions;
-				}
-
-				self.next_root_slot(root, slot)
-			}
 			ScanState::BlockHeader { target } => {
 				if self.targets[target].check_bad_marker && SpareLayout::BigBlock.is_bad_block(first.spare) {
 					self.next_target(target + 1);
@@ -769,7 +670,9 @@ impl Machine for OpenMemoryUnit<'_> {
 				self.next_target(target + 1);
 				Ok(())
 			}
-			ScanState::Done | ScanState::Finished => unreachable!("no read is pending once the scan is done"),
+			ScanState::Root(_) | ScanState::Done | ScanState::Finished => {
+				unreachable!("no memory unit read is pending outside the block scan")
+			}
 		}
 	}
 }
@@ -822,45 +725,6 @@ impl PageMetadata {
 	}
 }
 
-impl RootMetadata {
-	const BLOCK_TYPE_DATA: u8 = 42;
-	const BLOCK_TYPE_ROOT_DIRECTORY: u8 = 44;
-
-	fn parse(spare: &[u8; SPARE_SIZE]) -> Self {
-		Self {
-			sequence: u32::from_le_bytes([spare[5], spare[3], spare[4], spare[6]]),
-			block_type: spare[12] & PAGE_TYPE_MASK,
-			kernel_reserved_block_count: usize::from(spare[7]),
-			// Recorded in units of four blocks.
-			file_system_block_count: usize::from(spare[8]) * 4,
-			trailing_reserved_block_count: usize::from(spare[9]),
-		}
-	}
-
-	/// The flash layout this metadata names for logical block `block`, when the kernel would
-	/// accept it given the layout adopted so far.
-	fn regions(&self, geometry: Geometry, block: usize, adopted: FlashRegions) -> Option<FlashRegions> {
-		let logical_blocks = geometry.logical_block_count();
-		let reserved =
-			self.trailing_reserved_block_count + self.file_system_block_count + self.kernel_reserved_block_count;
-		if reserved > logical_blocks {
-			return None;
-		}
-
-		let file_system_first_block =
-			logical_blocks - self.trailing_reserved_block_count - self.file_system_block_count;
-		let accepted = block >= file_system_first_block
-			&& self.kernel_reserved_block_count != 0
-			&& self.file_system_block_count != 0
-			&& file_system_first_block >= adopted.file_system_first_block;
-
-		accepted.then_some(FlashRegions {
-			kernel_reserved_block_count: self.kernel_reserved_block_count,
-			file_system_first_block,
-		})
-	}
-}
-
 /// Adds a piece, joining it to the previous one when both are erased or physically contiguous.
 fn push_piece(pieces: &mut Vec<Piece>, piece: Piece) {
 	match (pieces.last_mut(), piece) {
@@ -882,11 +746,11 @@ fn physical_page(page_map: &[u8], logical_page: usize) -> Option<usize> {
 /// Size of the memory unit (`SfcxMuMountStorage`). One block in 16 past the configured flash
 /// size is reserved to replace bad blocks, and a few more stay free for writes. The hypervisor's
 /// sector limit is not stored in flash and is not applied.
-fn memory_unit_size(geometry: Geometry, flash: FlashRegions) -> Result<u64, MemoryUnitError> {
+fn memory_unit_size(geometry: Geometry, regions: FlashRegions) -> Result<u64, MemoryUnitError> {
 	const LARGE_FLASH_THRESHOLD: u64 = 0x1000_0000;
 	const MINIMUM_SIZE: u64 = 0xc0_0000;
 
-	let region_blocks = flash.file_system_first_block - flash.kernel_reserved_block_count;
+	let region_blocks = regions.file_system_first_block().get() - regions.kernel_reserved_block_count();
 	let beyond_blocks = geometry.physical_block_count() - geometry.block_count();
 	let reserve_blocks = beyond_blocks / 16;
 	let large_flash = (geometry.physical_block_count() as u64) << geometry.block_shift() > LARGE_FLASH_THRESHOLD;
@@ -902,10 +766,6 @@ fn memory_unit_size(geometry: Geometry, flash: FlashRegions) -> Result<u64, Memo
 	}
 
 	Ok(size)
-}
-
-fn root_slot_sector(geometry: Geometry, block: BlockIndex, slot: usize) -> SectorIndex {
-	SectorIndex::new(geometry.first_sector(block).get() + slot * ROOT_SLOT_SECTORS)
 }
 
 fn collect_warnings(collected: &Mutex<Vec<RawWarning>>, bytes: Checked<Vec<u8>>) -> Vec<u8> {

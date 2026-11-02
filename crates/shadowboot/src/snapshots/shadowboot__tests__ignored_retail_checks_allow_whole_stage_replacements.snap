@@ -1,0 +1,6 @@
+---
+source: crates/shadowboot/src/lib.rs
+expression: "report.warnings[0].to_string()"
+---
+base image has retail boot stage "CB" at 0x8000.
+A retail boot chain does not know how to shadowboot. A devkit boot chain is required: a devkit SB, with an SC and SD signed for it. You can use whatever hypervisor/kernel you want.

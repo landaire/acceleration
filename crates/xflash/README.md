@@ -1,6 +1,6 @@
 # xflash
 
-Command-line inspector for Xbox 360 devkit flash images, built on [`sfcx`](../sfcx/README.md).
+Command-line inspector for Xbox 360 flash images from devkit and retail consoles, built on [`sfcx`](../sfcx/README.md).
 
 - Prints the boot region and the root files of the flash file system, and copies them out.
 - Copies out the SMC firmware of the boot region, decrypted, or as stored with `--encrypted`. The decrypted firmware must end in a zero word, as the console requires.
@@ -14,7 +14,15 @@ xflash /path/to/nand.bin extract-stage SE /tmp/se.bin
 xflash /path/to/nand.bin extract-smc /tmp/smc.bin
 ```
 
-The CLI maps its input read-only. It has no device access or flash-programming command. `list` and `extract-file` support the observed 60 MiB devkit file system and reject other profiles. An output that is the input image under another name is refused.
+`info` says whether the boot chain is a devkit one (SB, SC, SD, SE) or a retail one (CB, an optional CC, CD, CE), and lists the kernel patch slots. Retail stages are encrypted and are copied as stored. Some retail consoles split the CB into two blocks that are both named `CB`. Name them `CB_A` and `CB_B`:
+
+```text
+xflash /path/to/nand.bin extract-stage CB_B /tmp/cb_b.bin
+```
+
+`list` and `extract-file` find the file system the way the console does, from the block metadata in the spare areas of a raw image. A logical image has no spare areas, so for it they support only the observed 60 MiB devkit file system.
+
+The CLI maps its input read-only. It has no device access or flash-programming command. An output that is the input image under another name is refused.
 
 ## Memory unit
 

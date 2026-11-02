@@ -97,9 +97,9 @@ fn format_then_change_then_read_back() {
 	assert_eq!(fs::read(&recovered).unwrap(), data);
 
 	let error = failure(&[image, "rm", "/Content/missing"]);
-	assert!(error.contains(r#"NotFound { path: "/Content/missing" }"#), "{error}");
+	assert!(error.contains("error: /Content/missing does not exist"), "{error}");
 	let error = failure(&[image, "mkdir", "/a:b"]);
-	assert!(error.contains("IllegalCharacter { character: ':' }"), "{error}");
+	assert!(error.contains("the name holds the illegal character ':'"), "{error}");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn format_sizes_the_fat_for_the_partition_length() {
 	assert!(String::from_utf8_lossy(&info.stdout).contains("partition length: 0x1000000\n"));
 
 	let error = failure(&[path(&too_short), "--partition-length", "0x1000000", "format", "--cluster-size", "0x1000"]);
-	assert!(error.contains("ImageTooShort { required: 20480, available: 20479 }"), "{error}");
+	assert!(error.contains("the volume needs 0x5000 bytes but the image range holds 0x4fff"), "{error}");
 }
 
 #[test]
@@ -128,7 +128,7 @@ fn alternate_partition_round_trip() {
 	let image = path(&image);
 
 	let error = failure(&[image, "--alternate-partition", "format", "--cluster-size", "0x1000"]);
-	assert!(error.contains("AlternateClusterSize"), "{error}");
+	assert!(error.contains("an alternate partition needs"), "{error}");
 	assert!(stdout(&[image, "--alternate-partition", "format"]).ends_with("a Fat32 FAT\n"));
 	stdout(&[image, "--alternate-partition", "mkdir", "/Content"]);
 	assert_eq!(stdout(&[image, "--alternate-partition", "list"]), "/Content/\n");
@@ -143,7 +143,7 @@ fn format_keeps_an_existing_volume_without_force() {
 	stdout(&[image, "mkdir", "/keep"]);
 
 	let error = failure(&[image, "format"]);
-	assert!(error.contains("VolumeExists"), "{error}");
+	assert!(error.contains("a volume already starts at"), "{error}");
 	assert_eq!(stdout(&[image, "list"]), "/keep/\n");
 
 	stdout(&[image, "format", "--force"]);
@@ -161,10 +161,10 @@ fn writes_wait_for_force_while_checks_fail() {
 	OpenOptions::new().write(true).open(&image_path).unwrap().write_all_at(&[0x80], 0x2001).unwrap();
 
 	let error = failure(&[image, "mkdir", "/new"]);
-	assert!(error.contains("PendingWarnings"), "{error}");
+	assert!(error.contains("pass --force to change it anyway"), "{error}");
 	assert!(error.contains("warning: record at cluster 0x1 offset 0x0 skipped"), "{error}");
 	let error = failure(&[image, "--strict", "mkdir", "/new", "--force"]);
-	assert!(error.contains("Integrity(IntegrityError"), "{error}");
+	assert!(error.contains("error: 2 integrity checks failed, the first: record at cluster 0x1"), "{error}");
 
 	let output = fatxtool(&[image, "mkdir", "/new", "--force"]);
 	assert!(output.status.success());
@@ -181,9 +181,9 @@ fn writes_refuse_devices_links_and_directories() {
 
 	for target in [Path::new("/dev/null"), link.as_path(), directory.0.as_path()] {
 		let error = failure(&[path(target), "mkdir", "/x"]);
-		assert!(error.contains("NotARegularFile"), "{target:?}: {error}");
+		assert!(error.contains("is not a regular file"), "{target:?}: {error}");
 		let error = failure(&[path(target), "format", "--force"]);
-		assert!(error.contains("NotARegularFile"), "{target:?}: {error}");
+		assert!(error.contains("is not a regular file"), "{target:?}: {error}");
 	}
 
 	let mut head = [0; 4];

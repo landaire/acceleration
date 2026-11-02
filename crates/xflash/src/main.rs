@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io;
 use std::io::BufWriter;
 use std::io::Write;
+use std::iter;
 use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
@@ -20,25 +21,37 @@ use fatxtool::Session;
 use fatxtool::VolumeLocation;
 use fatxtool::VolumeSource;
 use fatxtool::create_output;
+use fatxtool::diagnostics::print_error;
 use fatxtool::parse_number;
 use fatxtool::session::SHOWN_WARNINGS;
 use memmap2::Mmap;
 use rootcause::prelude::ResultExt;
+use sfcx::BootChain;
+use sfcx::BootStage;
+use sfcx::ChainKind;
 use sfcx::Checked;
+use sfcx::Filesystem;
 use sfcx::FlashImage;
 use sfcx::FormatSelection;
 use sfcx::IntegrityError;
 use sfcx::IntegrityPolicy;
 use sfcx::MemoryUnit;
 use sfcx::MemoryUnitSource;
+use sfcx::PatchSlot;
+use sfcx::PatchSlotContents;
 use sfcx::RawWarning;
 use sfcx::ReadAt;
+use sfcx::RetailCb;
 use sfcx::SfcxError;
+use sfcx::StageRole;
 use sfcx::io::SliceSource;
 use sfcx::mu::MU_PAGE_SIZE;
 use thiserror::Error;
 use tracing::info_span;
 use tracing_subscriber::EnvFilter;
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(feature = "dhat")]
 #[global_allocator]
@@ -47,7 +60,7 @@ static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 const PROGRAM: &str = "xflash";
 
 #[derive(Debug, Parser)]
-#[command(about = "Read-only Xbox 360 devkit flash image inspection")]
+#[command(about = "Read-only Xbox 360 flash image inspection, for devkit and retail consoles")]
 struct Arguments {
 	#[arg(value_name = "IMAGE")]
 	image: PathBuf,
@@ -72,8 +85,11 @@ enum Command {
 		name: String,
 		output: PathBuf,
 	},
+	/// Copy a boot stage as stored. A split retail CB is CB_A and CB_B.
 	ExtractStage {
-		name: String,
+		/// SB, SC, SD, SE, CB, CB_A, CB_B, CC, CD or CE
+		#[arg(value_parser = parse_stage_role)]
+		stage: StageRole,
 		output: PathBuf,
 	},
 	/// Copy the SMC firmware of the boot region to a file, decrypted unless `--encrypted`
@@ -198,8 +214,10 @@ enum CliError {
 	Integrity(#[from] IntegrityError),
 	#[error("root file {name:?} was not found")]
 	FileNotFound { name: String },
-	#[error("boot stage {name:?} was not found")]
-	StageNotFound { name: String },
+	#[error("the {kind} boot chain has no boot stage {stage}")]
+	StageNotFound { stage: StageRole, kind: ChainKind },
+	#[error("the CB of this image is split; name \"CB_A\" or \"CB_B\"")]
+	SplitCb,
 	#[error("the boot region has no SMC firmware")]
 	SmcNotFound,
 	#[error("the decrypted SMC firmware does not end in a zero word, which the console requires")]
@@ -210,6 +228,13 @@ enum CliError {
 	Fatx(#[from] fatx::FatxError),
 	#[error(transparent)]
 	FatxTool(#[from] FatxToolError),
+}
+
+/// A boot stage name that names no stage role.
+#[derive(Debug, Error)]
+#[error("unknown boot stage {name:?}; expected SB, SC, SD, SE, CB, CB_A, CB_B, CC, CD or CE")]
+struct UnknownStage {
+	name: String,
 }
 
 type Result<T, E = rootcause::Report<CliError>> = std::result::Result<T, E>;
@@ -230,10 +255,10 @@ fn run() -> Result<()> {
 	let image = resolve(&session, image)?;
 
 	match arguments.command {
-		Command::Info => print_info(&image),
+		Command::Info => print_info(&image, &source, &session)?,
 		Command::List => list_root(&image, &source, &session)?,
 		Command::ExtractFile { name, output } => extract_file(&image, &source, &session, &name, output)?,
-		Command::ExtractStage { name, output } => extract_stage(&image, &session, &name, output)?,
+		Command::ExtractStage { stage, output } => extract_stage(&image, &session, stage, output)?,
 		Command::ExtractSmc { output, encrypted } => extract_smc(&image, &session, output, encrypted)?,
 		Command::MuInfo => print_memory_unit(&image, &source, &session)?,
 		Command::ExtractMu { output, partition } => extract_memory_unit(&image, &source, &session, partition, &output)?,
@@ -257,46 +282,110 @@ fn resolve<T>(session: &Session<'_>, checked: Checked<T>) -> Result<T> {
 	session.resolve(checked).map_err(CliError::from).into_report()
 }
 
-fn print_info(image: &FlashImage) {
-	println!("format={}", image.format());
+/// Prints the image format and kind, the flash header, the boot chain, the SMC firmware and the
+/// kernel patch slots.
+fn print_info(image: &FlashImage, source: &SliceSource<&[u8]>, session: &Session<'_>) -> Result<()> {
+	let patch_slots = match image.patch_slots(source) {
+		Ok(checked) => Ok(resolve(session, checked)?),
+		Err(error) => Err(error),
+	};
+	let mut out = io::stdout().lock();
+	write_info(&mut out, image, &patch_slots)
+		.map_err(|error| CliError::from(FatxToolError::WriteListing(error)))
+		.into_report()
+}
+
+fn write_info<W>(out: &mut W, image: &FlashImage, patch_slots: &Result<Vec<PatchSlot>, SfcxError>) -> io::Result<()>
+where
+	W: Write,
+{
 	let boot_region = image.boot_region();
 	let header = boot_region.header();
-	println!(
-		"image build={} flags={:#010x} entry={:#010x} boot-size={:#x}",
+	writeln!(out, "format={}", image.format())?;
+	writeln!(out, "kind={}", boot_region.chain().kind())?;
+	writeln!(
+		out,
+		"image build={} qfe={:#06x} flags={:#06x} entry={:#010x} boot-size={:#x}",
 		header.build.get(),
+		header.qfe,
 		header.flags,
 		header.entry,
 		header.boot_image_size.get(),
-	);
-	for stage in boot_region.boot_stages() {
-		println!(
-			"{} build={} flags={:#010x} entry={:#010x} offset={:#x} size={:#x}",
-			stage.name_str(),
+	)?;
+	for (role, stage) in boot_region.chain().stages() {
+		writeln!(
+			out,
+			"{} build={} qfe={:#06x} flags={:#06x} entry={:#010x} offset={:#x} size={:#x}",
+			role.label(),
 			stage.build().get(),
+			stage.qfe(),
 			stage.flags(),
 			stage.entry(),
 			stage.offset().get(),
 			stage.size().get(),
-		);
+		)?;
 	}
 	match boot_region.smc() {
-		Ok(Some(smc)) => println!("SMC offset={:#x} size={:#x}", smc.offset().get(), smc.size().get()),
-		Ok(None) => println!("SMC none"),
-		Err(error) => println!("SMC invalid: {error}"),
+		Ok(Some(smc)) => writeln!(out, "SMC offset={:#x} size={:#x}", smc.offset().get(), smc.size().get())?,
+		Ok(None) => writeln!(out, "SMC none")?,
+		Err(error) => writeln!(out, "SMC invalid: {error}")?,
 	}
+	match boot_region.key_vault() {
+		Ok(Some(key_vault)) => writeln!(out, "key-vault offset={:#x} size={:#x}", key_vault.start, key_vault.len())?,
+		Ok(None) => writeln!(out, "key-vault none")?,
+		Err(error) => writeln!(out, "key-vault invalid: {error}")?,
+	}
+	let slots = match patch_slots {
+		Ok(slots) if slots.is_empty() => return writeln!(out, "patch-slots none"),
+		Ok(slots) => slots,
+		Err(error) => return writeln!(out, "patch-slots invalid: {error}"),
+	};
+	for (index, slot) in slots.iter().enumerate() {
+		write!(out, "patch-slot {index} offset={:#x} size={:#x}", slot.offset().get(), slot.size().get())?;
+		match slot.contents() {
+			PatchSlotContents::Empty => writeln!(out, " empty")?,
+			PatchSlotContents::Loaders { cf, cg } => {
+				for stage in iter::once(cf).chain(cg) {
+					write!(
+						out,
+						" {} build={} offset={:#x} size={:#x}",
+						stage.name(),
+						stage.build().get(),
+						stage.offset().get(),
+						stage.size().get()
+					)?;
+				}
+				writeln!(out)?;
+			}
+		}
+	}
+
+	Ok(())
 }
 
 fn list_root(image: &FlashImage, source: &SliceSource<&[u8]>, session: &Session<'_>) -> Result<()> {
 	let filesystem = resolve(session, image.filesystem(source).map_err(CliError::from).into_report()?)?;
+	let mut out = io::stdout().lock();
+	write_listing(&mut out, &filesystem)
+		.map_err(|error| CliError::from(FatxToolError::WriteListing(error)))
+		.into_report()
+}
+
+fn write_listing<W>(out: &mut W, filesystem: &Filesystem) -> io::Result<()>
+where
+	W: Write,
+{
 	for entry in filesystem.entries() {
-		println!(
+		writeln!(
+			out,
 			"{}\t{:#06x}\t{}\t{:#010x}",
 			entry.name(),
 			entry.start_cluster().get(),
 			entry.size(),
 			entry.timestamp(),
-		);
+		)?;
 	}
+
 	Ok(())
 }
 
@@ -333,16 +422,30 @@ fn extract_file(
 	})
 }
 
-fn extract_stage(image: &FlashImage, session: &Session<'_>, name: &str, output: PathBuf) -> Result<()> {
+fn extract_stage(image: &FlashImage, session: &Session<'_>, role: StageRole, output: PathBuf) -> Result<()> {
 	let boot_region = image.boot_region();
-	let stage = boot_region
-		.find_stage(name)
-		.ok_or_else(|| rootcause::Report::new(CliError::StageNotFound { name: name.to_owned() }))?;
+	let stage = find_stage(boot_region.chain(), role).into_report()?;
 	let mut file = create_output(session.input(), &output).map_err(CliError::from).into_report()?;
-	file.write_all(boot_region.boot_stage_data(stage))
+	file.write_all(boot_region.boot_stage_data(&stage))
 		.map_err(|source| CliError::from(OutputError::WriteOutput { path: output, source }))
 		.into_report()?;
 	Ok(())
+}
+
+/// The stage of `chain` with `role`. `CB` names the CB of a chain that does not split it.
+fn find_stage(chain: &BootChain, role: StageRole) -> Result<BootStage, CliError> {
+	if let Some(stage) = chain.stage(role) {
+		return Ok(stage);
+	}
+
+	match (role, chain) {
+		(StageRole::Cb, BootChain::Retail { cb: RetailCb::Split { .. }, .. }) => Err(CliError::SplitCb),
+		_ => Err(CliError::StageNotFound { stage: role, kind: chain.kind() }),
+	}
+}
+
+fn parse_stage_role(text: &str) -> Result<StageRole, UnknownStage> {
+	StageRole::parse(text).ok_or_else(|| UnknownStage { name: text.to_owned() })
 }
 
 fn extract_smc(image: &FlashImage, session: &Session<'_>, output: PathBuf, encrypted: bool) -> Result<()> {
@@ -479,7 +582,7 @@ fn main() -> ExitCode {
 	match run() {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
-			eprintln!("{PROGRAM}: {error:?}");
+			print_error(PROGRAM, error.current_context());
 			ExitCode::FAILURE
 		}
 	}

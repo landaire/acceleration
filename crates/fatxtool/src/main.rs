@@ -22,6 +22,7 @@ use fatxtool::Session;
 use fatxtool::VolumeLocation;
 use fatxtool::VolumeSource;
 use fatxtool::WriteCommand;
+use fatxtool::diagnostics::print_error;
 use fatxtool::parse_number;
 use fatxtool::partition_table;
 use fatxtool::partitions;
@@ -290,7 +291,7 @@ fn main() -> ExitCode {
 	match run() {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(error) => {
-			eprintln!("{PROGRAM}: {error:?}");
+			print_error(PROGRAM, error.current_context());
 			ExitCode::FAILURE
 		}
 	}

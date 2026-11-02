@@ -21,6 +21,15 @@ use sha1::Sha1;
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 
+/// The CB key of the boot ROM, known as the 1BL key (`HV_BOOT_ROM_KEYS.CbKey`). The hypervisor
+/// reads it from the 1BL mask ROM, not from its own image (`HvpShadowBootVerifyCb`). The CB or SB
+/// RC4 key is `HMAC-SHA1(BOOT_ROM_CB_KEY, nonce at 0x10)[..16]`. Established by decrypting the
+/// devkit SB build 14352 of a devkit flash and of the RGLoader shadowboot ROM: both give their
+/// entry code at 0x3d0, the flash base 0x80000200c8000000 at 0x258, and an embedded public key
+/// that verifies the SC signature.
+pub const BOOT_ROM_CB_KEY: [u8; 16] =
+	[0xdd, 0x88, 0xad, 0x0c, 0x9e, 0xd6, 0x69, 0xe7, 0xb5, 0x67, 0x94, 0xfb, 0x68, 0x56, 0x3e, 0xfa];
+
 pub fn xe_crypt_sha(data: &[u8]) -> [u8; 20] {
 	let mut hasher = Sha1::new();
 	hasher.update(data);

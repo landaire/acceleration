@@ -3,19 +3,20 @@ use lzxc::MAX_CHUNK_SIZE;
 use lzxc::WindowSize as EncoderWindowSize;
 use lzxd::Lzxd;
 use lzxd::WindowSize as DecoderWindowSize;
+use sfcx::StageName;
 use sha1::Digest;
 use sha1::Sha1;
 use thiserror::Error;
 
 const STAGE_HEADER_SIZE: usize = 0x20;
 const SE_STREAM_OFFSET: usize = 0x30;
-const NONCE_OFFSET: usize = 0x10;
-const NONCE_SIZE: usize = 0x10;
+pub(crate) const NONCE_OFFSET: usize = 0x10;
+pub(crate) const NONCE_SIZE: usize = 0x10;
 const SE_OUTPUT_SIZE_OFFSET: usize = 0x28;
 const FRAME_HEADER_SIZE: usize = 4;
 /// The hypervisor starts the SE payload with this image header, which declares its size.
 const HYPERVISOR_HEADER_SIZE: usize = 0x10;
-const HYPERVISOR_SIZE_FIELD: std::ops::Range<usize> = 0x0c..0x10;
+pub(crate) const HYPERVISOR_SIZE_FIELD: std::ops::Range<usize> = 0x0c..0x10;
 /// SD keeps the digest of SE in its plaintext here. SD 16547 compares the two at 0xcd4 and halts
 /// when they differ.
 const SD_SE_DIGEST: std::ops::Range<usize> = 0x24c..0x260;
@@ -29,40 +30,45 @@ pub const SE_ALIGNMENT: usize = 0x10;
 #[derive(Debug, Error)]
 pub enum Error {
 	#[error("boot stage {stage} is shorter than its 0x20-byte cryptographic header")]
-	StageHeaderTruncated { stage: &'static str },
-	#[error("SE is shorter than its 0x30-byte compression header")]
+	StageHeaderTruncated { stage: StageName },
+	#[error("boot stage \"SE\" is shorter than its 0x30-byte compression header")]
 	SeHeaderTruncated,
-	#[error("SE declares a {declared:#x}-byte output, more than its {limit:#x}-byte stream can hold")]
+	#[error("boot stage \"SE\" declares a {declared:#x}-byte output, more than its {limit:#x}-byte stream can hold")]
 	OutputSizeExceedsStream { declared: usize, limit: usize },
-	#[error("cannot allocate the {size:#x}-byte SE output")]
+	#[error("cannot allocate the {size:#x}-byte output of boot stage \"SE\"")]
 	PayloadAllocation { size: usize },
-	#[error("SE compression frame header at {offset:#x} is truncated")]
+	#[error("compression frame header at {offset:#x} of boot stage \"SE\" is truncated")]
 	FrameHeaderTruncated { offset: usize },
-	#[error("SE compression frame at {offset:#x} has invalid sizes compressed={compressed:#x}, output={output:#x}")]
+	#[error(
+		"compression frame at {offset:#x} of boot stage \"SE\" has invalid sizes compressed={compressed:#x}, output={output:#x}"
+	)]
 	InvalidFrameSize { offset: usize, compressed: usize, output: usize },
-	#[error("SE compression frame at {offset:#x} extends past the stage")]
+	#[error("compression frame at {offset:#x} extends past boot stage \"SE\"")]
 	FrameTruncated { offset: usize },
-	#[error("SE LZX frame {index} failed to decompress")]
+	#[error("LZX frame {index} of boot stage \"SE\" failed to decompress")]
 	DecompressionFailed { index: usize },
-	#[error("SE decompression produced {actual:#x} bytes; expected {expected:#x}")]
+	#[error("decompressing boot stage \"SE\" produced {actual:#x} bytes; expected {expected:#x}")]
 	DecompressedSize { expected: usize, actual: usize },
-	#[error("SE contains {trailing:#x} trailing bytes after the compressed payload")]
+	#[error("boot stage \"SE\" contains {trailing:#x} trailing bytes after the compressed payload")]
 	TrailingData { trailing: usize },
-	#[error("SE payload of {size:#x} bytes exceeds the u32 output-size field")]
+	#[error("payload of {size:#x} bytes exceeds the u32 output-size field of boot stage \"SE\"")]
 	PayloadTooLarge { size: usize },
-	#[error("SE payload of {payload:#x} bytes is shorter than the hypervisor header")]
+	#[error("payload of {payload:#x} bytes is shorter than the hypervisor header")]
 	HypervisorHeaderTruncated { payload: usize },
-	#[error("hypervisor declares size {declared:#x}, but the SE payload has {payload:#x} bytes")]
+	#[error("hypervisor declares size {declared:#x}, but the payload of boot stage \"SE\" has {payload:#x} bytes")]
 	HypervisorSize { declared: usize, payload: usize },
-	#[error("LZX chunk {index} compressed to {size:#x} bytes, which exceeds the SE u16 frame limit")]
+	#[error("LZX chunk {index} compressed to {size:#x} bytes, which exceeds the u16 frame limit of boot stage \"SE\"")]
 	CompressedChunkTooLarge { index: usize, size: usize },
-	#[error("encoded SE size {size:#x} exceeds the u32 stage header limit")]
+	#[error("encoded boot stage \"SE\" size {size:#x} exceeds the u32 stage header limit")]
 	StageTooLarge { size: usize },
-	#[error("SD signature generation failed")]
+	#[error("boot stage \"SD\" signature generation failed")]
 	SdSigning(#[from] xecrypt::Error),
-	#[error("SD is {size:#x} bytes, too short to hold the SE digest at {offset:#x}", offset = SD_SE_DIGEST.start)]
+	#[error(
+		"boot stage \"SD\" is {size:#x} bytes, too short to hold the \"SE\" digest at {offset:#x}",
+		offset = SD_SE_DIGEST.start
+	)]
 	SdTooShort { size: usize },
-	#[error("SE padding has {actual:#x} bytes; SE of size {size:#x} needs {expected:#x}")]
+	#[error("padding of boot stage \"SE\" has {actual:#x} bytes; a stage of size {size:#x} needs {expected:#x}")]
 	PaddingSize { size: usize, expected: usize, actual: usize },
 }
 
@@ -105,9 +111,9 @@ impl Payload {
 }
 
 pub fn decode(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Payload, Error> {
-	validate_stage_header("SC", sc)?;
-	validate_stage_header("SD", sd)?;
-	validate_stage_header("SE", se)?;
+	validate_stage_header(StageName::SC, sc)?;
+	validate_stage_header(StageName::SD, sd)?;
+	validate_stage_header(StageName::SE, se)?;
 	if se.len() < SE_STREAM_OFFSET {
 		return Err(Error::SeHeaderTruncated);
 	}
@@ -165,9 +171,9 @@ pub fn decode(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Payload, Error> {
 }
 
 pub fn encode(sc: &[u8], sd: &[u8], se_template: &[u8], payload: &Payload) -> Result<Vec<u8>, Error> {
-	validate_stage_header("SC", sc)?;
-	validate_stage_header("SD", sd)?;
-	validate_stage_header("SE", se_template)?;
+	validate_stage_header(StageName::SC, sc)?;
+	validate_stage_header(StageName::SD, sd)?;
+	validate_stage_header(StageName::SE, se_template)?;
 	if se_template.len() < SE_STREAM_OFFSET {
 		return Err(Error::SeHeaderTruncated);
 	}
@@ -200,7 +206,7 @@ pub fn encode(sc: &[u8], sd: &[u8], se_template: &[u8], payload: &Payload) -> Re
 
 /// The bytes that follow SE up to its aligned end: zero plaintext, encrypted with the SE key.
 pub fn padding(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<u8>, Error> {
-	validate_stage_header("SE", se)?;
+	validate_stage_header(StageName::SE, se)?;
 	let key = derive_key_chain([sc, sd, se])?;
 	let body = se.len() - STAGE_HEADER_SIZE;
 	let mut stream = vec![0u8; se.len().next_multiple_of(SE_ALIGNMENT) - STAGE_HEADER_SIZE];
@@ -211,7 +217,7 @@ pub fn padding(sc: &[u8], sd: &[u8], se: &[u8]) -> Result<Vec<u8>, Error> {
 /// The XeCryptRotSumSha digest that SD keeps of SE: over the first 0x10 bytes of SE and the
 /// decrypted rest from 0x20 up to the aligned end. `padding` is what follows SE up to there.
 pub fn digest(sc: &[u8], sd: &[u8], se: &[u8], padding: &[u8]) -> Result<[u8; 20], Error> {
-	validate_stage_header("SE", se)?;
+	validate_stage_header(StageName::SE, se)?;
 	let expected = se.len().next_multiple_of(SE_ALIGNMENT) - se.len();
 	if padding.len() != expected {
 		return Err(Error::PaddingSize { size: se.len(), expected, actual: padding.len() });
@@ -264,7 +270,7 @@ pub fn with_authenticated_sd_se_digest(sc: &[u8], sd: &[u8], digest: &[u8; 20]) 
 }
 
 fn sd_plaintext(sc: &[u8], sd: &[u8]) -> Result<Vec<u8>, Error> {
-	validate_stage_header("SD", sd)?;
+	validate_stage_header(StageName::SD, sd)?;
 	if sd.len() < SD_SE_DIGEST.end {
 		return Err(Error::SdTooShort { size: sd.len() });
 	}
@@ -274,7 +280,7 @@ fn sd_plaintext(sc: &[u8], sd: &[u8]) -> Result<Vec<u8>, Error> {
 	Ok(plaintext)
 }
 
-fn validate_stage_header(stage: &'static str, bytes: &[u8]) -> Result<(), Error> {
+fn validate_stage_header(stage: StageName, bytes: &[u8]) -> Result<(), Error> {
 	if bytes.len() < STAGE_HEADER_SIZE {
 		return Err(Error::StageHeaderTruncated { stage });
 	}
@@ -282,14 +288,11 @@ fn validate_stage_header(stage: &'static str, bytes: &[u8]) -> Result<(), Error>
 }
 
 fn derive_key_chain<const N: usize>(stages: [&[u8]; N]) -> Result<[u8; 16], Error> {
+	const NAMES: [StageName; 3] = [StageName::SC, StageName::SD, StageName::SE];
+
 	let mut state = [0u8; 16];
 	for (index, stage) in stages.into_iter().enumerate() {
-		let stage_name = match index {
-			0 => "SC",
-			1 => "SD",
-			_ => "SE",
-		};
-		validate_stage_header(stage_name, stage)?;
+		validate_stage_header(NAMES[index.min(NAMES.len() - 1)], stage)?;
 		let digest = hmac_sha1(&state, &stage[NONCE_OFFSET..NONCE_OFFSET + NONCE_SIZE]);
 		state.copy_from_slice(&digest[..16]);
 	}
@@ -304,7 +307,7 @@ pub(crate) fn sd_key_state(sc: &[u8], sd: &[u8]) -> Result<[u8; 16], Error> {
 	derive_key_chain([sc, sd])
 }
 
-fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
+pub(crate) fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
 	const BLOCK_SIZE: usize = 64;
 	let mut key_block = [0u8; BLOCK_SIZE];
 	if key.len() > BLOCK_SIZE {
@@ -332,7 +335,7 @@ fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
 	outer.finalize().into()
 }
 
-fn rc4(key: &[u8], bytes: &mut [u8]) {
+pub(crate) fn rc4(key: &[u8], bytes: &mut [u8]) {
 	let mut state = core::array::from_fn::<u8, 256, _>(|index| index as u8);
 	let mut j = 0u8;
 	for i in 0..state.len() {

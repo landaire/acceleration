@@ -14,6 +14,7 @@
 
 pub mod command;
 pub mod describe;
+pub mod diagnostics;
 pub mod error;
 pub mod extract;
 pub mod info;
