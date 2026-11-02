@@ -29,6 +29,10 @@ pub enum ParseError {
 	BootStageOutOfBounds { name: [u8; 2] },
 	#[error("image of {actual:#x} bytes is shorter than its declared {declared:#x}-byte boot region")]
 	BootRegionTruncated { declared: u64, actual: u64 },
+	#[error(
+		"SMC firmware of {size:#x} bytes at {offset:#x} is not between the flash header and the end of the boot region"
+	)]
+	SmcOutOfBounds { offset: usize, size: usize },
 	#[error("root directory cluster holds {actual:#x} bytes; expected {expected:#x}")]
 	RootDirectorySize { expected: usize, actual: usize },
 	#[error("the observed profile requires a non-empty root directory")]

@@ -5,6 +5,7 @@ Reader for Xbox 360 NAND flash images, named after the console's flash controlle
 - Opens a logical image (as XBDM `getfile FLASH:\` returns it) or a raw NAND image with spare areas, and detects which one it has.
 - Reads a raw image the way the console's flash driver does: spare areas removed, bad blocks replaced by their spare blocks, every sector checked against its ECC.
 - Parses the boot region (flash header and the SB, SC, SD and SE stages) and the file system of the observed devkit profile.
+- Locates the SMC firmware in the boot region and decrypts and encrypts it (`sfcx::smc`).
 - Reads the internal memory unit of a raw big-block image, the FATX storage the kernel keeps in flash blocks outside the system file system, as a byte device.
 - Works with any data source through sans-io machines, with synchronous and asynchronous APIs, and mounts the file system as a [`vfs`](https://crates.io/crates/vfs) file system.
 

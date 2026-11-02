@@ -76,6 +76,14 @@ enum Command {
 		name: String,
 		output: PathBuf,
 	},
+	/// Copy the SMC firmware of the boot region to a file, decrypted unless `--encrypted`
+	ExtractSmc {
+		/// File to write
+		output: PathBuf,
+		/// Copy the bytes as stored in flash
+		#[arg(long)]
+		encrypted: bool,
+	},
 	/// Print the size and partitions of the memory unit in a raw image
 	MuInfo,
 	/// Copy the memory unit of a raw image, or one of its partitions, to a file
@@ -192,6 +200,10 @@ enum CliError {
 	FileNotFound { name: String },
 	#[error("boot stage {name:?} was not found")]
 	StageNotFound { name: String },
+	#[error("the boot region has no SMC firmware")]
+	SmcNotFound,
+	#[error("the decrypted SMC firmware does not end in a zero word, which the console requires")]
+	SmcTrailer,
 	#[error(transparent)]
 	Output(#[from] OutputError),
 	#[error(transparent)]
@@ -222,6 +234,7 @@ fn run() -> Result<()> {
 		Command::List => list_root(&image, &source, &session)?,
 		Command::ExtractFile { name, output } => extract_file(&image, &source, &session, &name, output)?,
 		Command::ExtractStage { name, output } => extract_stage(&image, &session, &name, output)?,
+		Command::ExtractSmc { output, encrypted } => extract_smc(&image, &session, output, encrypted)?,
 		Command::MuInfo => print_memory_unit(&image, &source, &session)?,
 		Command::ExtractMu { output, partition } => extract_memory_unit(&image, &source, &session, partition, &output)?,
 		Command::Fatx { volume, partition_length, command } => {
@@ -265,6 +278,11 @@ fn print_info(image: &FlashImage) {
 			stage.offset().get(),
 			stage.size().get(),
 		);
+	}
+	match boot_region.smc() {
+		Ok(Some(smc)) => println!("SMC offset={:#x} size={:#x}", smc.offset().get(), smc.size().get()),
+		Ok(None) => println!("SMC none"),
+		Err(error) => println!("SMC invalid: {error}"),
 	}
 }
 
@@ -322,6 +340,27 @@ fn extract_stage(image: &FlashImage, session: &Session<'_>, name: &str, output: 
 		.ok_or_else(|| rootcause::Report::new(CliError::StageNotFound { name: name.to_owned() }))?;
 	let mut file = create_output(session.input(), &output).map_err(CliError::from).into_report()?;
 	file.write_all(boot_region.boot_stage_data(stage))
+		.map_err(|source| CliError::from(OutputError::WriteOutput { path: output, source }))
+		.into_report()?;
+	Ok(())
+}
+
+fn extract_smc(image: &FlashImage, session: &Session<'_>, output: PathBuf, encrypted: bool) -> Result<()> {
+	let boot_region = image.boot_region();
+	let smc = boot_region
+		.smc()
+		.map_err(|error| CliError::from(SfcxError::from(error)))
+		.into_report()?
+		.ok_or_else(|| rootcause::Report::new(CliError::SmcNotFound))?;
+	let mut firmware = boot_region.smc_data(&smc).to_vec();
+	if !encrypted {
+		sfcx::smc::decrypt(&mut firmware);
+		if !sfcx::smc::has_zero_trailer(&firmware) {
+			return Err(rootcause::Report::new(CliError::SmcTrailer));
+		}
+	}
+	let mut file = create_output(session.input(), &output).map_err(CliError::from).into_report()?;
+	file.write_all(&firmware)
 		.map_err(|source| CliError::from(OutputError::WriteOutput { path: output, source }))
 		.into_report()?;
 	Ok(())

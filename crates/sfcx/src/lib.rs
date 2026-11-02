@@ -47,6 +47,7 @@ pub mod mu;
 pub mod raw;
 #[cfg(feature = "vfs")]
 pub mod sfcx_vfs;
+pub mod smc;
 
 pub use xenon_io::io;
 pub use xenon_io::machine;
@@ -54,6 +55,7 @@ pub use xenon_io::machine;
 pub use boot::BootRegion;
 pub use boot::BootStage;
 pub use boot::ImageHeader;
+pub use boot::SmcImage;
 pub use checked::Checked;
 pub use checked::IntegrityError;
 pub use checked::IntegrityPolicy;

@@ -1,4 +1,5 @@
-//! The flash header and the SB, SC, SD, and SE boot stages that follow it.
+//! The flash header, the SMC firmware that it locates, and the SB, SC, SD, and SE boot stages
+//! that follow it.
 
 use std::str;
 
@@ -14,6 +15,11 @@ pub const IMAGE_HEADER_SIZE: usize = 16;
 pub const BOOT_STAGE_COUNT: usize = 4;
 pub const EXPECTED_STAGE_NAMES: [[u8; 2]; BOOT_STAGE_COUNT] = [*b"SB", *b"SC", *b"SD", *b"SE"];
 const FLASH_MAGIC: [u8; 2] = [0xff, 0x4f];
+/// The flash header area: the image header, the copyright string, and the location fields.
+pub const FLASH_HEADER_SIZE: usize = 0x80;
+/// Offsets in the flash header of the SMC firmware's length and offset (big-endian u32 each).
+const SMC_LENGTH_FIELD: usize = 0x78;
+const SMC_OFFSET_FIELD: usize = 0x7c;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileOffset(usize);
@@ -108,6 +114,23 @@ impl BootStage {
 	}
 }
 
+/// The location of the encrypted SMC firmware in the boot region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SmcImage {
+	offset: FileOffset,
+	size: ByteCount,
+}
+
+impl SmcImage {
+	pub const fn offset(&self) -> FileOffset {
+		self.offset
+	}
+
+	pub const fn size(&self) -> ByteCount {
+		self.size
+	}
+}
+
 /// The flash header and the SB, SC, SD, and SE stages of a flash image, limited to the declared
 /// boot region.
 #[derive(Debug, Clone, Copy)]
@@ -175,6 +198,37 @@ impl<'a> BootRegion<'a> {
 	pub fn find_stage(&self, name: &str) -> Option<&BootStage> {
 		self.boot_stages.iter().find(|stage| stage.name_str().eq_ignore_ascii_case(name))
 	}
+
+	/// The SMC firmware, or `None` when the flash header gives it no length. The location is
+	/// checked on request, so a malformed one does not keep the rest of the image from opening.
+	pub fn smc(&self) -> Result<Option<SmcImage>, ParseError> {
+		parse_smc(self.bytes)
+	}
+
+	/// The encrypted bytes of the SMC firmware; [`crate::smc::decrypt`] gives the firmware.
+	pub fn smc_data(&self, smc: &SmcImage) -> &'a [u8] {
+		let start = smc.offset.get();
+		&self.bytes[start..start + smc.size.get()]
+	}
+}
+
+/// The SMC location fields of the flash header. A zero length means the image has no SMC
+/// firmware; otherwise the firmware must lie after the flash header and within the boot region.
+fn parse_smc(bytes: &[u8]) -> Result<Option<SmcImage>, ParseError> {
+	let field = |at: usize| -> Result<usize, ParseError> {
+		let word = bytes.get(at..at + 4).ok_or(ParseError::HeaderTruncated)?;
+		Ok(u32::from_be_bytes([word[0], word[1], word[2], word[3]]) as usize)
+	};
+	let size = field(SMC_LENGTH_FIELD)?;
+	let offset = field(SMC_OFFSET_FIELD)?;
+	if size == 0 {
+		return Ok(None);
+	}
+	let fits = offset >= FLASH_HEADER_SIZE && offset.checked_add(size).is_some_and(|end| end <= bytes.len());
+	if !fits {
+		return Err(ParseError::SmcOutOfBounds { offset, size });
+	}
+	Ok(Some(SmcImage { offset: FileOffset::new(offset), size: ByteCount::new(size) }))
 }
 
 fn parse_header_fields(input: &mut &[u8]) -> ModalResult<ImageHeader> {

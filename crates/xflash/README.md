@@ -3,6 +3,7 @@
 Command-line inspector for Xbox 360 devkit flash images, built on [`sfcx`](../sfcx/README.md).
 
 - Prints the boot region and the root files of the flash file system, and copies them out.
+- Copies out the SMC firmware of the boot region, decrypted, or as stored with `--encrypted`. The decrypted firmware must end in a zero word, as the console requires.
 - Reads the internal memory unit of a raw NAND image and runs the [`fatxtool`](../fatxtool/README.md) commands on its FATX partitions and on flash volume files such as `xlaunch.fdf`.
 
 ```text
@@ -10,6 +11,7 @@ xflash /path/to/nand.bin info
 xflash /path/to/nand.bin list
 xflash /path/to/nand.bin extract-file xbdm.xex /tmp/xbdm.xex
 xflash /path/to/nand.bin extract-stage SE /tmp/se.bin
+xflash /path/to/nand.bin extract-smc /tmp/smc.bin
 ```
 
 The CLI maps its input read-only. It has no device access or flash-programming command. `list` and `extract-file` support the observed 60 MiB devkit file system and reject other profiles. An output that is the input image under another name is refused.

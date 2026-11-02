@@ -134,6 +134,28 @@ fn logical_image_has_no_memory_unit() {
 	assert!(matches!(image.memory_unit(&source), Err(SfcxError::MemoryUnit(MemoryUnitError::LogicalImage))));
 }
 
+/// The flash header locates the SMC firmware between itself and the end of the boot region; a
+/// location outside that range is reported on request without failing the open.
+#[test]
+fn smc_location_is_bounded_by_the_boot_region() {
+	let mut logical = logical_image();
+	let mut set_smc = |size: u32, offset: u32| {
+		logical[0x78..0x7c].copy_from_slice(&size.to_be_bytes());
+		logical[0x7c..0x80].copy_from_slice(&offset.to_be_bytes());
+		let source = SliceSource(logical.as_slice());
+		let image =
+			FlashImage::open(&source, logical.len() as u64, FormatSelection::Logical).unwrap().ignore_warnings();
+		image.boot_region().smc().map(|smc| smc.map(|smc| (smc.offset().get(), smc.size().get())))
+	};
+
+	assert_eq!(set_smc(0x3000, 0x1000), Ok(Some((0x1000, 0x3000))));
+	assert_eq!(set_smc(0, 0x1000), Ok(None));
+	assert_eq!(set_smc(0x40, 0x40), Err(ParseError::SmcOutOfBounds { offset: 0x40, size: 0x40 }));
+	let end = BOOT_REGION_SIZE as u32;
+	assert_eq!(set_smc(0x41, end - 0x40), Err(ParseError::SmcOutOfBounds { offset: end as usize - 0x40, size: 0x41 }));
+	assert_eq!(set_smc(0x40, end - 0x40), Ok(Some((end as usize - 0x40, 0x40))));
+}
+
 /// Runs against a private raw NAND dump named by `SFCX_RAW_IMAGE`. Every sector read passes the
 /// ECC check, which the console computed, and the file system parses as the observed devkit
 /// profile.
