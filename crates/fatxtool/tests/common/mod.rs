@@ -205,7 +205,9 @@ impl Scratch {
 		let mut out = Vec::new();
 		fatxtool::run(&command, &source, &location, &session, &mut out)?;
 
-		Ok(String::from_utf8(out).unwrap().replace(self.directory.to_str().unwrap(), "SCRATCH"))
+		let report = String::from_utf8(out).unwrap().replace(self.directory.to_str().unwrap(), "SCRATCH");
+		// Host paths in the report use the platform separator; snapshots use `/`.
+		Ok(if cfg!(windows) { report.replace('\\', "/") } else { report })
 	}
 }
 
