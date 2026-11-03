@@ -9,7 +9,7 @@ Xbox 360 cryptographic primitives. Implements the subset of the XeCrypt API used
 - SHA-1 hashing
 - RSA signature verification for LIVE and PIRS XContent packages (CON verification is not implemented)
 - Keyvault parsing (owned and zero-copy) via `keyvault`
-- XEX2 header signature signing and verification (`XeCryptBnQwBeSig`) via `xex_sig`
+- XEX2 header signature signing and verification (`XeCryptBnQwBeSig`) via `xex_sig`, including a model of the console's Montgomery verifier and `XECRYPT_RSAPUB_2048` parsing
 - RSA signing with devkit keys
 - `serde` feature: `Serialize` for keyvault, certificate and signature types
 - Devkit and retail key support

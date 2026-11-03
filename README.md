@@ -27,6 +27,7 @@ Libraries and tools for Xbox 360 file formats.
 | [`fatx`](crates/fatx/) | Sans-io reader, writer and forensic scanner for FATX volumes |
 | [`fatxtool`](crates/fatxtool/) | Command-line inspector, recovery tool and editor for FATX volumes |
 | [`shadowboot`](crates/shadowboot/) | Layer compiler for deanxbox shadowboot images |
+| [`expansion`](crates/expansion/) | Builder, devkit signer and verifier for hypervisor expansion packages (HXPC) |
 | [`xcontent`](crates/xcontent/) | "STFS" package (CON/LIVE/PIRS) parser |
 | [`stfs`](crates/stfs/) | STFS filesystem/VFS handler |
 | [`system_update`](crates/system_update/) | Installs a system update package over a set of system flash files |

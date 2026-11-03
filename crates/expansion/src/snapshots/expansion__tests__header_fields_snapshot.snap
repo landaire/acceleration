@@ -1,0 +1,11 @@
+---
+source: crates/expansion/src/lib.rs
+expression: "verify(&package, &key()).unwrap().to_string()"
+---
+id: 0x12345678
+size: 0x200
+digest: 67ea04f6fe2856c0170c9bd1272b774c4750bf27
+minimum build: 16547
+maximum build: 17000
+kernel section: offset 0x160, size 0x30, code [0x10, 0x20), data size 0x10
+hypervisor section: offset 0x190, size 0x20, entry 0x10, length 0x20 + 0x0

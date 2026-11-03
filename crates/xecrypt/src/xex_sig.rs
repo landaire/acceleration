@@ -27,6 +27,9 @@ pub const SALT_XEX_REVOCATION: &[u8; 10] = b"XBOXREVXEX";
 /// Salt for the build 16547 development SD boot-stage signature.
 pub const SALT_SHADOWBOOT_SD: &[u8; 10] = b"XBOX_ROM_4";
 
+/// Salt for a hypervisor expansion package signature (`HvxExpansionInstall`).
+pub const SALT_EXPANSION: &[u8; 10] = b"XBOX360EXP";
+
 fn rc4(key: &[u8], data: &mut [u8]) {
 	let mut s: [u8; 256] = core::array::from_fn(|i| i as u8);
 	let mut j = 0u8;
@@ -125,25 +128,85 @@ pub fn verify(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &RsaPublic
 	r == natural * montgomery_factor(key.e(), key.n()) % key.n()
 }
 
-/// Verify a signature with a big-endian `XECRYPT_RSAPUB_2048`.
+/// Parse a big-endian `XECRYPT_RSAPUB_2048`.
 ///
 /// The structure stores the 256-byte modulus in least-significant-qword-first
-/// order while each qword remains big-endian.
-pub fn verify_xecrypt_public_key(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &[u8; 0x110]) -> bool {
+/// order while each qword remains big-endian. Returns `None` unless `Cqw` is
+/// 32 and the exponent is 3 or 65537.
+pub fn xecrypt_public_key(key: &[u8; 0x110]) -> Option<RsaPublicKey> {
 	let cqw = u32::from_be_bytes(key[..4].try_into().expect("fixed Cqw field"));
 	if cqw != 32 {
-		return false;
+		return None;
 	}
 	let exponent = u32::from_be_bytes(key[4..8].try_into().expect("fixed exponent field"));
 	if !matches!(exponent, 3 | 65537) {
-		return false;
+		return None;
 	}
 	let stored_modulus: &[u8; 256] = key[0x10..].try_into().expect("fixed modulus field");
-	let modulus = qword_reverse(stored_modulus);
-	let Ok(key) = RsaPublicKey::new(BigUint::from_bytes_be(&modulus), BigUint::from(exponent)) else {
-		return false;
-	};
-	verify(sig, hash, salt, &key)
+	RsaPublicKey::new(BigUint::from_bytes_be(&qword_reverse(stored_modulus)), BigUint::from(exponent)).ok()
+}
+
+/// Serialize a 2048-bit public key as a big-endian `XECRYPT_RSAPUB_2048`.
+/// Returns `None` when the modulus is not 2048 bits or the exponent does not
+/// fit in 32 bits.
+pub fn xecrypt_public_key_bytes(key: &RsaPublicKey) -> Option<[u8; 0x110]> {
+	if key.n().bits() != 2048 {
+		return None;
+	}
+	let exponent_bytes = key.e().to_bytes_be();
+	if exponent_bytes.len() > 4 {
+		return None;
+	}
+	let mut exponent = [0u8; 4];
+	exponent[4 - exponent_bytes.len()..].copy_from_slice(&exponent_bytes);
+	let exponent = u32::from_be_bytes(exponent);
+	let mut out = [0u8; 0x110];
+	out[..4].copy_from_slice(&32u32.to_be_bytes());
+	out[4..8].copy_from_slice(&exponent.to_be_bytes());
+	out[0x10..].copy_from_slice(&qword_reverse(&to_bytes_256(key.n())));
+	Some(out)
+}
+
+/// Verify a signature with a big-endian `XECRYPT_RSAPUB_2048`.
+pub fn verify_xecrypt_public_key(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &[u8; 0x110]) -> bool {
+	xecrypt_public_key(key).is_some_and(|key| verify(sig, hash, salt, &key))
+}
+
+/// Montgomery product `a * b * R^-1 mod n` by REDC, with `R = 2^2048`.
+fn redc_mul(a: &BigUint, b: &BigUint, n: &BigUint, n_prime: &BigUint) -> BigUint {
+	let mask = (BigUint::from(1u32) << 2048usize) - 1u32;
+	let t = a * b;
+	let m = ((&t & &mask) * n_prime) & &mask;
+	let u = (t + m * n) >> 2048usize;
+	if &u >= n { u - n } else { u }
+}
+
+/// `-n^-1 mod 2^2048` by Newton iteration on the odd modulus.
+fn negative_inverse(n: &BigUint) -> BigUint {
+	let radix = BigUint::from(1u32) << 2048usize;
+	let mut x = BigUint::from(1u32);
+	for _ in 0..12 {
+		let correction = (&radix + 2u32 - (n * &x) % &radix) % &radix;
+		x = x * correction % &radix;
+	}
+	(&radix - x) % radix
+}
+
+/// Model of `XeCryptBnQwBeSigVerify`: square `e >> 1` times, then multiply by
+/// the stored value, all in the Montgomery domain, and compare the result with
+/// the `XeCryptBnQwBeSigFormat` block without leaving the domain.
+pub fn console_verify(sig: &[u8; 256], hash: &[u8; 20], salt: &[u8; 10], key: &RsaPublicKey) -> bool {
+	let n = key.n();
+	let n_prime = negative_inverse(n);
+	let s = BigUint::from_bytes_be(&qword_reverse(sig));
+	let mut acc = s.clone();
+	let mut bits = key.e() >> 1usize;
+	while bits != BigUint::from(0u32) {
+		acc = redc_mul(&acc, &acc, n, &n_prime);
+		bits >>= 1usize;
+	}
+	acc = redc_mul(&acc, &s, n, &n_prime);
+	acc == BigUint::from_bytes_be(&natural_block(hash, salt))
 }
 
 /// Verify a normal XEX signature with the devkit executable key.
@@ -156,49 +219,13 @@ pub fn verify_devkit(sig: &[u8; 256], hash: &[u8; 20]) -> Result<bool, crate::Er
 mod tests {
 	use super::*;
 
-	/// Montgomery product `a * b * R^-1 mod n` by REDC, with `R = 2^2048`.
-	fn redc_mul(a: &BigUint, b: &BigUint, n: &BigUint, n_prime: &BigUint) -> BigUint {
-		let mask = (BigUint::from(1u32) << 2048usize) - 1u32;
-		let t = a * b;
-		let m = ((&t & &mask) * n_prime) & &mask;
-		let u = (t + m * n) >> 2048usize;
-		if &u >= n { u - n } else { u }
-	}
-
-	/// `-n^-1 mod 2^2048` by Newton iteration on the odd modulus.
-	fn negative_inverse(n: &BigUint) -> BigUint {
-		let radix = BigUint::from(1u32) << 2048usize;
-		let mut x = BigUint::from(1u32);
-		for _ in 0..12 {
-			let correction = (&radix + 2u32 - (n * &x) % &radix) % &radix;
-			x = x * correction % &radix;
-		}
-		(&radix - x) % radix
-	}
-
-	/// The console's check: square `e >> 1` times, then multiply by the stored
-	/// value, all in the Montgomery domain, and compare with the block.
-	fn console_accepts(sig: &[u8; 256], hash: &[u8; 20], key: &RsaPublicKey) -> bool {
-		let n = key.n();
-		let n_prime = negative_inverse(n);
-		let s = BigUint::from_bytes_be(&qword_reverse(sig));
-		let mut acc = s.clone();
-		let mut bits = key.e() >> 1usize;
-		while bits != BigUint::from(0u32) {
-			acc = redc_mul(&acc, &acc, n, &n_prime);
-			bits >>= 1usize;
-		}
-		acc = redc_mul(&acc, &s, n, &n_prime);
-		acc == BigUint::from_bytes_be(&natural_block(hash, SALT_XEX))
-	}
-
 	#[test]
 	fn devkit_signature_passes_console_montgomery_check() {
 		let key = crate::RsaKeyKind::Executable.private_key(crate::ConsoleKind::Devkit).unwrap();
 		let hash = [0x5au8; 20];
 		let sig = sign(&hash, SALT_XEX, &key);
-		assert!(console_accepts(&sig, &hash, &key.to_public_key()));
-		assert!(!console_accepts(&sig, &[0xa5u8; 20], &key.to_public_key()));
+		assert!(console_verify(&sig, &hash, SALT_XEX, &key.to_public_key()));
+		assert!(!console_verify(&sig, &[0xa5u8; 20], SALT_XEX, &key.to_public_key()));
 	}
 
 	#[test]
@@ -207,11 +234,9 @@ mod tests {
 		let public_key = key.to_public_key();
 		let hash = [0x5au8; 20];
 		let sig = sign(&hash, SALT_XEX, &key);
-		let modulus = to_bytes_256(public_key.n());
-		let mut xecrypt_key = [0u8; 0x110];
-		xecrypt_key[..4].copy_from_slice(&32u32.to_be_bytes());
-		xecrypt_key[4..8].copy_from_slice(&3u32.to_be_bytes());
-		xecrypt_key[0x10..].copy_from_slice(&qword_reverse(&modulus));
+		let mut xecrypt_key = xecrypt_public_key_bytes(&public_key).unwrap();
+		assert_eq!(&xecrypt_key[..8], &[0, 0, 0, 0x20, 0, 0, 0, 3]);
+		assert_eq!(&xecrypt_key[0x10..0x18], &to_bytes_256(public_key.n())[0xf8..]);
 
 		assert!(verify_xecrypt_public_key(&sig, &hash, SALT_XEX, &xecrypt_key));
 		assert!(!verify_xecrypt_public_key(&sig, &[0xa5u8; 20], SALT_XEX, &xecrypt_key));

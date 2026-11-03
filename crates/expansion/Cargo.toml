@@ -1,0 +1,20 @@
+[package]
+name = "expansion"
+version.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+license-file = "../LICENSE"
+authors = ["Lander Brandt"]
+description = "Xbox 360 hypervisor expansion package (HXPC) builder, signer and verifier"
+repository = "https://github.com/landaire/acceleration"
+keywords = ["xbox360", "hypervisor", "xbox", "cli"]
+categories = ["command-line-utilities"]
+include = ["src/**"]
+
+[dependencies]
+xecrypt = { version = "0.4", path = "../xecrypt" }
+thiserror = { workspace = true }
+clap = { version = "4.6.1", features = ["derive"] }
+
+[dev-dependencies]
+insta = { workspace = true }

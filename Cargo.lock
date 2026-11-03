@@ -1910,6 +1910,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "expansion"
+version = "0.4.0"
+dependencies = [
+ "clap",
+ "insta",
+ "thiserror 2.0.21",
+ "xecrypt",
+]
+
+[[package]]
 name = "fastrand"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6392,3 +6402,59 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
+
+[[patch.unused]]
+name = "xbox360"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-atomic"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-draw"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-gpu"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-image"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-raster"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-status"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-sync"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-sys"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-system"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-thread"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-time"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-video"
+version = "0.2.0"
+
+[[patch.unused]]
+name = "xbox360-xam"
+version = "0.2.0"
