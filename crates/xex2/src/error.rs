@@ -64,6 +64,24 @@ pub enum Xex2Error {
 	ResourceOutsideImage { name: ResourceName, address: u32, size: u32 },
 	#[error("resource metadata is malformed")]
 	InvalidResourceInfo,
+	#[error("resource \"{name}\" to replace does not exist")]
+	ReplacedResourceMissing { name: ResourceName },
+	#[error("resource \"{name}\" is both added and replaced")]
+	ResourceAddedAndReplaced { name: ResourceName },
+	#[error("page type range at {address:#010x} has type {value}; only code, data and read-only are accepted")]
+	PageTypeRangeType { address: u32, value: u8 },
+	#[error("page type range {address:#010x}+{length:#x} is empty or not aligned to the {page_size:#x}-byte page")]
+	PageTypeRangeAlignment { address: u32, length: u32, page_size: u32 },
+	#[error(
+		"page type range {address:#010x}+{length:#x} is outside the appended pages {appended_start:#010x}..{appended_end:#010x}"
+	)]
+	PageTypeRangeOutsideAppended { address: u32, length: u32, appended_start: u64, appended_end: u64 },
+	#[error("page type ranges at {first:#010x} and {second:#010x} overlap")]
+	PageTypeRangeOverlap { first: u32, second: u32 },
+	#[error("page type ranges require a replacement image")]
+	PageTypesNeedImage,
+	#[error("page descriptor table extends past the file")]
+	PageDescriptorsTruncated,
 	#[error("basefile size mismatch: expected {expected:#x}, got {got:#x}")]
 	InvalidBasefileSize { expected: usize, got: usize },
 	#[error("page descriptor {descriptor_index} does not match its pages")]

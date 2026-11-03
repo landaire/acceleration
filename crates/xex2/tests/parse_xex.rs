@@ -1023,3 +1023,204 @@ fn delta_patch_rebuilds_patched_image() {
 	assert!(patched.image == expected);
 	assert_eq!(patched.xex().unwrap().security_info.image_size as usize, expected.len());
 }
+
+#[test]
+fn typed_appended_pages_and_replaced_resource_survive_delta_patch() {
+	use xex2::builder::EncryptionTarget;
+	use xex2::builder::Xex2Builder;
+	use xex2::opt::ImageFlags;
+	use xex2::opt::ResourceEntry;
+	use xex2::opt::ResourceName;
+	use xex2::page_descriptors::DescriptorSlot;
+	use xex2::page_descriptors::PageTypeRange;
+	use xex2::page_descriptors::SectionType;
+
+	const BASE: u32 = 0x9200_0000;
+	let mut pe = vec![0u8; 0x1_0000];
+	pe[0..2].copy_from_slice(b"MZ");
+	let resource = |name: &str, address: u32, size: u32| ResourceEntry {
+		name: ResourceName::new(name).unwrap(),
+		address: xenon_types::VirtualAddress(address),
+		size,
+	};
+	let source = Xex2Builder::new(pe.clone())
+		.load_address(xenon_types::VirtualAddress(BASE))
+		.entry_point(xenon_types::VirtualAddress(BASE + 0x1000))
+		.image_flags(ImageFlags::SMALL_PAGES)
+		.resources(vec![resource("first", BASE + 0x1000, 0x100), resource("dashmain", BASE + 0x2000, 0x100)])
+		.encrypt(EncryptionTarget::Devkit)
+		.compress()
+		.build()
+		.unwrap();
+	let original = Xex2::parse(&source).unwrap();
+	let original_slots = xex2::page_descriptors::descriptor_slots(
+		&source,
+		original.header.security_offset,
+		original.security_info.page_descriptor_count,
+	)
+	.unwrap();
+
+	let mut replacement = pe;
+	replacement.resize(0x3_8000, 0x5a);
+	let page_type = |address: u32, length: u32, section_type| PageTypeRange {
+		address: xenon_types::VirtualAddress(address),
+		length,
+		section_type,
+	};
+	let moved = resource("dashmain", BASE + 0x2_0000, 0x1_0000);
+	let mut patched = Vec::new();
+	Xex2::parse(&source)
+		.unwrap()
+		.rebuild(&source)
+		.replace_pe(replacement.clone())
+		.page_type(page_type(BASE + 0x1_0000, 0x3000, SectionType::Code))
+		.page_type(page_type(BASE + 0x1_3000, 0x1_0000, SectionType::Data))
+		.replace_resource(moved)
+		.write_to(&mut patched)
+		.unwrap();
+
+	let parsed = Xex2::parse(&patched).unwrap();
+	assert_eq!(parsed.extract_basefile(&patched).unwrap(), replacement);
+	verify_devkit_signature(&patched);
+	verify_header_hash(&patched);
+	let slots = xex2::page_descriptors::descriptor_slots(
+		&patched,
+		parsed.header.security_offset,
+		parsed.security_info.page_descriptor_count,
+	)
+	.unwrap();
+	let last = original_slots.last().unwrap().section_type;
+	let mut expected = original_slots;
+	expected.extend([
+		DescriptorSlot { page_count: 3, section_type: SectionType::Code },
+		DescriptorSlot { page_count: 13, section_type: SectionType::Data },
+		DescriptorSlot { page_count: 3, section_type: SectionType::Data },
+		DescriptorSlot { page_count: 13, section_type: last },
+		DescriptorSlot { page_count: 8, section_type: last },
+	]);
+	assert_eq!(slots, expected);
+	assert_eq!(parsed.header.resource_info().unwrap().resources, vec![resource("first", BASE + 0x1000, 0x100), moved]);
+
+	let delta = xex2::delta::create_delta_patch(&source, &patched).unwrap();
+	let applied = xex2::delta::apply_delta_patch(&source, &delta, xex2::delta::FILE_HEADER_LIMIT).unwrap();
+	assert_eq!(applied.headers, patched[..parsed.header.data_offset as usize]);
+	assert_eq!(applied.image, replacement);
+}
+
+#[test]
+fn page_types_and_replaced_resources_are_validated() {
+	use xex2::builder::Xex2Builder;
+	use xex2::error::Xex2Error;
+	use xex2::opt::ImageFlags;
+	use xex2::opt::ResourceEntry;
+	use xex2::opt::ResourceName;
+	use xex2::page_descriptors::PageTypeRange;
+	use xex2::page_descriptors::SectionType;
+
+	const BASE: u32 = 0x9200_0000;
+	let mut pe = vec![0u8; 0x1_0000];
+	pe[0..2].copy_from_slice(b"MZ");
+	let resource = |name: &str, address: u32, size: u32| ResourceEntry {
+		name: ResourceName::new(name).unwrap(),
+		address: xenon_types::VirtualAddress(address),
+		size,
+	};
+	let source = Xex2Builder::new(pe.clone())
+		.load_address(xenon_types::VirtualAddress(BASE))
+		.image_flags(ImageFlags::SMALL_PAGES)
+		.resources(vec![resource("dashmain", BASE + 0x2000, 0x100)])
+		.build()
+		.unwrap();
+	let range = PageTypeRange {
+		address: xenon_types::VirtualAddress(BASE + 0x1_0000),
+		length: 0x1000,
+		section_type: SectionType::Code,
+	};
+	let rebuild = || Xex2::parse(&source).unwrap().rebuild(&source);
+	let mut sink = Vec::new();
+
+	let error = rebuild().page_type(range).write_to(&mut sink).unwrap_err();
+	assert!(matches!(error.current_context(), Xex2Error::PageTypesNeedImage), "{error}");
+
+	let error = rebuild().replace_resource(resource("missing", BASE, 0x10)).write_to(&mut sink).unwrap_err();
+	assert!(matches!(error.current_context(), Xex2Error::ReplacedResourceMissing { .. }), "{error}");
+
+	let error = rebuild()
+		.replace_resource(resource("dashmain", BASE, 0x10))
+		.add_resource(resource("dashmain", BASE, 0x10))
+		.write_to(&mut sink)
+		.unwrap_err();
+	assert!(matches!(error.current_context(), Xex2Error::ResourceAddedAndReplaced { .. }), "{error}");
+
+	let error =
+		rebuild().replace_resource(resource("dashmain", BASE + 0xF000, 0x2000)).write_to(&mut sink).unwrap_err();
+	assert!(matches!(error.current_context(), Xex2Error::ResourceOutsideImage { .. }), "{error}");
+
+	sink.clear();
+	rebuild().replace_resource(resource("dashmain", BASE + 0x4000, 0x20)).write_to(&mut sink).unwrap();
+	let parsed = Xex2::parse(&sink).unwrap();
+	assert_eq!(parsed.header.resource_info().unwrap().resources, vec![resource("dashmain", BASE + 0x4000, 0x20)]);
+	assert_eq!(parsed.header.optional_header_count, Xex2::parse(&source).unwrap().header.optional_header_count);
+	verify_header_hash(&sink);
+}
+
+#[test]
+fn page_types_match_replacement_load_address() {
+	use xex2::builder::Xex2Builder;
+	use xex2::error::Xex2Error;
+	use xex2::opt::ImageFlags;
+	use xex2::page_descriptors::DescriptorSlot;
+	use xex2::page_descriptors::PageTypeRange;
+	use xex2::page_descriptors::SectionType;
+
+	const OLD_BASE: u32 = 0x9200_0000;
+	const NEW_BASE: u32 = 0x9300_0000;
+	let mut pe = vec![0u8; 0x1_0000];
+	pe[0..2].copy_from_slice(b"MZ");
+	let source = Xex2Builder::new(pe.clone())
+		.load_address(xenon_types::VirtualAddress(OLD_BASE))
+		.image_flags(ImageFlags::SMALL_PAGES)
+		.encrypt(xex2::builder::EncryptionTarget::Devkit)
+		.compress()
+		.build()
+		.unwrap();
+	let mut replacement = pe;
+	replacement.resize(0x1_2000, 0x5a);
+	let range = |base: u32| PageTypeRange {
+		address: xenon_types::VirtualAddress(base + 0x1_0000),
+		length: 0x1000,
+		section_type: SectionType::Code,
+	};
+	let rebuild = |base: u32, sink: &mut Vec<u8>| {
+		Xex2::parse(&source)
+			.unwrap()
+			.rebuild(&source)
+			.set_load_address(xenon_types::VirtualAddress(NEW_BASE))
+			.replace_pe(replacement.clone())
+			.page_type(range(base))
+			.write_to(sink)
+	};
+
+	let error = rebuild(OLD_BASE, &mut Vec::new()).unwrap_err();
+	assert!(
+		matches!(
+			error.current_context(),
+			Xex2Error::PageTypeRangeOutsideAppended { appended_start, .. } if *appended_start == u64::from(NEW_BASE) + 0x1_0000
+		),
+		"{error}"
+	);
+
+	let mut patched = Vec::new();
+	rebuild(NEW_BASE, &mut patched).unwrap();
+	let parsed = Xex2::parse(&patched).unwrap();
+	assert_eq!(parsed.security_info.image_info.load_address, xenon_types::VirtualAddress(NEW_BASE));
+	assert_eq!(parsed.extract_basefile(&patched).unwrap(), replacement);
+	verify_header_hash(&patched);
+	let slots = xex2::page_descriptors::descriptor_slots(
+		&patched,
+		parsed.header.security_offset,
+		parsed.security_info.page_descriptor_count,
+	)
+	.unwrap();
+	assert_eq!(&slots[slots.len() - 2..][..1], [DescriptorSlot { page_count: 1, section_type: SectionType::Code }]);
+}

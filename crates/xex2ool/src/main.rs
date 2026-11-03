@@ -225,6 +225,15 @@ enum Commands {
 		#[arg(long)]
 		add_resource: Vec<String>,
 
+		/// Repoint an existing resource as NAME=ADDRESS:SIZE
+		#[arg(long)]
+		replace_resource: Vec<String>,
+
+		/// Section type of appended pages as ADDRESS:LENGTH:TYPE, TYPE one of
+		/// code, data, ro (requires --image-patch)
+		#[arg(long)]
+		page_type: Vec<String>,
+
 		/// Convert to devkit format
 		#[arg(long, conflicts_with = "retail")]
 		devkit: bool,
@@ -285,6 +294,8 @@ fn main() -> anyhow::Result<()> {
 			set_bounding_path,
 			image_patch,
 			add_resource,
+			replace_resource,
+			page_type,
 			devkit,
 			retail,
 			encrypt,
@@ -318,6 +329,8 @@ fn main() -> anyhow::Result<()> {
 				set_bounding_path,
 				image_patch,
 				add_resource,
+				replace_resource,
+				page_type,
 				machine,
 				compression,
 				encryption,
@@ -332,7 +345,9 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 	let xex = Xex2::parse(&data)?;
 
 	if matches!(fmt, OutputFormat::Json) {
-		return cmd_info_json(&xex, extended);
+		let info = info_json(&xex, &data, extended)?;
+		println!("{}", serde_json::to_string_pretty(&info)?);
+		return Ok(());
 	}
 
 	let header = &xex.header;
@@ -555,12 +570,63 @@ fn cmd_info(path: &PathBuf, extended: bool, fmt: OutputFormat) -> anyhow::Result
 		let mut st = sb.build();
 		st.with(Style::rounded());
 		println!("{}", st);
+
+		if let Some(descriptors) = page_descriptor_rows(&xex, &data) {
+			println!("\nPage Descriptors");
+			#[derive(Tabled)]
+			struct DescriptorRow {
+				address: String,
+				pages: u32,
+				#[tabled(rename = "type")]
+				section_type: String,
+			}
+			let rows: Vec<_> = descriptors
+				.iter()
+				.map(|d| DescriptorRow {
+					address: format!("{:#010x}", d.address),
+					pages: d.page_count,
+					section_type: d.section_type.to_string(),
+				})
+				.collect();
+			let mut t = Table::new(rows);
+			t.with(Style::rounded());
+			println!("{}", t);
+		}
 	}
 
 	Ok(())
 }
 
-fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
+/// One stored page descriptor, placed at the address its pages start at.
+#[derive(Debug, PartialEq, Eq)]
+struct DescriptorInfo {
+	address: u64,
+	page_count: u32,
+	section_type: xex2::page_descriptors::SectionType,
+}
+
+/// The stored page descriptors with their start addresses. `None` when the
+/// descriptor table runs past `data`.
+fn page_descriptor_rows(xex: &Xex2, data: &[u8]) -> Option<Vec<DescriptorInfo>> {
+	let security = &xex.security_info;
+	let slots = xex2::page_descriptors::descriptor_slots(data, xex.header.security_offset, security.page_descriptor_count)
+		.ok()?;
+	let page_size: u64 =
+		if security.image_info.image_flags.contains(xex2::opt::ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
+	let mut address = u64::from(security.image_info.load_address.0);
+	Some(
+		slots
+			.into_iter()
+			.map(|slot| {
+				let info = DescriptorInfo { address, page_count: slot.page_count, section_type: slot.section_type };
+				address += u64::from(slot.page_count) * page_size;
+				info
+			})
+			.collect(),
+	)
+}
+
+fn info_json(xex: &Xex2, data: &[u8], extended: bool) -> anyhow::Result<serde_json::Value> {
 	let header = &xex.header;
 	let security = &xex.security_info;
 	let file_format = header.file_format_info()?;
@@ -631,10 +697,23 @@ fn cmd_info_json(xex: &Xex2, extended: bool) -> anyhow::Result<()> {
 			})
 			.collect();
 		info.insert("optional_headers".into(), serde_json::Value::Object(headers));
+
+		if let Some(descriptors) = page_descriptor_rows(xex, data) {
+			let descriptors: Vec<_> = descriptors
+				.iter()
+				.map(|d| {
+					serde_json::json!({
+						"address": d.address,
+						"page_count": d.page_count,
+						"type": d.section_type.to_string(),
+					})
+				})
+				.collect();
+			info.insert("page_descriptors".into(), serde_json::Value::Array(descriptors));
+		}
 	}
 
-	println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(info))?);
-	Ok(())
+	Ok(serde_json::Value::Object(info))
 }
 
 /// A XEX's headers and image, after any delta patch.
@@ -864,6 +943,8 @@ fn cmd_patch(
 	set_bounding_path: Option<String>,
 	image_patch: Option<PathBuf>,
 	add_resources: Vec<String>,
+	replace_resources: Vec<String>,
+	page_types: Vec<String>,
 	machine: Option<xex2::writer::TargetMachine>,
 	compression: Option<xex2::writer::TargetCompression>,
 	encryption: Option<xex2::writer::TargetEncryption>,
@@ -891,6 +972,9 @@ fn cmd_patch(
 		None
 	};
 	let resources = add_resources.into_iter().map(|spec| parse_resource(&spec)).collect::<anyhow::Result<Vec<_>>>()?;
+	let replaced =
+		replace_resources.into_iter().map(|spec| parse_resource(&spec)).collect::<anyhow::Result<Vec<_>>>()?;
+	let page_types = page_types.into_iter().map(|spec| parse_page_type(&spec)).collect::<anyhow::Result<Vec<_>>>()?;
 	let mut rb = xex.rebuild(&data).remove_limits(limits);
 	if let Some(e) = encryption {
 		rb = rb.target_encryption(e);
@@ -909,6 +993,12 @@ fn cmd_patch(
 	}
 	for resource in resources {
 		rb = rb.add_resource(resource);
+	}
+	for resource in replaced {
+		rb = rb.replace_resource(resource);
+	}
+	for range in page_types {
+		rb = rb.page_type(range);
 	}
 	let parent = out_path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."));
 	let output_permissions = match fs::metadata(&out_path) {
@@ -934,21 +1024,43 @@ fn cmd_patch(
 	Ok(())
 }
 
+fn parse_u32(value: &str) -> anyhow::Result<u32> {
+	Ok(if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
+		u32::from_str_radix(hex, 16)?
+	} else {
+		value.parse()?
+	})
+}
+
 fn parse_resource(spec: &str) -> anyhow::Result<xex2::opt::ResourceEntry> {
 	let (name, location) = spec.split_once('=').ok_or_else(|| anyhow::anyhow!("resource must be NAME=ADDRESS:SIZE"))?;
 	let (address, size) =
 		location.split_once(':').ok_or_else(|| anyhow::anyhow!("resource must be NAME=ADDRESS:SIZE"))?;
-	let parse_u32 = |value: &str| {
-		if let Some(hex) = value.strip_prefix("0x").or_else(|| value.strip_prefix("0X")) {
-			u32::from_str_radix(hex, 16)
-		} else {
-			value.parse()
-		}
-	};
 	Ok(xex2::opt::ResourceEntry {
 		name: xex2::opt::ResourceName::new(name)?,
 		address: xenon_types::VirtualAddress(parse_u32(address)?),
 		size: parse_u32(size)?,
+	})
+}
+
+fn parse_page_type(spec: &str) -> anyhow::Result<xex2::page_descriptors::PageTypeRange> {
+	use xex2::page_descriptors::SectionType;
+	let usage = || anyhow::anyhow!("page type must be ADDRESS:LENGTH:TYPE with TYPE code, data or ro");
+	let mut parts = spec.split(':');
+	let (Some(address), Some(length), Some(kind), None) = (parts.next(), parts.next(), parts.next(), parts.next())
+	else {
+		return Err(usage());
+	};
+	let section_type = match kind {
+		"code" => SectionType::Code,
+		"data" => SectionType::Data,
+		"ro" => SectionType::ReadOnlyData,
+		_ => return Err(usage()),
+	};
+	Ok(xex2::page_descriptors::PageTypeRange {
+		address: xenon_types::VirtualAddress(parse_u32(address)?),
+		length: parse_u32(length)?,
+		section_type,
 	})
 }
 
@@ -1020,6 +1132,8 @@ mod tests {
 			None,
 			Some(patch_path),
 			Vec::new(),
+			Vec::new(),
+			Vec::new(),
 			None,
 			None,
 			None,
@@ -1028,6 +1142,29 @@ mod tests {
 
 		assert!(result.is_err());
 		assert_eq!(fs::read(input_path).unwrap(), source);
+	}
+
+	#[test]
+	fn extended_json_info_lists_page_descriptors() {
+		let mut pe = vec![0u8; 0x3000];
+		pe[0..2].copy_from_slice(b"MZ");
+		let source = xex2::builder::Xex2Builder::new(pe)
+			.load_address(xenon_types::VirtualAddress(0x9200_0000))
+			.image_flags(xex2::opt::ImageFlags::SMALL_PAGES)
+			.build()
+			.unwrap();
+		let xex = Xex2::parse(&source).unwrap();
+		let rows = page_descriptor_rows(&xex, &source).unwrap();
+		let expected: Vec<_> = rows
+			.iter()
+			.map(|d| serde_json::json!({ "address": d.address, "page_count": d.page_count, "type": d.section_type.to_string() }))
+			.collect();
+		assert_eq!(rows.first().unwrap().address, 0x9200_0000);
+		assert_eq!(rows.iter().map(|d| d.page_count).sum::<u32>(), 3);
+
+		let info = info_json(&xex, &source, true).unwrap();
+		assert_eq!(info["page_descriptors"], serde_json::Value::Array(expected));
+		assert!(info_json(&xex, &source, false).unwrap().get("page_descriptors").is_none());
 	}
 
 	#[test]
@@ -1078,8 +1215,22 @@ mod tests {
 		fs::write(&input_path, source).unwrap();
 		fs::set_permissions(&input_path, fs::Permissions::from_mode(0o755)).unwrap();
 
-		cmd_patch(&input_path, None, None, false, None, None, Vec::new(), None, None, None, &LimitArgs::default())
-			.unwrap();
+		cmd_patch(
+			&input_path,
+			None,
+			None,
+			false,
+			None,
+			None,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			None,
+			None,
+			None,
+			&LimitArgs::default(),
+		)
+		.unwrap();
 
 		assert_eq!(fs::metadata(input_path).unwrap().permissions().mode() & 0o777, 0o755);
 	}

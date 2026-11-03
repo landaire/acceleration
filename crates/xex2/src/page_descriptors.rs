@@ -34,13 +34,14 @@ use crate::header::Sha1Hash;
 use crate::header::Xex2Header;
 use crate::opt::ImageFlags;
 use rootcause::IntoReport;
+use xenon_types::VirtualAddress;
 
 /// Section type stored in the four-bit info field of a page descriptor. The
 /// kernel and hypervisor read it to assign memory protection to each page.
 /// `Other` preserves any four-bit value that is not one of the three defined
 /// types, so descriptors copied from an existing image round-trip unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SectionType {
+pub enum SectionType {
 	/// Executable, mapped read-only.
 	Code,
 	/// Read/write.
@@ -52,7 +53,7 @@ pub(crate) enum SectionType {
 }
 
 impl SectionType {
-	pub(crate) fn nibble(self) -> u32 {
+	pub fn nibble(self) -> u32 {
 		match self {
 			SectionType::Code => 1,
 			SectionType::Data => 2,
@@ -61,7 +62,7 @@ impl SectionType {
 		}
 	}
 
-	pub(crate) fn from_nibble(value: u32) -> SectionType {
+	pub fn from_nibble(value: u32) -> SectionType {
 		match value & 0xF {
 			1 => SectionType::Code,
 			2 => SectionType::Data,
@@ -69,6 +70,137 @@ impl SectionType {
 			other => SectionType::Other(other as u8),
 		}
 	}
+}
+
+impl std::fmt::Display for SectionType {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			SectionType::Code => f.write_str("code"),
+			SectionType::Data => f.write_str("data"),
+			SectionType::ReadOnlyData => f.write_str("ro"),
+			SectionType::Other(value) => write!(f, "other({value})"),
+		}
+	}
+}
+
+/// Section type for the appended pages in `length` bytes from `address`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageTypeRange {
+	pub address: VirtualAddress,
+	pub length: u32,
+	pub section_type: SectionType,
+}
+
+/// Most pages one generated descriptor covers.
+const MAX_PAGES_PER_DESCRIPTOR: u32 = 16;
+/// Generated descriptors never cross this virtual-address boundary.
+const DESCRIPTOR_BOUNDARY: u64 = 0x1_0000;
+
+/// Extend `template` (the source descriptors) to cover `required_pages`.
+///
+/// Without `ranges`, appended pages take the last descriptor's type in runs of
+/// `0x10000 / page_size` pages counted from the end of the source pages, as
+/// before page-type ranges existed. With `ranges`, each appended page takes
+/// the type of the range containing it (else the last type), and a descriptor
+/// ends at each type change, 64 KiB virtual-address boundary, or 16 pages.
+pub(crate) fn extend_template(
+	template: &mut Vec<DescriptorSlot>,
+	required_pages: u32,
+	page_size: u32,
+	load_address: VirtualAddress,
+	ranges: &[PageTypeRange],
+) -> Result<()> {
+	let covered_pages: u32 = template.iter().map(|slot| slot.page_count).sum();
+	let base = u64::from(load_address.0);
+	let appended_start = base + u64::from(covered_pages) * u64::from(page_size);
+	let appended_end = base + u64::from(required_pages.max(covered_pages)) * u64::from(page_size);
+	let mut sorted = ranges.to_vec();
+	sorted.sort_by_key(|range| range.address.0);
+	for range in &sorted {
+		if let SectionType::Other(value) = range.section_type {
+			return Err(Xex2Error::PageTypeRangeType { address: range.address.0, value }.into_report());
+		}
+		if range.length == 0 || !range.address.0.is_multiple_of(page_size) || !range.length.is_multiple_of(page_size) {
+			return Err(Xex2Error::PageTypeRangeAlignment {
+				address: range.address.0,
+				length: range.length,
+				page_size,
+			}
+			.into_report());
+		}
+		let start = u64::from(range.address.0);
+		if start < appended_start || start + u64::from(range.length) > appended_end {
+			return Err(Xex2Error::PageTypeRangeOutsideAppended {
+				address: range.address.0,
+				length: range.length,
+				appended_start,
+				appended_end,
+			}
+			.into_report());
+		}
+	}
+	let range_end = |range: &PageTypeRange| u64::from(range.address.0) + u64::from(range.length);
+	if let Some(pair) = sorted.windows(2).find(|pair| range_end(&pair[0]) > u64::from(pair[1].address.0)) {
+		return Err(
+			Xex2Error::PageTypeRangeOverlap { first: pair[0].address.0, second: pair[1].address.0 }.into_report()
+		);
+	}
+	if required_pages <= covered_pages {
+		return Ok(());
+	}
+	let Some(last) = template.last().copied() else {
+		return Err(Xex2Error::InvalidFileFormatInfo.into_report());
+	};
+
+	if sorted.is_empty() {
+		let pages_per_descriptor = 0x1_0000 / page_size;
+		let mut remaining = required_pages - covered_pages;
+		while remaining != 0 {
+			let page_count = remaining.min(pages_per_descriptor);
+			template.push(DescriptorSlot { page_count, section_type: last.section_type });
+			remaining -= page_count;
+		}
+		return Ok(());
+	}
+
+	let mut open: Option<DescriptorSlot> = None;
+	for page in covered_pages..required_pages {
+		let address = base + u64::from(page) * u64::from(page_size);
+		let section_type = sorted
+			.iter()
+			.find(|range| (u64::from(range.address.0)..range_end(range)).contains(&address))
+			.map_or(last.section_type, |range| range.section_type);
+		let split = open.is_none_or(|slot| {
+			slot.section_type != section_type
+				|| slot.page_count == MAX_PAGES_PER_DESCRIPTOR
+				|| address.is_multiple_of(DESCRIPTOR_BOUNDARY)
+		});
+		if split {
+			template.extend(open.take());
+		}
+		open.get_or_insert(DescriptorSlot { page_count: 0, section_type }).page_count += 1;
+	}
+	template.extend(open);
+	Ok(())
+}
+
+/// Read the page count and section type of each stored descriptor.
+/// [`Xex2Error::PageDescriptorsTruncated`] when the table runs past `source`.
+pub fn descriptor_slots(source: &[u8], security_offset: u32, count: u32) -> Result<Vec<DescriptorSlot>> {
+	let truncated = || Xex2Error::PageDescriptorsTruncated.into_report();
+	let base = (security_offset as usize).checked_add(0x184).ok_or_else(truncated)?;
+	let table_len = (count as usize).checked_mul(24).ok_or_else(truncated)?;
+	let table = base
+		.checked_add(table_len)
+		.and_then(|end| source.get(base..end))
+		.ok_or_else(truncated)?;
+	let mut out = Vec::new();
+	out.try_reserve_exact(count as usize).map_err(|_| truncated())?;
+	out.extend(table.as_chunks::<24>().0.iter().map(|entry| {
+		let info = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]);
+		DescriptorSlot { page_count: info >> 4, section_type: SectionType::from_nibble(info) }
+	}));
+	Ok(out)
 }
 
 /// A single 24-byte page descriptor entry.
@@ -122,8 +254,8 @@ fn sha1_page_and_descriptor(page: &[u8], declared_len: usize, descriptor_bytes: 
 /// One descriptor slot in [`generate`]'s `template`: how many `page_size`
 /// pages it covers and the section type to record. A named struct rather than
 /// a bare tuple prevents transposing the two fields.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DescriptorSlot {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescriptorSlot {
 	pub page_count: u32,
 	pub section_type: SectionType,
 }
@@ -264,5 +396,119 @@ mod tests {
 		assert_eq!(descs.len(), 1);
 		assert_eq!(descs[0].page_count, 3);
 		assert_eq!(descs[0].section_type, SectionType::Code);
+	}
+
+	const BASE: VirtualAddress = VirtualAddress(0x9200_0000);
+	const PAGE: u32 = 0x1000;
+
+	fn slot(page_count: u32, section_type: SectionType) -> DescriptorSlot {
+		DescriptorSlot { page_count, section_type }
+	}
+
+	fn range(address: u32, length: u32, section_type: SectionType) -> PageTypeRange {
+		PageTypeRange { address: VirtualAddress(address), length, section_type }
+	}
+
+	fn extend(covered: u32, required: u32, ranges: &[PageTypeRange]) -> Result<Vec<DescriptorSlot>> {
+		let mut template = vec![slot(covered, SectionType::ReadOnlyData)];
+		extend_template(&mut template, required, PAGE, BASE, ranges)?;
+		Ok(template[1..].to_vec())
+	}
+
+	fn error(covered: u32, required: u32, ranges: &[PageTypeRange]) -> crate::error::Report {
+		extend(covered, required, ranges).unwrap_err()
+	}
+
+	#[test]
+	fn untyped_append_keeps_legacy_runs() {
+		// Unaligned source end: legacy runs of 16 pages, not 64 KiB splits.
+		let slots = extend(0x14, 0x14 + 20, &[]).unwrap();
+		assert_eq!(slots, vec![slot(16, SectionType::ReadOnlyData), slot(4, SectionType::ReadOnlyData)]);
+	}
+
+	#[test]
+	fn typed_append_splits_at_type_changes() {
+		let ranges = [range(0x9201_0000, 0x3000, SectionType::Code), range(0x9201_3000, 0x2000, SectionType::Data)];
+		let slots = extend(0x10, 0x20, &ranges).unwrap();
+		assert_eq!(
+			slots,
+			vec![slot(3, SectionType::Code), slot(2, SectionType::Data), slot(11, SectionType::ReadOnlyData)]
+		);
+	}
+
+	#[test]
+	fn typed_append_splits_at_64k_boundary() {
+		// Source ends at 0x92008000; the code range spans 0x92010000.
+		let ranges = [range(0x9200_8000, 0xC000, SectionType::Code)];
+		let slots = extend(8, 0x18, &ranges).unwrap();
+		assert_eq!(
+			slots,
+			vec![slot(8, SectionType::Code), slot(4, SectionType::Code), slot(4, SectionType::ReadOnlyData)]
+		);
+	}
+
+	#[test]
+	fn typed_append_caps_descriptor_pages() {
+		let ranges = [range(0x9201_0000, 0x20000, SectionType::Data)];
+		let slots = extend(0x10, 0x30, &ranges).unwrap();
+		assert_eq!(slots, vec![slot(16, SectionType::Data), slot(16, SectionType::Data)]);
+	}
+
+	#[test]
+	fn rejects_unaligned_range() {
+		let ranges = [range(0x9201_0800, 0x1000, SectionType::Code)];
+		assert!(matches!(
+			error(0x10, 0x20, &ranges).current_context(),
+			Xex2Error::PageTypeRangeAlignment { address: 0x9201_0800, .. }
+		));
+		let ranges = [range(0x9201_0000, 0x1800, SectionType::Code)];
+		assert!(matches!(
+			error(0x10, 0x20, &ranges).current_context(),
+			Xex2Error::PageTypeRangeAlignment { length: 0x1800, .. }
+		));
+		let ranges = [range(0x9201_0000, 0, SectionType::Code)];
+		assert!(matches!(
+			error(0x10, 0x20, &ranges).current_context(),
+			Xex2Error::PageTypeRangeAlignment { length: 0, .. }
+		));
+	}
+
+	#[test]
+	fn rejects_range_outside_appended_pages() {
+		let ranges = [range(0x9200_F000, 0x2000, SectionType::Code)];
+		assert!(matches!(
+			error(0x10, 0x20, &ranges).current_context(),
+			Xex2Error::PageTypeRangeOutsideAppended { appended_start: 0x9201_0000, appended_end: 0x9202_0000, .. }
+		));
+		let ranges = [range(0x9201_F000, 0x2000, SectionType::Code)];
+		assert!(matches!(error(0x10, 0x20, &ranges).current_context(), Xex2Error::PageTypeRangeOutsideAppended { .. }));
+	}
+
+	#[test]
+	fn rejects_overlapping_ranges() {
+		let ranges = [range(0x9201_2000, 0x2000, SectionType::Data), range(0x9201_0000, 0x3000, SectionType::Code)];
+		assert!(matches!(
+			error(0x10, 0x20, &ranges).current_context(),
+			Xex2Error::PageTypeRangeOverlap { first: 0x9201_0000, second: 0x9201_2000 }
+		));
+	}
+
+	#[test]
+	fn rejects_other_section_type() {
+		let ranges = [range(0x9201_0000, 0x1000, SectionType::Other(5))];
+		assert!(matches!(error(0x10, 0x20, &ranges).current_context(), Xex2Error::PageTypeRangeType { value: 5, .. }));
+	}
+
+	#[test]
+	fn descriptor_slots_rejects_count_past_source() {
+		let mut source = vec![0u8; 0x184 + 2 * 24];
+		source[0x184..0x188].copy_from_slice(&0x11u32.to_be_bytes());
+		assert_eq!(descriptor_slots(&source, 0, 2).unwrap().len(), 2);
+		for (offset, count) in [(0, 3), (0, u32::MAX), (u32::MAX, 1)] {
+			assert!(matches!(
+				descriptor_slots(&source, offset, count).unwrap_err().current_context(),
+				Xex2Error::PageDescriptorsTruncated
+			));
+		}
 	}
 }

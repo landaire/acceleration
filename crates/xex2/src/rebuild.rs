@@ -26,6 +26,7 @@ use crate::opt::AllowedMediaTypes;
 use crate::opt::ImageFlags;
 use crate::opt::ModuleFlags;
 use crate::opt::ResourceEntry;
+use crate::page_descriptors::PageTypeRange;
 use crate::patch::Patch;
 use crate::writer::EditPlan;
 use crate::writer::RemoveLimits;
@@ -130,6 +131,20 @@ impl<'a> Rebuilder<'a> {
 		self
 	}
 
+	/// Repoint the existing resource named `resource.name` to its address and
+	/// size, keeping its position in the resource table.
+	pub fn replace_resource(mut self, resource: ResourceEntry) -> Self {
+		self.plan.replaced_resources.push(resource);
+		self
+	}
+
+	/// Assign a section type to pages that [`Self::replace_pe`] appends past
+	/// the source image. Requires a replacement image.
+	pub fn page_type(mut self, range: PageTypeRange) -> Self {
+		self.plan.page_types.push(range);
+		self
+	}
+
 	pub fn clear_optional_header(mut self, key: OptionalHeaderKey) -> Self {
 		self.plan.cleared_optional_headers.push(key);
 		self
@@ -165,6 +180,7 @@ impl<'a> Rebuilder<'a> {
 		if !self.is_supported() {
 			return Ok(None);
 		}
+		self.check_page_types()?;
 		if self.needs_full_rebuild() {
 			return Ok(None);
 		}
@@ -180,6 +196,7 @@ impl<'a> Rebuilder<'a> {
 		if !self.is_supported() {
 			return Err(Xex2Error::RebuildTransformNotImplemented.into_report());
 		}
+		self.check_page_types()?;
 		if self.needs_full_rebuild() {
 			let bytes = self.full_rebuild()?;
 			sink.write_all(&bytes).map_err(|e| Xex2Error::Io(e).into_report())?;
@@ -187,6 +204,13 @@ impl<'a> Rebuilder<'a> {
 		}
 		let patch = crate::writer::plan_edits(&self.xex, self.source, &self.plan)?;
 		patch.stream_to(self.source, sink)
+	}
+
+	fn check_page_types(&self) -> Result<()> {
+		if !self.plan.page_types.is_empty() && self.plan.replace_pe.is_none() {
+			return Err(Xex2Error::PageTypesNeedImage.into_report());
+		}
+		Ok(())
 	}
 
 	fn needs_full_rebuild(&self) -> bool {
@@ -226,7 +250,18 @@ impl<'a> Rebuilder<'a> {
 		// is left with `replace_pe = None`, so the follow-up `plan_edits` pass
 		// naturally skips the PE-replacement branch.
 		let pe_replacement = self.plan.replace_pe.take();
-		let assembled = crate::assemble::rebuild_with_compression(&self.xex, self.source, target, pe_replacement)?;
+		let page_types = std::mem::take(&mut self.plan.page_types);
+		// Page type ranges address the output image, so match them against
+		// the load address the follow-up patch pass will write.
+		let load_address = self.plan.load_address.unwrap_or(self.xex.security_info.image_info.load_address);
+		let assembled = crate::assemble::rebuild_with_compression(
+			&self.xex,
+			self.source,
+			target,
+			pe_replacement,
+			&page_types,
+			load_address,
+		)?;
 
 		// Apply remaining per-field edits (limits, flags, encryption, etc.)
 		// to the freshly-assembled file via the patch path.

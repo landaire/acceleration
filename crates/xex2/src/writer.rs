@@ -237,6 +237,11 @@ pub(crate) struct EditPlan {
 	pub date_range: Option<DateRangeEdit>,
 	pub bounding_path: Option<BoundingPath>,
 	pub added_resources: Vec<ResourceEntry>,
+	/// Existing resources (matched by name) to repoint to a new address/size.
+	pub replaced_resources: Vec<ResourceEntry>,
+	/// Section types for pages appended by `replace_pe`; consumed by the
+	/// full rebuild.
+	pub page_types: Vec<crate::page_descriptors::PageTypeRange>,
 	pub cleared_optional_headers: Vec<OptionalHeaderKey>,
 	/// Target machine for the file key wrap. `None` = keep current. If the
 	/// request matches the detected current machine, the transform is a no-op.
@@ -265,6 +270,8 @@ impl EditPlan {
 			&& self.date_range.is_none()
 			&& self.bounding_path.is_none()
 			&& self.added_resources.is_empty()
+			&& self.replaced_resources.is_empty()
+			&& self.page_types.is_empty()
 			&& self.cleared_optional_headers.is_empty()
 			&& self.target_machine.is_none()
 			&& self.target_encryption.is_none()
@@ -356,7 +363,7 @@ fn stage_added_resources(
 	blob_edits: &mut Vec<BlobEdit>,
 	patch: &mut Patch,
 ) -> Result<()> {
-	if plan.added_resources.is_empty() {
+	if plan.added_resources.is_empty() && plan.replaced_resources.is_empty() {
 		return Ok(());
 	}
 	let has_resource_header = xex.header.get_optional_header(OptionalHeaderKey::ResourceInfo).is_some();
@@ -367,10 +374,7 @@ fn stage_added_resources(
 	};
 	let image_start = u64::from(plan.load_address.unwrap_or(xex.security_info.image_info.load_address).0);
 	let image_end = image_start + u64::from(xex.security_info.image_size);
-	for resource in &plan.added_resources {
-		if resources.iter().any(|entry| entry.name == resource.name) {
-			return Err(Xex2Error::DuplicateResourceName { name: resource.name }.into_report());
-		}
+	let check_inside = |resource: &ResourceEntry| {
 		let start = u64::from(resource.address.0);
 		if start < image_start || start + u64::from(resource.size) > image_end {
 			return Err(Xex2Error::ResourceOutsideImage {
@@ -380,6 +384,24 @@ fn stage_added_resources(
 			}
 			.into_report());
 		}
+		Ok(())
+	};
+	for resource in &plan.replaced_resources {
+		if plan.added_resources.iter().any(|added| added.name == resource.name) {
+			return Err(Xex2Error::ResourceAddedAndReplaced { name: resource.name }.into_report());
+		}
+		check_inside(resource)?;
+		let entry = resources
+			.iter_mut()
+			.find(|entry| entry.name == resource.name)
+			.ok_or_else(|| Xex2Error::ReplacedResourceMissing { name: resource.name }.into_report())?;
+		*entry = *resource;
+	}
+	for resource in &plan.added_resources {
+		if resources.iter().any(|entry| entry.name == resource.name) {
+			return Err(Xex2Error::DuplicateResourceName { name: resource.name }.into_report());
+		}
+		check_inside(resource)?;
 		resources.push(*resource);
 	}
 	let bytes = resource_info_bytes(&resources);
@@ -817,7 +839,12 @@ fn apply_pe_replacement(
 	// (so count/flags match the original layout even if hashes differ).
 	let page_size =
 		if xex.security_info.image_info.image_flags.contains(ImageFlags::SMALL_PAGES) { 0x1000 } else { 0x10000 };
-	let template = read_page_descriptor_template(source, editor.sec, xex.security_info.page_descriptor_count);
+	let template = crate::page_descriptors::descriptor_slots(
+		source,
+		xex.header.security_offset,
+		xex.security_info.page_descriptor_count,
+	)
+	.ok();
 	let crate::page_descriptors::GeneratedDescriptors { descriptors, image_hash } =
 		crate::page_descriptors::generate(new_pe, page_size, template.as_deref());
 
@@ -840,25 +867,6 @@ fn apply_pe_replacement(
 	patch.write(desc_off.get(), desc_bytes);
 
 	Ok(())
-}
-
-fn read_page_descriptor_template(
-	source: &[u8],
-	sec: FileOffset,
-	count: u32,
-) -> Option<Vec<crate::page_descriptors::DescriptorSlot>> {
-	let base = (sec + SecurityOffset::PAGE_DESCRIPTORS.0 as usize).as_usize();
-	let mut out = Vec::with_capacity(count as usize);
-	for i in 0..count as usize {
-		let off = base + i * 24;
-		let bytes: &[u8; 4] = source.get(off..off + 4)?.try_into().ok()?;
-		let info = u32::from_be_bytes(*bytes);
-		out.push(crate::page_descriptors::DescriptorSlot {
-			page_count: info >> 4,
-			section_type: crate::page_descriptors::SectionType::from_nibble(info),
-		});
-	}
-	Some(out)
 }
 
 fn sign_and_stage(sec: FileOffset, image_info: &[u8], patch: &mut Patch) -> Result<()> {

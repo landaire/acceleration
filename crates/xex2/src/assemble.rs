@@ -47,12 +47,16 @@ const DEFAULT_LZX_WINDOW: u32 = 0x10000;
 ///
 /// `target_compression` selects the new compression state. `replace_pe`, if
 /// provided, swaps the inner PE for these bytes (decompressed+decrypted
-/// reference) before (re)compression.
+/// reference) before (re)compression. `page_types` assigns section types to
+/// pages appended past the source image; see
+/// [`page_descriptors::PageTypeRange`].
 pub fn rebuild_with_compression(
 	xex: &Xex2,
 	source: &[u8],
 	target_compression: TargetCompression,
 	replace_pe: Option<Vec<u8>>,
+	page_types: &[page_descriptors::PageTypeRange],
+	load_address: xenon_types::VirtualAddress,
 ) -> Result<Vec<u8>> {
 	let original_ff = xex.header.file_format_info()?;
 	let machine = crate::hashes::verify_headers(source, xex)?;
@@ -75,23 +79,19 @@ pub fn rebuild_with_compression(
 	if !image_size.is_multiple_of(page_size) {
 		return Err(Xex2Error::ImageSizeAlignment { image_size, page_size }.into_report());
 	}
-	let mut template = existing_descriptor_template(source, xex);
-	if let Some(template) = template.as_mut() {
-		let covered_pages: u32 = template.iter().map(|slot| slot.page_count).sum();
-		let required_pages = pe.len().div_ceil(page_size as usize) as u32;
-		if required_pages > covered_pages {
-			let Some(last) = template.last().copied() else {
-				return Err(Xex2Error::InvalidFileFormatInfo.into_report());
-			};
-			let pages_per_descriptor = 0x1_0000 / page_size;
-			let mut remaining = required_pages - covered_pages;
-			while remaining != 0 {
-				let page_count = remaining.min(pages_per_descriptor);
-				template.push(page_descriptors::DescriptorSlot { page_count, section_type: last.section_type });
-				remaining -= page_count;
-			}
+	let template = match page_descriptors::descriptor_slots(
+		source,
+		xex.header.security_offset,
+		xex.security_info.page_descriptor_count,
+	) {
+		Ok(mut template) => {
+			let required_pages = pe.len().div_ceil(page_size as usize) as u32;
+			page_descriptors::extend_template(&mut template, required_pages, page_size, load_address, page_types)?;
+			Some(template)
 		}
-	}
+		Err(err) if !page_types.is_empty() => return Err(err),
+		Err(_) => None,
+	};
 	let page_descriptors::GeneratedDescriptors { descriptors, image_hash } =
 		page_descriptors::generate(&pe, page_size, template.as_deref());
 
@@ -252,22 +252,6 @@ fn header_with_descriptor_capacity(source: &[u8], xex: &Xex2, descriptor_count: 
 	}
 
 	Ok(Some(out))
-}
-
-fn existing_descriptor_template(source: &[u8], xex: &Xex2) -> Option<Vec<page_descriptors::DescriptorSlot>> {
-	let base = xex.header.security_offset as usize + 0x184;
-	let count = xex.security_info.page_descriptor_count as usize;
-	let mut out = Vec::with_capacity(count);
-	for i in 0..count {
-		let off = base + i * 24;
-		let bytes: &[u8; 4] = source.get(off..off + 4)?.try_into().ok()?;
-		let info = u32::from_be_bytes(*bytes);
-		out.push(page_descriptors::DescriptorSlot {
-			page_count: info >> 4,
-			section_type: page_descriptors::SectionType::from_nibble(info),
-		});
-	}
-	Some(out)
 }
 
 /// Tracks blob placements + the resulting security / data offsets.
