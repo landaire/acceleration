@@ -25,6 +25,8 @@ xenon_types = { version = "0.4", path = "../xenon_types" }
 
 [dev-dependencies]
 insta = { workspace = true }
+# The key vault snapshots serialize the parsed vault.
+xecrypt = { path = ".", features = ["serde"] }
 
 [features]
 serde = ["dep:serde"]

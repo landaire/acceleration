@@ -59,6 +59,7 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/xecrypt",
     },
     deps = [
+        "//crates/xecrypt:xecrypt",
         "//crates/xenon_types:xenon_types",
         "//third-party/rust:aes",
         "//third-party/rust:bitflags",
@@ -86,6 +87,7 @@ rust_test(
         "CARGO_MANIFEST_DIR": "crates/xecrypt",
     },
     deps = [
+        "//crates/xecrypt:xecrypt",
         "//crates/xenon_types:xenon_types",
         "//third-party/rust:aes",
         "//third-party/rust:bitflags",
