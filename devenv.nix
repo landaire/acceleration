@@ -30,8 +30,4 @@ in
   enterShell = ''
     export PATH="$DEVENV_ROOT/bin:$PATH"
   '';
-
-  # bazel-remote serves the CI action cache that ci/start-action-cache.sh
-  # starts.
-  profiles.ci.module.packages = [ pkgs.bazel-remote ];
 }

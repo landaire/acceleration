@@ -2,7 +2,8 @@ name: Build executables
 
 # Builds every workspace executable with the release profile on each release
 # platform and uploads one archive per platform as an artifact of the calling
-# run. release.yml and nightly.yml call it and publish the archives.
+# run. release.yml and nightly.yml call it and publish the archives. Nightlies
+# use the shared action cache; tagged releases build without it.
 
 on:
   workflow_call:
@@ -15,6 +16,12 @@ on:
         description: Commit to build.
         required: true
         type: string
+      action-cache:
+        description: >-
+          Read and write the shared action cache of landaire/build-cache. The
+          caller grants the build jobs id-token write.
+        default: false
+        type: boolean
 
 jobs:
   unix:
@@ -45,12 +52,22 @@ jobs:
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
 
+      - name: Select the cached execution platform
+        if: inputs.action-cache
+        run: ci/configure-action-cache.sh
+
+      - if: inputs.action-cache
+        uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+        with:
+          client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+
       - name: Build and archive the executables
         env:
           VERSION: ${{ inputs.version }}
           TARGET: ${{ matrix.target }}
         run: >-
-          devenv --profile ci shell -- python3 build_defs/package_release.py
+          devenv shell -- python3 build_defs/package_release.py
           --version "$VERSION" --target "$TARGET" --out-dir dist
 
       - uses: actions/upload-artifact@v4
@@ -74,6 +91,19 @@ jobs:
         shell: pwsh
         working-directory: C:\a
         run: ./bootstrap.ps1
+
+      - name: Select the cached execution platform
+        if: inputs.action-cache
+        shell: bash
+        working-directory: C:\a
+        run: sh ci/configure-action-cache.sh
+
+      - if: inputs.action-cache
+        uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+        with:
+          client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          buckconfig: C:/a/.buckconfig.local
 
       - name: Build and archive the executables
         shell: pwsh

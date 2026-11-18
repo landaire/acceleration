@@ -11,13 +11,13 @@ on:
 # build_defs/update_buck_files.py.
 #
 # Every platform runs Buck2 through bin/buck2, which fetches the release
-# that toolchains/buck2 pins with DotSlash. On Linux and macOS, the devenv
-# `ci` profile provides reindeer, Cargo, Python and bazel-remote, and
-# Cachix holds the Nix store paths. bazel-remote serves Buck2's action
-# cache from a directory that actions/cache keeps between runs; runs on
-# main save it, and pull requests read the latest one. Windows has neither
-# Nix nor a bazel-remote build, so it runs bootstrap.ps1 and builds without
-# the action cache.
+# that toolchains/buck2 pins with DotSlash. On Linux and macOS, devenv
+# provides reindeer, Cargo and Python, and Cachix holds the Nix store
+# paths. Windows has no Nix, so it runs bootstrap.ps1.
+#
+# Pushes to main read and write the shared action cache of
+# landaire/build-cache (ci/configure-action-cache.sh). Pull requests build
+# without it.
 
 jobs:
   unix:
@@ -34,6 +34,10 @@ jobs:
             os: macos-15
             checks: false
     runs-on: ${{ matrix.os }}
+    # Joining the tailnet to reach the action cache.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -60,60 +64,38 @@ jobs:
       - name: Install devenv
         run: nix profile install nixpkgs#devenv
 
-      # Action keys cover the C compiler wrappers but not the compiler that
-      # they run from PATH, so each runner image keeps its own cache.
-      # actions/cache rejects paths with `..`, and the directory stays
-      # outside the Buck2 project.
-      - name: Name the action cache
-        id: action-cache
-        run: |
-          echo "prefix=buck2-action-cache-$ImageOS-$ImageVersion-${{ runner.arch }}-" >> "$GITHUB_OUTPUT"
-          echo "ACTION_CACHE_DIR=$RUNNER_TEMP/buck2-action-cache" >> "$GITHUB_ENV"
+      - name: Select the cached execution platform
+        run: ci/configure-action-cache.sh
 
-      - name: Restore the Buck2 action cache
-        uses: actions/cache/restore@v4
+      - uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
         with:
-          path: ${{ env.ACTION_CACHE_DIR }}
-          key: ${{ steps.action-cache.outputs.prefix }}${{ github.run_id }}
-          restore-keys: ${{ steps.action-cache.outputs.prefix }}
-
-      - name: Start the action cache
-        run: devenv --profile ci shell -- ci/start-action-cache.sh "$ACTION_CACHE_DIR"
+          client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
 
       - name: Check the generated files
         if: matrix.checks
         run: |
-          devenv --profile ci shell -- python3 toolchains/update_rust_release.py --check
-          devenv --profile ci shell -- python3 build_defs/update_buck_files.py
+          devenv shell -- python3 toolchains/update_rust_release.py --check
+          devenv shell -- python3 build_defs/update_buck_files.py
           git diff --exit-code
           test -z "$(git status --porcelain)"
 
       - name: Build
-        run: devenv --profile ci shell -- buck2 build //crates/...
+        run: devenv shell -- buck2 build //crates/...
 
       - name: Test
-        run: devenv --profile ci shell -- buck2 test //crates/...
+        run: devenv shell -- buck2 test //crates/...
 
       - name: Check formatting and clippy diagnostics
         if: matrix.checks
-        run: devenv --profile ci shell -- python3 build_defs/lint.py
-
-      - name: Stop the action cache
-        if: always()
-        run: |
-          devenv --profile ci shell -- buck2 kill
-          if [ -f "$ACTION_CACHE_DIR.pid" ]; then kill "$(cat "$ACTION_CACHE_DIR.pid")"; fi
-
-      - name: Save the Buck2 action cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ env.ACTION_CACHE_DIR }}
-          key: ${{ steps.action-cache.outputs.prefix }}${{ github.run_id }}
+        run: devenv shell -- python3 build_defs/lint.py
 
   windows:
     name: Windows x86_64
     runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -127,6 +109,17 @@ jobs:
         run: |
           ./bootstrap.ps1
           Add-Content -Path $env:GITHUB_PATH -Value C:\a\bin
+
+      - name: Select the cached execution platform
+        shell: bash
+        working-directory: C:\a
+        run: sh ci/configure-action-cache.sh
+
+      - uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+        with:
+          client-id: ${{ vars.TS_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          buckconfig: C:/a/.buckconfig.local
 
       - name: Build
         working-directory: C:\a

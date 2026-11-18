@@ -1,10 +1,12 @@
 load("@prelude//platforms:defs.bzl", "host_configuration")
-load(":defs.bzl", "cached_execution_platform")
+load(":defs.bzl", "cached_execution_platform", "host_tools", "remote_cache_configured")
 
 cached_execution_platform(
     name = "cached",
     cpu_configuration = host_configuration.cpu,
+    host_tools = host_tools(),
     os_configuration = host_configuration.os,
+    remote_cache_enabled = remote_cache_configured(),
     use_windows_path_separators = host_info().os.is_windows,
     visibility = ["PUBLIC"],
 )

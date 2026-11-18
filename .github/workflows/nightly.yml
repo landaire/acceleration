@@ -48,10 +48,15 @@ jobs:
   build:
     needs: check
     if: needs.check.outputs.changed == 'true'
+    # Joining the tailnet to reach the action cache.
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/build-executables.yml
     with:
       version: ${{ needs.check.outputs.tag }}
       ref: ${{ needs.check.outputs.head }}
+      action-cache: true
     secrets: inherit
 
   publish:
