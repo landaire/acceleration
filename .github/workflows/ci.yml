@@ -16,8 +16,8 @@ on:
 # paths. Windows has no Nix, so it runs bootstrap.ps1.
 #
 # Pushes to main read and write the shared action cache of
-# landaire/build-cache (ci/configure-action-cache.sh). Pull requests build
-# without it.
+# landaire/build-cache (ci/configure-action-cache.sh). Pull requests only
+# read it.
 
 jobs:
   unix:
@@ -67,10 +67,12 @@ jobs:
       - name: Select the cached execution platform
         run: ci/configure-action-cache.sh
 
-      - uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+      - uses: landaire/build-cache/.github/actions/buck-cache@8ebcdd82280718d26191a9f5d81fdc88be66dcb3
         with:
           client-id: ${{ vars.TS_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE }}
+          pr-client-id: ${{ vars.TS_PR_CLIENT_ID }}
+          pr-audience: ${{ vars.TS_PR_AUDIENCE }}
 
       - name: Check the generated files
         if: matrix.checks
@@ -115,10 +117,12 @@ jobs:
         working-directory: C:\a
         run: sh ci/configure-action-cache.sh
 
-      - uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+      - uses: landaire/build-cache/.github/actions/buck-cache@8ebcdd82280718d26191a9f5d81fdc88be66dcb3
         with:
           client-id: ${{ vars.TS_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE }}
+          pr-client-id: ${{ vars.TS_PR_CLIENT_ID }}
+          pr-audience: ${{ vars.TS_PR_AUDIENCE }}
           buckconfig: C:/a/.buckconfig.local
 
       - name: Build

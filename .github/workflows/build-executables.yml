@@ -57,7 +57,7 @@ jobs:
         run: ci/configure-action-cache.sh
 
       - if: inputs.action-cache
-        uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+        uses: landaire/build-cache/.github/actions/buck-cache@8ebcdd82280718d26191a9f5d81fdc88be66dcb3
         with:
           client-id: ${{ vars.TS_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE }}
@@ -99,7 +99,7 @@ jobs:
         run: sh ci/configure-action-cache.sh
 
       - if: inputs.action-cache
-        uses: landaire/build-cache/.github/actions/buck-cache@e09a7ffe91cd628fc96f7fa169040d97cf0c5d47
+        uses: landaire/build-cache/.github/actions/buck-cache@8ebcdd82280718d26191a9f5d81fdc88be66dcb3
         with:
           client-id: ${{ vars.TS_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE }}
